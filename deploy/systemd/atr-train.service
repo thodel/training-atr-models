@@ -1,0 +1,54 @@
+# User unit (systemctl --user) on asteraix, 130.92.59.242.
+# Install: bash scripts/install_user_unit.sh
+#
+# asteraix has no passwordless sudo, like idhefix. Linger is ON (set 16.09.2026
+# without sudo via `loginctl enable-linger`), so this unit survives logout.
+#
+# This service SUPERVISES training; it never trains in-process. Each job runs as
+# a detached child in its engine's own venv (.venvs/{kraken,trocr,vlm}-train), so
+# restarting this unit reconciles the job records instead of killing a run in
+# progress — but only with KillMode=process below.
+[Unit]
+Description=ATR Training Service (training-atr-models)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Repo/training-atr-models/engines
+EnvironmentFile=%h/Repo/training-atr-models/.env
+# The spawned runners import atr_training from here. They inherit this
+# environment — nothing else puts src/ on their path, and the independent check of
+# the move (#3) named exactly that as the one way a runner could fail to start.
+Environment=PYTHONPATH=%h/Repo/training-atr-models/src
+# No CUDA_VISIBLE_DEVICES for the service itself: it never touches a GPU. The card
+# a JOB runs on is set per child from ATR_TRAIN_GPU (TrainerSettings.env_for_child),
+# a PHYSICAL index as nvidia-smi counts. Both A40s on this box are free and
+# NVLinked; choosing between them per job is training-atr-models#12.
+#
+# TMPDIR comes from .env — dill reads it at import time, so a shell profile is too
+# late for a systemd service. Do NOT set HF_HOME: ~/.cache/huggingface/hub is a
+# symlink to the research share and must stay the effective cache.
+# Loopback, and written HERE rather than read from .env on purpose. The service
+# has no authentication of its own yet (training-atr-models#13); a bind that one
+# .env line could widen would let that change happen quietly and alone. Opening
+# it has to be an edit to this file, in git, next to the auth that makes it safe.
+ExecStart=%h/Repo/training-atr-models/.venvs/kraken-train/bin/python -m uvicorn kraken_train_svc.app:app --host 127.0.0.1 --port 8204
+Restart=on-failure
+RestartSec=5
+# REQUIRED, and the reason is not obvious. The runner is spawned with
+# start_new_session=True, which gives it its own session and process group — but
+# a process group is NOT a cgroup. systemd's default KillMode=control-group kills
+# every process in the unit's cgroup on stop/restart, and setsid does not leave
+# that cgroup. So a restart would SIGTERM the training run too, the runner's
+# signal handler would mark the job `cancelled`, and hours of work would end with
+# "cancelled on request" that nobody requested.
+#
+# That happened on idhefix on 2026-08-07: a deploy restarted the unit 20 minutes
+# into a compile and killed a run that had already spent 2.5 hours in prepare.
+# And it held on 2026-09-15, the other way round: the unit was restarted during
+# v4's prepare, and the runner carried on for twelve minutes afterwards.
+KillMode=process
+
+[Install]
+WantedBy=default.target

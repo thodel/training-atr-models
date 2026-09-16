@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from atr_training.backends import runner_python
@@ -90,11 +91,26 @@ class TrainerSettings(BaseSettings):
     artefact_cache_max_gb: int = 100
 
     # ── executables ───────────────────────────────────────────────────────
-    ketos: Path = REPO_ROOT / ".venvs" / "kraken-train" / "bin" / "ketos"
     #: Where the per-engine venvs live. Each job is spawned with *its own*
     #: engine's interpreter (see runner_python) — this service never imports an
     #: engine package, so it does not matter which venv it happens to run in.
     venvs_root: Path = REPO_ROOT / ".venvs"
+    #: ``ketos`` from the kraken-train venv. Derived from ``venvs_root`` unless set
+    #: explicitly (ATR_TRAIN_KETOS).
+    #:
+    #: It used to be ``REPO_ROOT / ".venvs" / …`` — a field of its own that never
+    #: followed ``venvs_root``. Pointing ATR_TRAIN_VENVS_ROOT elsewhere (to reuse
+    #: venvs already built) then gave a runner from the new tree and a ketos from
+    #: the old one, and the compile stage failed long after submit. It went
+    #: unnoticed on idhefix only because ``<repo>/.venvs`` always existed. Found
+    #: by the independent check of the move (#3); it predates the move.
+    ketos: Path | None = None
+
+    @model_validator(mode="after")
+    def _ketos_follows_the_venvs(self) -> "TrainerSettings":
+        if self.ketos is None:
+            self.ketos = self.venvs_root / "kraken-train" / "bin" / "ketos"
+        return self
 
     def runner_python(self, engine: str) -> Path:
         """Interpreter for ``engine``'s detached runner."""
