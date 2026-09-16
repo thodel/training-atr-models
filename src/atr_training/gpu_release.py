@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
-__all__ = ["ReleaseResult", "release_gpu"]
+__all__ = ["ReleaseResult", "gateway_is_local", "release_gpu"]
 
 
 @dataclass(frozen=True)
@@ -49,13 +49,37 @@ class ReleaseResult:
         return "; ".join(parts)
 
 
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def gateway_is_local(gateway_url: str) -> bool:
+    """Is the gateway on THIS machine — the only case where releasing helps?
+
+    Unloading a gateway's models frees memory on the gateway's card. With the
+    gateway on idhefix and this trainer on asteraix, asking would free nothing
+    here and take recognition models away from idhefix for no reason at all.
+    """
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(gateway_url).hostname or "").lower()
+    return host in _LOCAL_HOSTS
+
+
 def release_gpu(gateway_url: str, api_key: str, timeout: float = 60.0
                 ) -> ReleaseResult:
-    """Ask the gateway to unload its evictable vLLM models. Never raises."""
-    import httpx  # trainer venv only
+    """Ask the gateway to unload its evictable vLLM models. Never raises.
 
+    The import is INSIDE the try, and that is the fix, not tidiness. It used to
+    sit above it, so "never raises" held for every failure except the one a fresh
+    venv produces: on 16.09.2026 the first job on asteraix died in its train stage
+    with ``ModuleNotFoundError: No module named 'httpx'`` — trocr-train does not
+    install it. idhefix never showed it only because its last TrOCR run predated
+    this module by a day.
+    """
     url = f"{gateway_url.rstrip('/')}/admin/release-gpu"
     try:
+        import httpx  # trainer venv only — and not every trainer venv has it
+
         response = httpx.post(url, headers={"X-API-Key": api_key}, timeout=timeout)
         response.raise_for_status()
         body = response.json()

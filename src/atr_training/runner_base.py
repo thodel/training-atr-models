@@ -45,7 +45,7 @@ from atr_training.contracts import (
 )
 from atr_training.convergence import check_convergence
 from atr_training.heldout import load_heldout
-from atr_training.gpu_release import release_gpu
+from atr_training.gpu_release import gateway_is_local, release_gpu
 from atr_training.hf_source import (data_files_for, granularity_files,
                                             keep_projects_for, only_projects)
 from atr_training.jobstore import JobStore
@@ -862,6 +862,13 @@ class BasePipeline(ABC):
         settings = self.settings
         url = getattr(settings, "gateway_url", "")
         if not url:
+            return
+        # Only a gateway on this machine shares this machine's card. Since the
+        # split the gateway is on idhefix and training on asteraix, so asking is
+        # not merely useless — it would evict idhefix's recognition models to
+        # free memory on a GPU this job will never touch.
+        if not gateway_is_local(url):
+            logger.info("gateway {} is on another host; nothing to release here", url)
             return
         release_gpu(url, getattr(settings, "gateway_api_key", ""))
 
