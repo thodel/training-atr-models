@@ -7,6 +7,10 @@ format, not code — and ``fixtures/registry/trained/example.yaml`` is the
 gateway's own example, copied verbatim from serving-atr-inference main
 (unchanged since ac1b42f, 16.09.2026). If the gateway changes that file, copy it
 again: the contract tests below say what else has to follow.
+
+The example uses a subset of the fields, so it cannot notice a field the gateway
+gained — ``max_pixels`` did, twelve minutes before the schema here was written.
+``fixtures/registry/modelspec_fields.txt`` pins the whole list.
 """
 
 from __future__ import annotations
@@ -35,8 +39,27 @@ from atr_training.registration import (
 )
 from atr_training.settings import TrainerSettings
 
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "registry" / "trained" / "example.yaml"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "registry"
+FIXTURE = FIXTURES / "trained" / "example.yaml"
 LIVE_ROOT = Path("/mnt/wbkolleg_dh_1/Textrecognition_Training/registry")
+
+
+def gateway_fields() -> list[str]:
+    """The gateway's ModelSpec fields, as copied into the fixture."""
+    lines = (FIXTURES / "modelspec_fields.txt").read_text(encoding="utf-8").splitlines()
+    return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+
+
+#: One value for every field the gateway knows — what a registration an
+#: operator has tuned by hand can look like.
+EVERY_FIELD = {
+    "hf_repo": "dh-unibe/x", "zenodo_id": "10.5281/zenodo.1234567",
+    "disabled_reason": None, "base_model": "10.5281/zenodo.7516057",
+    "languages": ["de"], "scripts": ["Kurrent"], "centuries": [16], "vram_mb": 500,
+    "max_new_tokens": 2048, "max_pixels": 1_605_632, "residency": "pinned",
+    "gpu_affinity": 1, "prompt": "Transcribe the page.",
+    "training_datasets": ["10.5281/zenodo.1234567"],
+}
 
 
 def spec(model_id: str = "kraken-thun-v1", **kw) -> dict:
@@ -267,6 +290,24 @@ def test_promotion_keeps_a_field_written_by_hand(root):
     assert read_registration(root, "kraken-a-v1").training_datasets == ["10.5281/zenodo.1234567"]
 
 
+def test_promotion_keeps_every_field_the_gateway_knows(root):
+    """A registration the gateway serves is one the gate can promote. Before
+    ``max_pixels`` was added here, a hand-set pixel budget made set_enabled
+    refuse the file ("Extra inputs are not permitted") and the kraken gate
+    report "not promoted" for a model that had served."""
+    everything = spec("kraken-a-v1", **EVERY_FIELD)
+    assert set(everything) == set(gateway_fields()), "EVERY_FIELD is behind the fixture"
+    path = registration_path(root, "kraken-a-v1")
+    trained_dir(root).mkdir()
+    path.write_text(yaml.safe_dump(everything), encoding="utf-8")
+
+    assert set_enabled(root, "kraken-a-v1", True) is True
+    promoted = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert promoted == {**{k: v for k, v in everything.items() if v is not None},
+                        "enabled": True}
+    assert gateway_problems(path) == []
+
+
 def test_promotion_refuses_a_file_not_named_after_its_id(root):
     path = write_registration(root, spec("kraken-a-v1"))
     path.write_text(yaml.safe_dump(spec("kraken-z-v1")), encoding="utf-8")
@@ -358,8 +399,17 @@ def test_models_config_follows_registry_root(tmp_path, monkeypatch):
 @pytest.mark.parametrize("bad", ["registry", "./registry", ""])
 def test_a_relative_registry_root_is_refused(bad):
     """Relative to what? A different registry for every working directory."""
-    with pytest.raises(ValueError, match="absolute"):
+    with pytest.raises(ValueError, match="registry_root must be an absolute"):
         TrainerSettings(_env_file=None, registry_root=bad)
+
+
+@pytest.mark.parametrize("bad", ["trained", "./trained", ""])
+def test_a_relative_trained_root_is_refused_at_startup(bad):
+    """Every local_path is under it. Relative, it used to be refused only by
+    the registration, after the whole run — with a register-by-hand command
+    that carried the same relative path and was refused too."""
+    with pytest.raises(ValueError, match="trained_root must be an absolute"):
+        TrainerSettings(_env_file=None, trained_root=bad)
 
 
 def test_the_suite_never_registers_on_the_live_share():
@@ -375,6 +425,13 @@ def test_the_manual_command_registers_what_it_is_given(root, monkeypatch, capsys
     assert capsys.readouterr().out.strip() == str(registration_path(root, "kraken-a-v1"))
 
 
+def test_the_manual_command_takes_every_field_the_gateway_knows(root, monkeypatch, capsys):
+    everything = spec("kraken-a-v1", **EVERY_FIELD)
+    monkeypatch.setattr("sys.stdin", io.StringIO(yaml.safe_dump(everything)))
+    assert registration.main(["--root", str(root)]) == 0, capsys.readouterr().err
+    assert read_registration(root, "kraken-a-v1").max_pixels == 1_605_632
+
+
 def test_the_manual_command_refuses_what_the_trainer_would(root, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(yaml.safe_dump(spec(local_path="x.mlmodel"))))
     assert registration.main(["--root", str(root)]) == 1
@@ -383,6 +440,20 @@ def test_the_manual_command_refuses_what_the_trainer_would(root, monkeypatch, ca
 
 
 # ── the contract with the gateway ───────────────────────────────────────────
+def test_the_local_schema_has_exactly_the_gateways_fields():
+    """Pinned, because the example cannot notice drift: it uses a subset.
+
+    A field only the gateway has makes this repo refuse files the gateway
+    serves (extra="forbid"); a field only this repo has is one the gateway
+    drops without a word. After refreshing modelspec_fields.txt, this says
+    which way :class:`Registration` has to move.
+    """
+    gateway, local = gateway_fields(), list(Registration.model_fields)
+    assert len(gateway) == len(set(gateway)), "a field is listed twice in the fixture"
+    assert set(gateway) - set(local) == set(), "the gateway has fields Registration lacks"
+    assert set(local) - set(gateway) == set(), "Registration has fields the gateway lacks"
+
+
 def test_the_gateways_example_validates_against_the_local_schema():
     """If this fails after copying a new example, the gateway has a field (or a
     rule) this repo's schema does not: update :class:`Registration`."""
@@ -432,7 +503,7 @@ def test_what_each_runner_writes_is_what_the_gateway_reads(engine, tmp_path):
 
     written = yaml.safe_load(path.read_text(encoding="utf-8"))
     example = yaml.safe_load(FIXTURE.read_text(encoding="utf-8"))
-    assert set(written) <= set(Registration.model_fields)
+    assert set(written) <= set(gateway_fields())
     assert {"id", "engine", "local_path", "enabled"} <= set(written)
     for key in set(written) & set(example):
         assert type(written[key]) is type(example[key]), key

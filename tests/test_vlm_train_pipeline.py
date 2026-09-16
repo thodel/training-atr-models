@@ -17,6 +17,7 @@ from PIL import Image
 
 from atr_training.contracts import (
     VLM_MAX_SAMPLE_CHARS,
+    VLM_PIXEL_BUDGET,
     DatasetSpec,
     TrainRequest,
     VlmTrainParams,
@@ -422,6 +423,39 @@ def test_registered_model_is_disabled_and_carries_its_prompt(store, settings):
     assert spec.local_path == job.model_path == str(settings.trained_root / "qwen3vl-thun-v1")
     # serving with different wording than it was tuned on is a silent shift
     assert spec.prompt and "ranscribe" in spec.prompt
+
+
+def test_the_registration_carries_the_scale_the_model_trained_at(store, settings):
+    """The gateway replays spec.max_pixels, else its level default. A job
+    trained at its own budget and served at the default is the silent shift
+    behind the 3-to-36-character readings (serving#140) — so the budget the
+    job trained at is written, whether it was set or defaulted."""
+    run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner(),
+                 request=request_with(model_id="qwen3vl-default-v1"))
+    run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner(),
+                 request=request_with(model_id="qwen3vl-own-budget-v1",
+                                      params=VlmTrainParams(max_pixels=512 * 32 * 32)))
+
+    default = read_registration(settings.registry_root, "qwen3vl-default-v1")
+    own = read_registration(settings.registry_root, "qwen3vl-own-budget-v1")
+    assert default.max_pixels == VLM_PIXEL_BUDGET["line"]
+    assert own.max_pixels == 512 * 32 * 32
+
+
+def test_the_registration_carries_a_generation_budget_only_when_the_job_set_one(
+        store, settings):
+    """1536 is this repo's evaluation default for a page; the gateway's serving
+    default is 4096, clamped to the context. Writing ours for every model would
+    cut served pages short (#131); a budget someone chose travels with the model."""
+    run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner(),
+                 request=request_with(model_id="qwen3vl-default-v1"))
+    run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner(),
+                 request=request_with(model_id="qwen3vl-long-v1",
+                                      params=VlmTrainParams(max_new_tokens=700)))
+
+    default_file = trained_dir(settings.registry_root) / "qwen3vl-default-v1.yaml"
+    assert "max_new_tokens" not in default_file.read_text(encoding="utf-8")
+    assert read_registration(settings.registry_root, "qwen3vl-long-v1").max_new_tokens == 700
 
 
 def test_a_failed_job_registers_nothing(store, settings):

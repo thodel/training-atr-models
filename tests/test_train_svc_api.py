@@ -537,6 +537,34 @@ def test_a_different_model_id_is_unaffected(client):
     assert client.post("/jobs", json={**BODY, "model_id": "other-model"}).status_code == 202
 
 
+# ── a curated id is not a trained model_id (#14) ────────────────────────────
+def test_a_curated_model_id_is_refused_before_a_job_exists(client, app, spawn):
+    """The gateway skips trained/<id>.yaml when the id is curated, and its
+    promotion gate answers that id with the curated weights: a day of GPU for a
+    model nobody could reach, recorded as promoted. The overlay's merge() used
+    to refuse the shadowing; submit is the cheapest place to refuse it now."""
+    from atr_training.shared_registry import BaseEntry, SharedRegistry
+
+    app.state.registry = SharedRegistry(
+        [BaseEntry(id=BODY["model_id"], engine="kraken", zenodo_id="10.5281/zenodo.1")],
+        path=Path("/share/registry/models.yaml"))
+    try:
+        resp = client.post("/jobs", json=BODY)
+    finally:
+        del app.state.registry
+    assert resp.status_code == 409
+    assert "curated id" in resp.json()["detail"]
+    assert "/share/registry/models.yaml" in resp.json()["detail"]
+    assert store_of(client).list() == [] and spawn.calls == []
+
+
+def test_an_unreadable_curated_registry_does_not_block_the_queue(client, settings):
+    """No models.yaml under the registry root here: the check is skipped, as the
+    base_model lookup is when it does not need the file."""
+    assert not settings.models_config.exists()
+    assert client.post("/jobs", json=BODY).status_code == 202
+
+
 # ── a cached run refuses a network datasets cache (#60) ─────────────────────
 def test_a_cached_run_is_refused_when_the_datasets_cache_is_on_the_share(
         client, settings, monkeypatch, tmp_path):

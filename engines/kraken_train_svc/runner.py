@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -58,6 +59,9 @@ __all__ = [
 
 class Pipeline(BasePipeline):
     """Executes one kraken job."""
+
+    #: How the gate waits between requests; a seam so the tests do not sleep.
+    _gate_sleep = staticmethod(time.sleep)
 
     engine = "kraken"
     #: kraken can compile a chunk at a time: ``ketos train -t`` reads a manifest of
@@ -451,14 +455,24 @@ class Pipeline(BasePipeline):
                 False, "no gateway_api_key configured, so the gate could not run; the "
                        "model stays registered but disabled (set ATR_TRAIN_GATEWAY_API_KEY)"
             )
+        model_id = job.request.model_id
+        # Checked again here, not only before registering: a gate on a curated
+        # id is answered by the curated model and would pass on its weights.
+        clash = self._curated_clash(model_id)
+        if clash is not None:
+            return PromotionResult(False, f"{clash}; the gate did not run")
         page = held_out_page(self.store.paths(job.id).data)
+        # The registration was written moments ago, and the gateway has not
+        # read it yet — see promote.py for why the gate asks more than once.
         verdict = promote(
-            job.request.model_id, page,
+            model_id, page,
             http_recognizer(self.settings.gateway_url, self.settings.gateway_api_key),
+            wait_s=self.settings.gateway_registry_wait_s,
+            retry_every_s=self.settings.gateway_registry_retry_s,
+            sleep=self._gate_sleep,
         )
         if not verdict.promoted:
             return verdict
-        model_id = job.request.model_id
         # The model served, but it is advertised only once its file says so. A
         # rewrite that fails is reported as "not promoted", never raised: the
         # gate never fails a run (runner_base._finish), and the record must not

@@ -7,7 +7,7 @@ registered ``enabled: false``, and only a **real transcription through the real
 engine** flips it: the trainer posts one held-out page to the gateway's ``/ocr``
 with the new model id, and non-empty text is the gate.
 
-Three properties worth stating, because each is a decision:
+Four properties worth stating, because each is a decision:
 
 * **The page comes from the run's own validation split.** Any page would prove
   the engine can load the weights, but a held-out page also exercises the
@@ -21,20 +21,32 @@ Three properties worth stating, because each is a decision:
   ``promoted`` is false, the reason is on the record, and ``/models`` stays quiet.
 * **Empty text is a failure, not a pass.** A 200 with ``""`` is exactly what #21
   was about: the gateway used to answer that way for a model it could not run.
+* **"Unknown model" is asked again, for a while.** The registration was written
+  milliseconds before the gate runs, and the gateway learns of it only from a
+  look at the share that a request starts, in a thread, while that request is
+  answered from what the gateway knew before (serving ``RegistryWatch.poll``) —
+  at most one look per ``registry_reload_interval_s`` (5 s), and the CIFS
+  attribute cache on idhefix lags on top. A single request therefore got
+  ``404 unknown model`` on every run: reproduced against the gateway's own app
+  (#14 review), cold, warm and with the interval at 0. Asked every 6 s against
+  that app, the third request passed, 12 s in. Nothing else is retried: any
+  other failure is the answer.
 
 The HTTP call is injectable, so the whole gate is testable without a gateway.
 """
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from atr_training.manifests import read_manifest
 
-__all__ = ["PROMOTION_GATE_HEADER", "PromotionResult", "Recognizer", "held_out_page", "promote",
-           "http_recognizer"]
+__all__ = ["PROMOTION_GATE_HEADER", "NotYetVisible", "PromotionResult", "Recognizer",
+           "held_out_page", "promote", "http_recognizer"]
 
 #: Sent with the gate's request, value ``1``. The model under test is registered
 #: ``enabled: false``, and the gateway refuses a disabled id to every caller — so
@@ -45,6 +57,21 @@ __all__ = ["PROMOTION_GATE_HEADER", "PromotionResult", "Recognizer", "held_out_p
 #: shared registry on, and only for a trained registration without a
 #: ``disabled_reason``. Must match serving-atr-inference's value.
 PROMOTION_GATE_HEADER = "X-ATR-Promotion-Gate"
+
+
+#: How the gateway's 404 for an id it has no registration for begins
+#: (``_resolve_spec_strict`` in serving's ``api/routes.py``). Its other 404 — a
+#: registered model that is disabled for a stated reason — is final.
+UNKNOWN_MODEL_DETAIL = "unknown model"
+
+
+class NotYetVisible(RuntimeError):
+    """The gateway does not know the model (yet): ``404 unknown model``.
+
+    Raised by a :class:`Recognizer` so :func:`promote` can tell "the gateway has
+    not read the registration" — which time fixes — from every other failure,
+    which it does not.
+    """
 
 
 @dataclass(frozen=True)
@@ -78,14 +105,37 @@ def held_out_page(data_dir: Path, manifest_name: str = "pages_val.lst") -> Path 
     return None
 
 
-def promote(model_id: str, page: Path | None, recognize: Recognizer) -> PromotionResult:
-    """Run the gate. Never raises: every outcome is a reportable result."""
+def promote(model_id: str, page: Path | None, recognize: Recognizer, *,
+            wait_s: float = 0.0, retry_every_s: float = 10.0,
+            sleep: Callable[[float], None] = time.sleep) -> PromotionResult:
+    """Run the gate. Never raises: every outcome is a reportable result.
+
+    While the recognizer raises :class:`NotYetVisible`, it is asked again every
+    ``retry_every_s`` for up to ``wait_s`` — a bounded number of requests, each
+    of which also starts the gateway's next look at the share. The spacing is
+    what matters: wider than the gateway's reload interval, so every retry finds
+    the look its predecessor started already finished.
+    """
     if page is None:
         return PromotionResult(False, "no held-out page was available to test with")
-    try:
-        text = recognize(model_id, page)
-    except Exception as exc:  # noqa: BLE001 — a failed gate is a result, not a crash
-        return PromotionResult(False, f"{type(exc).__name__}: {exc}")
+    tries = 1 + (int(wait_s // retry_every_s) if retry_every_s > 0 else 0)
+    for attempt in range(1, tries + 1):
+        try:
+            text = recognize(model_id, page)
+            break
+        except NotYetVisible as exc:
+            last = exc
+            if attempt < tries:
+                sleep(retry_every_s)
+        except Exception as exc:  # noqa: BLE001 — a failed gate is a result, not a crash
+            return PromotionResult(False, f"{type(exc).__name__}: {exc}")
+    else:
+        waited = (tries - 1) * retry_every_s
+        return PromotionResult(
+            False, f"the gateway never saw trained/{model_id}.yaml: {tries} request(s) over "
+                   f"{waited:.0f} s, each answered {last}. The model stays registered but "
+                   "disabled. Check that the gateway's ATR_REGISTRY_ROOT is this host's "
+                   "ATR_TRAIN_REGISTRY_ROOT, and whether its log says it skipped the file.")
 
     if not (text or "").strip():
         # #21: a 200 with empty text is precisely how the gateway used to answer
@@ -115,7 +165,22 @@ def http_recognizer(gateway_url: str, api_key: str, timeout: float = 120.0) -> R
                 data={"model": model_id},
                 timeout=timeout,
             )
+        if response.status_code == 404:
+            detail = _detail(response)
+            if detail.startswith(UNKNOWN_MODEL_DETAIL):
+                # Only its first sentence: the rest lists every known id.
+                raise NotYetVisible(f"404 {detail.split('. ')[0]}")
         response.raise_for_status()
         return str(response.json().get("text") or "")
 
     return recognize
+
+
+def _detail(response) -> str:
+    """FastAPI's ``{"detail": "..."}``, or "" for any other body."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return detail if isinstance(detail, str) else ""

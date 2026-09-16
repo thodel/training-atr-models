@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from atr_training.backends import runner_python
@@ -36,7 +36,13 @@ class TrainerSettings(BaseSettings):
     # ── layout ────────────────────────────────────────────────────────────
     #: One directory per job; all job state lives here (see jobstore).
     jobs_root: Path = Path.home() / "atr-cache" / "training"
-    #: Promoted weights, one directory per trained model.
+    #: Promoted weights, one directory per trained model. Every registration's
+    #: ``local_path`` is under here, and the engines on idhefix open it as
+    #: written — so on a trainer this must be on the share, next to
+    #: ``registry_root``. The default is local disk, fine for a box that
+    #: registers nowhere; a registration from it is refused (runner_base
+    #: ``_write_registration``) rather than served as a path idhefix cannot open.
+    #: Absolute, for the reason ``registry_root`` is.
     trained_root: Path = Path.home() / "atr-cache" / "trained"
     #: The shared registry directory (#5, #14) — MUST equal the gateway's
     #: ``ATR_REGISTRY_ROOT`` on idhefix. The gateway publishes the curated
@@ -125,15 +131,19 @@ class TrainerSettings(BaseSettings):
             self.ketos = self.venvs_root / "kraken-train" / "bin" / "ketos"
         return self
 
-    @field_validator("registry_root", mode="before")
+    @field_validator("registry_root", "trained_root", mode="before")
     @classmethod
-    def _registry_root_is_absolute(cls, value):
+    def _shared_paths_are_absolute(cls, value, info: ValidationInfo):
         # Before, not after: pydantic would turn "" into Path("."), and the
-        # message should show what was actually configured.
+        # message should show what was actually configured. A relative
+        # trained_root used to pass here and be refused only by the registration
+        # validator, after the whole training run — in a message whose
+        # register-by-hand command carried the same relative path.
         if value is None or not str(value).strip() or not Path(str(value)).is_absolute():
-            raise ValueError(
-                f"registry_root must be an absolute path (the gateway's ATR_REGISTRY_ROOT), "
-                f"got {value!r}")
+            what = ("the gateway's ATR_REGISTRY_ROOT" if info.field_name == "registry_root"
+                    else "on the share, at the path idhefix mounts it too")
+            raise ValueError(f"{info.field_name} must be an absolute path ({what}), "
+                             f"got {value!r}")
         return value
 
     @field_validator("models_config", mode="before")
@@ -162,6 +172,17 @@ class TrainerSettings(BaseSettings):
     #: Same shared key the gateway already requires. Empty disables the gate,
     #: which leaves models registered-but-disabled rather than wrongly advertised.
     gateway_api_key: str = ""
+    #: How long the gate keeps asking while the gateway answers ``404 unknown
+    #: model``, and how far apart. The gateway reads ``trained/`` at most once per
+    #: its ``registry_reload_interval_s`` (5 s), in a thread, and answers the
+    #: request that started the read from what it knew before; the CIFS
+    #: attribute cache (``actimeo``) lags on top. So the first request after a
+    #: registration is always a 404 (#14 review, against the gateway's own app),
+    #: and 10 s apart is wide enough that each retry finds the previous one's read
+    #: finished. 90 s is nine retries: a gateway that has not seen the file by
+    #: then is looking somewhere else.
+    gateway_registry_wait_s: float = Field(default=90.0, ge=0)
+    gateway_registry_retry_s: float = Field(default=10.0, gt=0)
 
     # ── guards (docs/TRAINING_PLAN.md §5) ─────────────────────────────────
     #: PHYSICAL GPU index. GPU 0 is the shared RAG GPU and stays untouched;

@@ -90,11 +90,21 @@ class Registration(BaseModel):
     """One trained model, as the gateway's ``ModelSpec`` reads it.
 
     The field names, types and defaults are the gateway's (``atr_serving/
-    registry.py`` on serving-atr-inference main, 16.09.2026). Unknown fields are
-    **refused**, the opposite of :class:`~atr_training.shared_registry.BaseEntry`:
-    the reader here ignores what it does not need, but a writer that emitted a
-    field the gateway does not know would have it dropped without a word — and
-    a misspelt ``enabeld: true`` would be a model that never gets promoted.
+    registry.py`` on serving-atr-inference main at 4158bcf, 16.09.2026). Unknown
+    fields are **refused**, the opposite of
+    :class:`~atr_training.shared_registry.BaseEntry`: the reader here ignores
+    what it does not need, but a writer that emitted a field the gateway does not
+    know would have it dropped without a word — and a misspelt ``enabeld: true``
+    would be a model that never gets promoted.
+
+    The price of refusing is that a field the gateway gains and this class lacks
+    turns a file the gateway serves into one this repo cannot touch. It happened
+    within the hour: ``max_pixels`` reached the gateway (serving 3d74ba3) twelve
+    minutes before this class was written without it, and ``set_enabled`` then
+    refused every registration an operator had given a pixel budget. The field
+    list is therefore pinned against a copy of the gateway's
+    (``tests/fixtures/registry/modelspec_fields.txt``); refresh that copy when
+    the gateway's ``registry.py`` changes, and the test says what to add here.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -114,6 +124,10 @@ class Registration(BaseModel):
     centuries: list[int] = Field(default_factory=list)
     vram_mb: int = 0
     max_new_tokens: int | None = None
+    #: Pixels one image may carry into the model; None = the level's default on
+    #: the gateway. The VLM runner writes the budget the job trained at, because
+    #: serving at another scale is a silent distribution shift (serving#140).
+    max_pixels: int | None = None
     residency: Literal["pinned", "lazy"] = "lazy"
     gpu_affinity: int | None = None
     prompt: str | None = None

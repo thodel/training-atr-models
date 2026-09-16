@@ -397,6 +397,15 @@ class Pipeline(BasePipeline):
             # The prompt travels with the model: serving it with different
             # wording than it was tuned on is a silent distribution shift.
             "prompt": params.prompt,
+            # So does the scale. The gateway replays spec.max_pixels, else its
+            # level default; a job trained at its own budget and served at the
+            # default reads a page as 3 to 36 characters (serving#140, #136).
+            # Always written, so a later change of either default cannot move it.
+            "max_pixels": params.pixel_budget(),
+            # Only when the job set it. The default here (1536 for a page) is an
+            # evaluation budget; the gateway's page default is 4096 and clamped to
+            # the context, and pinning ours would cut served pages short (#131).
+            "max_new_tokens": params.max_new_tokens,
         }, dest_dir)
         logger.info("registered {} -> {} (disabled until merged and promoted)",
                     model_id, dest_dir)

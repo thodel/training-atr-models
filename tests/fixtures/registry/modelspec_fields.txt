@@ -1,0 +1,28 @@
+# The fields of the gateway's ModelSpec, in its order: serving-atr-inference
+# src/atr_serving/registry.py at 4158bcf (main, 16.09.2026; last changed by
+# 3d74ba3, which added max_pixels).
+#
+# Refresh when that file changes, e.g.
+#   git -C serving-atr-inference show origin/main:src/atr_serving/registry.py
+# and copy ModelSpec.model_fields here. tests/test_registration.py then says what
+# atr_training.registration.Registration has to gain or lose.
+id
+engine
+hf_repo
+zenodo_id
+local_path
+enabled
+disabled_reason
+base_model
+task
+level
+languages
+scripts
+centuries
+vram_mb
+max_new_tokens
+max_pixels
+residency
+gpu_affinity
+prompt
+training_datasets

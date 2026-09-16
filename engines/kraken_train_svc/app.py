@@ -87,7 +87,7 @@ def _store() -> JobStore:
 
 
 def _registry():
-    """``(registry, why_not)`` for base_model lookups.
+    """``(registry, why_not)`` for base_model lookups and the curated-id check.
 
     The registry is the file the gateway publishes to the share (#5). Unreadable
     means ``(None, reason)``, not an error here: a job naming a DOI has no
@@ -102,7 +102,7 @@ def _registry():
     try:
         return load_shared_registry(_settings().models_config), None
     except RegistryUnavailable as exc:
-        logger.warning("registry unavailable for base_model lookup: {}", exc)
+        logger.warning("curated registry unavailable: {}", exc)
         return None, str(exc)
 
 
@@ -437,9 +437,9 @@ async def submit(request: TrainRequest, response: Response,
     # A base_model that names nothing loadable is knowable now. It used to fail in
     # the TRAIN stage - after prepare and compile - which on a large selection is
     # ten hours to learn that a registry id was spelled as a DOI (#76).
+    registry, why_not = _registry()
     if request.base_model:
         try:
-            registry, why_not = _registry()
             resolve_base_model(request.base_model, engine=request.engine,
                                registry=registry, registry_error=why_not)
         except BaseModelError as exc:
@@ -485,6 +485,22 @@ async def submit(request: TrainRequest, response: Response,
                     "second overwrites the first's registered weights — choose a different "
                     "model_id, or cancel that job first."),
         )
+    # The gateway skips a trained registration whose id is curated, and its
+    # promotion gate answers that id with the curated weights — so the run would
+    # end "promoted" with a model nobody can reach (#14 review). Refused before
+    # any GPU is spent; the runner checks again before it registers. A curated
+    # file that cannot be read does not block the queue.
+    if registry is not None and registry.get(request.model_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"model_id {request.model_id!r} is a curated id in "
+                    f"{registry.path or 'the curated registry'}. The gateway never serves a "
+                    "trained model under a curated id — it could not be told apart from the "
+                    "curated one. Choose a different model_id."),
+        )
+    if registry is None:
+        logger.warning("queuing {} without checking it against the curated ids: {}",
+                       request.model_id, why_not)
     # An unreachable hub does NOT block the queue: the job downloads when it
     # starts, which may be hours from now, and refusing it would turn a hiccup
     # into a failed submission. The reason travels on the job instead.

@@ -60,8 +60,15 @@ from atr_training.prepare import (
 )
 from atr_training.pagexml import line_boxes
 from atr_training.promote import PromotionResult
-from atr_training.registration import RegistrationError, manual_registration, write_registration
+from atr_training.registration import (
+    RegistrationError,
+    manual_registration,
+    read_registration,
+    set_enabled,
+    write_registration,
+)
 from atr_training.settings import TrainerSettings
+from atr_training.shared_registry import RegistryUnavailable, load_shared_registry
 from atr_training.vgsl_geometry import (
     LineGeometryError,
     aspect_per_char,
@@ -134,6 +141,43 @@ def tail(path: Path, lines: int = 50) -> list[str]:
     except OSError:
         return []
     return text.splitlines()[-lines:]
+
+
+def _filesystem_of(path: Path) -> int | None:
+    """``st_dev`` of ``path``, or None when it cannot be looked at."""
+    try:
+        return os.stat(path).st_dev
+    except OSError:
+        return None
+
+
+def _not_beside_the_registry(weights_dir: Path, registry_root: Path) -> str | None:
+    """Why weights at ``weights_dir`` cannot be registered in ``registry_root``, or None.
+
+    Both machines mount one share at one path, so weights on the registry's
+    filesystem are weights idhefix can open, and weights on any other are not.
+    A registry that cannot be looked at is left to the write, which says the
+    share is not mounted.
+    """
+    registry_dev = _filesystem_of(registry_root)
+    weights_dev = _filesystem_of(weights_dir)
+    if registry_dev is None or weights_dev is None or registry_dev == weights_dev:
+        return None
+    return (f"the weights at {weights_dir} are not on the filesystem of the registry "
+            f"{registry_root} (ATR_TRAIN_TRAINED_ROOT is not on the share)")
+
+
+def _previous_registration(root: Path, model_id: str) -> str:
+    """A sentence about a registration a failed write leaves behind, or ""."""
+    try:
+        previous = read_registration(root, model_id)
+    except (RegistrationError, ValueError):
+        return ""
+    if previous is None:
+        return ""
+    return (f" A previous registration of {model_id} is still on the share "
+            f"(enabled: {str(previous.enabled).lower()}) and now names these new weights; "
+            "replace it, or disable it.")
 
 
 class BasePipeline(ABC):
@@ -666,6 +710,69 @@ class BasePipeline(ABC):
         registry (:meth:`_write_registration`), ``enabled: false`` until something
         has actually served it."""
 
+    def _curated_clash(self, model_id: str) -> str | None:
+        """Why ``model_id`` cannot be a trained registration, or None.
+
+        The gateway skips ``trained/<id>.yaml`` when the id is curated
+        (serving ``shared_registry._trained``), and its promotion gate resolves
+        that id to the CURATED spec — so a gate on it passes on someone else's
+        weights, and ``set_enabled`` flips a file nobody reads. Reproduced
+        against the gateway's app in the #14 review: the engine was handed the
+        curated Zenodo DOI and the job said ``promoted``. The overlay's merge()
+        used to refuse this; nothing here did once it was gone.
+
+        An unreadable curated file is not a reason to fail a run: the check is
+        skipped, and the log says so.
+        """
+        try:
+            curated = load_shared_registry(self.settings.models_config)
+        except RegistryUnavailable as exc:
+            logger.warning("could not check {} against the curated registry, going ahead: {}",
+                           model_id, exc)
+            return None
+        if curated.get(model_id) is None:
+            return None
+        return (f"{model_id!r} is a curated id in {curated.path}, and the gateway skips a "
+                f"trained/{model_id}.yaml that shadows one — it could never be told apart "
+                "from the curated model's weights")
+
+    def _before_register(self, job: TrainJob, model_artifact: Path) -> None:
+        """What must hold before ``_register`` touches ``<trained_root>/<id>``.
+
+        Both refusals happen before a byte is copied, so the message can say
+        truthfully that nothing changed on the share.
+
+        * A **curated id** (see :meth:`_curated_clash`). Submit refuses it too;
+          this is for a curated list that changed while the job ran.
+        * A **registration that is already there** is disabled first. Resubmitting
+          a finished model_id is allowed, ``_register`` replaces the weights in
+          place, and the registration is rewritten last — so if that last write
+          failed, an ``enabled: true`` left by an earlier promotion would go on
+          advertising weights that never passed the gate. If it cannot be
+          disabled, the weights are not replaced.
+        """
+        model_id = job.request.model_id
+        root = self.settings.registry_root
+        untouched = (f"Nothing was copied or registered. The trained weights are still at "
+                     f"{model_artifact} (until DELETE /jobs/{job.id}).")
+        clash = self._curated_clash(model_id)
+        if clash is not None:
+            raise StageFailed(
+                f"{clash}. {untouched} To keep them, copy them to a directory named after "
+                f"a new model_id under {self.settings.trained_root} and register that id by "
+                f"hand (python -m atr_training.registration --root {root}).")
+        try:
+            current = read_registration(root, model_id)
+            if current is not None and current.enabled:
+                set_enabled(root, model_id, False)
+                logger.warning("{} was registered and enabled; disabled it before replacing "
+                               "its weights, the gate re-enables it", model_id)
+        except RegistrationError as exc:
+            raise StageFailed(
+                f"{model_id} is already registered, and that registration could not be read "
+                f"or disabled before its weights are replaced: {exc}\n{untouched} Fix or "
+                f"remove {exc.path}, then resubmit.") from exc
+
     def _write_registration(self, job: TrainJob, spec: dict[str, Any],
                             weights_dir: Path) -> Path:
         """Write ``trained/<id>.yaml``; a failure fails the job, and says so usefully.
@@ -683,14 +790,27 @@ class BasePipeline(ABC):
         root = self.settings.registry_root
         # Before the write, so a failed job's record points at the weights too.
         job.model_path = spec.get("local_path") or str(weights_dir)
+        where = (f"Its weights are already at {weights_dir} (with metadata.json) — nothing "
+                 "needs retraining.")
+        elsewhere = _not_beside_the_registry(weights_dir, root)
+        if elsewhere is not None:
+            # trained_root defaults to ~/atr-cache/trained. A trainer without
+            # ATR_TRAIN_TRAINED_ROOT would register a local_path idhefix cannot
+            # open; the gateway logs it and serves the id anyway, merge_loras.py
+            # finds no adapter, and the job read `completed` — #14's silent
+            # failure with one more step.
+            raise StageFailed(
+                f"the model is trained but NOT registered: {elsewhere}, so the gateway "
+                f"could not open them.\n{where} Move them to a directory on the share, then "
+                "register by hand with local_path naming the new place:\n"
+                + manual_registration(root, spec))
         try:
             return write_registration(root, spec)
         except RegistrationError as exc:
+            previous = _previous_registration(root, spec.get("id", ""))
             raise StageFailed(
-                f"the model is trained but NOT registered: {exc}\n"
-                f"Its weights are already at {weights_dir} (with metadata.json) — "
-                "nothing needs retraining. Once the registry is writable, register it "
-                "by hand:\n"
+                f"the model is trained but NOT registered: {exc}\n{where}{previous} Once the "
+                "registry is writable, register it by hand:\n"
                 + manual_registration(root, spec)
             ) from exc
 
@@ -1054,6 +1174,7 @@ class BasePipeline(ABC):
 
         self.store.advance(job, "registering")
         with self._stage(job, "register"):
+            self._before_register(job, model)
             model_path = self._register(job, model, job.metrics)
 
         # Outside the stage: a model that will not serve is not a failed run,

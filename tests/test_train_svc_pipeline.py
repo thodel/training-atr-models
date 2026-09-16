@@ -440,18 +440,30 @@ def test_the_command_in_a_failed_registration_registers_the_model(store, setting
 
 
 # ── the promotion gate's write (#36, #14) ───────────────────────────────────
-def _gate_answers(monkeypatch, text: str = "Item ontfaen van Janne") -> list[str]:
+def _gate_answers(monkeypatch, text: str = "Item ontfaen van Janne",
+                  unknown_first: int = 0) -> list[str]:
+    """Stand in for the gateway: ``unknown_first`` answers of "404 unknown
+    model" (None = forever), then ``text``. Also records the gate's sleeps in
+    ``asked.slept`` instead of sleeping."""
     import kraken_train_svc.runner as kraken_runner
+    from atr_training.promote import NotYetVisible
 
-    asked: list[str] = []
+    class Asked(list):
+        slept: list[float]
+
+    asked = Asked()
+    asked.slept = []
 
     def recognizer(url, key):
         def recognize(model_id, image):
             asked.append(model_id)
+            if unknown_first is None or len(asked) <= unknown_first:
+                raise NotYetVisible(f"404 unknown model '{model_id}'")
             return text
         return recognize
 
     monkeypatch.setattr(kraken_runner, "http_recognizer", recognizer)
+    monkeypatch.setattr(Pipeline, "_gate_sleep", staticmethod(asked.slept.append))
     return asked
 
 
@@ -507,6 +519,191 @@ def test_a_gate_whose_registration_vanished_does_not_claim_a_promotion(
     assert job.status == "completed", job.error
     assert job.promoted is False
     assert "no registration" in job.promotion_reason
+
+
+def test_the_gate_waits_until_the_gateway_has_read_the_registration(
+        store, settings, monkeypatch):
+    """The gateway learns of trained/<id>.yaml only from a look that a request
+    starts and does not wait for, so the first gate request is always a 404
+    (#14 review). Asked again, it passes, and the file is flipped."""
+    asked = _gate_answers(monkeypatch, unknown_first=2)
+    settings = settings.model_copy(update={"gateway_api_key": "k"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert job.promoted is True, job.promotion_reason
+    assert len(asked) == 3
+    assert asked.slept == [settings.gateway_registry_retry_s] * 2
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is True
+
+
+def test_a_gateway_that_never_reads_the_registration_leaves_it_disabled(
+        store, settings, monkeypatch):
+    asked = _gate_answers(monkeypatch, unknown_first=None)
+    settings = settings.model_copy(update={
+        "gateway_api_key": "k", "gateway_registry_wait_s": 30.0,
+        "gateway_registry_retry_s": 10.0})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert job.promoted is False
+    assert len(asked) == 4 and asked.slept == [10.0] * 3
+    assert "never saw trained/kraken-thun-missiven-v1.yaml" in job.promotion_reason
+    assert "over 30 s" in job.promotion_reason
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is False
+
+
+# ── a model_id the gateway will never serve as a trained model ───────────────
+CURATED = """models:
+  - id: kraken-thun-missiven-v1
+    engine: kraken
+    zenodo_id: "10.5281/zenodo.1"
+"""
+
+
+def test_a_curated_model_id_is_refused_before_anything_is_copied(store, settings):
+    """The gateway skips a trained/<id>.yaml that shadows a curated id, and the
+    gate on that id is answered by the curated weights. The overlay's merge()
+    refused this (test_shadowing_a_tracked_id_is_a_hard_error); this is where
+    that rule lives now."""
+    settings.models_config.write_text(CURATED, encoding="utf-8")
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "failed"
+    assert job.error.startswith("StageFailed in register")
+    assert "is a curated id" in job.error and "Nothing was copied" in job.error
+    scratch = Path(job.checkpoint_dir) / "best_0.9550.mlmodel"
+    assert f"still at {scratch}" in job.error
+    assert scratch.read_bytes() == b"WEIGHTS"
+    assert not settings.trained_root.joinpath("kraken-thun-missiven-v1").exists()
+    assert not trained_dir(settings.registry_root).exists()
+
+
+def test_a_gate_on_a_curated_id_does_not_run(store, settings, monkeypatch):
+    """Should the id become curated between registering and the gate, the gate
+    would pass on the curated model's weights and flip a file nobody reads."""
+    asked = _gate_answers(monkeypatch)
+    real_register = Pipeline._register
+
+    def register_then_curate(self, job, weights, metrics):
+        path = real_register(self, job, weights, metrics)
+        settings.models_config.write_text(CURATED, encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(Pipeline, "_register", register_then_curate)
+    settings = settings.model_copy(update={"gateway_api_key": "k"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert asked == []
+    assert job.promoted is False and "is a curated id" in job.promotion_reason
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is False
+
+
+def test_an_unreadable_curated_registry_does_not_stop_a_registration(store, settings):
+    settings.models_config.write_text("models: [unclosed", encoding="utf-8")
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+    assert job.status == "completed", job.error
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1") is not None
+
+
+# ── retraining a model_id that is already registered ────────────────────────
+def _promoted_once(store, settings, monkeypatch) -> TrainerSettings:
+    _gate_answers(monkeypatch)
+    settings = settings.model_copy(update={"gateway_api_key": "k"})
+    first = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+    assert first.promoted is True, first.promotion_reason
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled
+    return settings
+
+
+def test_retraining_disables_the_old_registration_before_replacing_its_weights(
+        store, settings, monkeypatch):
+    """If the final write fails, an `enabled: true` from the earlier promotion
+    must not go on advertising weights that never passed the gate."""
+    import atr_training.runner_base as runner_base
+    import kraken_train_svc.runner as kraken_runner
+    from atr_training.registration import RegistrationError
+
+    settings = _promoted_once(store, settings, monkeypatch)
+    enabled_at_copy = []
+    real_copy = kraken_runner.shutil.copyfile
+
+    def watching_copy(src, dst):
+        enabled_at_copy.append(
+            read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled)
+        return real_copy(src, dst)
+
+    def share_gone(root, spec):
+        raise RegistrationError(registration_path(root, spec["id"]), "Host is down")
+
+    monkeypatch.setattr(kraken_runner.shutil, "copyfile", watching_copy)
+    monkeypatch.setattr(runner_base, "write_registration", share_gone)
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert enabled_at_copy == [False]
+    assert job.status == "failed" and "Host is down" in job.error
+    assert "previous registration of kraken-thun-missiven-v1 is still on the share " \
+           "(enabled: false)" in job.error
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is False
+
+
+def test_a_registration_that_cannot_be_disabled_keeps_its_weights(
+        store, settings, monkeypatch):
+    import atr_training.runner_base as runner_base
+    import kraken_train_svc.runner as kraken_runner
+    from atr_training.registration import RegistrationError
+
+    settings = _promoted_once(store, settings, monkeypatch)
+    weights = settings.trained_root / "kraken-thun-missiven-v1" / "kraken-thun-missiven-v1.mlmodel"
+    weights.write_bytes(b"PROMOTED")
+
+    def share_gone(root, model_id, enabled=True):
+        raise RegistrationError(registration_path(root, model_id), "Host is down")
+
+    def no_copy(src, dst):  # pragma: no cover - only runs if the guard fails
+        raise AssertionError("weights replaced under an enabled registration")
+
+    monkeypatch.setattr(runner_base, "set_enabled", share_gone)
+    monkeypatch.setattr(kraken_runner.shutil, "copyfile", no_copy)
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "failed"
+    assert "could not be read or disabled" in job.error and "Host is down" in job.error
+    assert "Nothing was copied" in job.error
+    assert weights.read_bytes() == b"PROMOTED"
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is True
+
+
+# ── weights the gateway could not open ──────────────────────────────────────
+def test_weights_off_the_share_are_not_registered(store, settings, monkeypatch):
+    """trained_root defaults to local disk. Registered from there, local_path
+    names a file idhefix cannot open, and the job used to read `completed`."""
+    import atr_training.runner_base as runner_base
+
+    real = runner_base._filesystem_of
+    monkeypatch.setattr(runner_base, "_filesystem_of", lambda path: (
+        -1 if Path(path).is_relative_to(settings.trained_root) else real(path)))
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    weights_dir = settings.trained_root / "kraken-thun-missiven-v1"
+    assert job.status == "failed"
+    assert "NOT registered" in job.error
+    assert f"the weights at {weights_dir} are not on the filesystem of the registry" in job.error
+    assert "ATR_TRAIN_TRAINED_ROOT" in job.error
+    assert "-m atr_training.registration --root" in job.error
+    assert (weights_dir / "metadata.json").is_file()
+    assert not trained_dir(settings.registry_root).exists()
+
+
+def test_weights_beside_the_registry_are_registered(store, settings):
+    """The same check passes on one filesystem — every other test here, too."""
+    import atr_training.runner_base as runner_base
+
+    assert runner_base._not_beside_the_registry(settings.trained_root.parent,
+                                                settings.registry_root) is None
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+    assert job.status == "completed", job.error
 
 
 # ── a failed job must carry its evidence, not just its exception type ────────
