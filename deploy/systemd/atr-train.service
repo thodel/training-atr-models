@@ -29,13 +29,28 @@ Environment=PYTHONPATH=%h/Repo/training-atr-models/src
 # TMPDIR comes from .env — dill reads it at import time, so a shell profile is too
 # late for a systemd service. Do NOT set HF_HOME: ~/.cache/huggingface/hub is a
 # symlink to the research share and must stay the effective cache.
-# Loopback, and written HERE rather than read from .env on purpose. The service
-# has no authentication of its own yet (training-atr-models#13); a bind that one
-# .env line could widen would let that change happen quietly and alone. Opening
-# it has to be an edit to this file, in git, next to the auth that makes it safe.
-ExecStart=%h/Repo/training-atr-models/.venvs/kraken-train/bin/python -m uvicorn kraken_train_svc.app:app --host 127.0.0.1 --port 8204
+# The bind is written HERE rather than read from .env, so that widening it is an
+# edit in git and never one quiet .env line. Since #13 it is 0.0.0.0 — idhefix's
+# gateway calls in — and that is only safe because of what now stands in front:
+# asteraix's ufw does not filter high ports (a listener on :8299 was reached from
+# idhefix AND from a VPN client, 16.09.2026) and nobody here has sudo for a
+# source rule, so the application is the only barrier.
+#
+# Hence the launcher, not uvicorn. `atr_training.serve` refuses any bind beyond
+# loopback (exit 2, naming what is missing) unless .env holds all three of
+#   ATR_TRAIN_REQUIRE_AUTH     true, the default
+#   ATR_TRAIN_API_KEY          32+ characters, the same value as on idhefix
+#   ATR_TRAIN_ALLOWED_CLIENTS  non-empty: 130.92.59.240, the gateway
+# and the service checks the same three on every non-loopback request, so a
+# hand-started uvicorn does not get around them. 0.0.0.0 rather than this box's
+# net0 address so loopback callers keep working (install_user_unit.sh checks
+# localhost:8204/health); the allowlist does the source filtering.
+ExecStart=%h/Repo/training-atr-models/.venvs/kraken-train/bin/python -m atr_training.serve --host 0.0.0.0 --port 8204
 Restart=on-failure
 RestartSec=5
+# A refused bind is a configuration error: restarting it every 5 s fixes nothing
+# and buries the one line that says what is missing.
+RestartPreventExitStatus=2
 # REQUIRED, and the reason is not obvious. The runner is spawned with
 # start_new_session=True, which gives it its own session and process group — but
 # a process group is NOT a cgroup. systemd's default KillMode=control-group kills

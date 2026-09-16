@@ -14,12 +14,20 @@ named ``kraken_train_svc`` because kraken was the first backend; the service is
 Endpoints mirror what the gateway proxies in #35:
 
     POST   /jobs              submit            → 202 {job_id}
+    POST   /jobs/verify       check a dataset spec, queue nothing
     GET    /jobs              list
     GET    /jobs/{id}         one record
     GET    /jobs/{id}/log     tail a stage log
+    GET    /jobs/{id}/curve   per-epoch metrics, live while training
     POST   /jobs/{id}/cancel  SIGTERM the process group
     DELETE /jobs/{id}         drop artifacts (never the registered model)
-    GET    /health
+    GET    /gpu               this machine's cards and who holds them
+    GET    /gpu-claim         whether a job holds the training card
+    GET    /health            the only route without a key
+
+Every route but ``/health`` needs ``X-API-Key`` and every caller must be
+loopback or in ``ATR_TRAIN_ALLOWED_CLIENTS`` (#13, :mod:`atr_training.access`).
+Start it with ``python -m atr_training.serve``, which refuses an unsafe bind.
 """
 
 from __future__ import annotations
@@ -30,14 +38,18 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import time
 from pathlib import Path
+from typing import get_args
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from atr_training import gpu as gpu_probe
+from atr_training.access import AccessGuard
 from atr_training.shared_registry import RegistryUnavailable, load_shared_registry
 from atr_training.base_models import BaseModelError, resolve_base_model
 from atr_training.backends import BACKENDS, UnknownBackend, backend_for
@@ -71,6 +83,12 @@ RUNNING_STATUSES = ("preparing", "compiling", "training", "testing", "registerin
 #: The stages that put a job on the card *while it runs*. Kept for reporting —
 #: the claim no longer gates on it, see :func:`_claim_from`.
 GPU_STAGES = frozenset({"train", "test"})
+
+#: The engines ``POST /jobs`` accepts, read off the request model itself so
+#: ``/health`` cannot advertise a list of its own. The gateway builds its engine
+#: check from this (serving#137) instead of importing ``BACKENDS``, which after
+#: the split would be another repository's code.
+ENGINES: tuple[str, ...] = tuple(sorted(get_args(TrainRequest.model_fields["engine"].annotation)))
 
 
 # ── wiring (overridable in tests via app.state) ─────────────────────────────
@@ -265,21 +283,29 @@ async def lifespan(_app: FastAPI):  # pragma: no cover - process lifecycle
             await task
 
 
-app = FastAPI(title="ATR Kraken Training Service", version="0.1.0", lifespan=lifespan)
+# /docs and /redoc off: Swagger UI fetches the schema without the key header, so
+# behind the key they could only render an error. /openapi.json stays, keyed.
+app = FastAPI(title="ATR Kraken Training Service", version="0.1.0", lifespan=lifespan,
+              docs_url=None, redoc_url=None)
+app.add_middleware(AccessGuard, settings=_settings)
 
 
 # ── endpoints ───────────────────────────────────────────────────────────────
-@app.get("/health")
-async def health() -> JSONResponse:
+def _health_body() -> dict:
     settings = _settings()
-    store = _store()
-    jobs = store.list()
+    jobs = _store().list()
     try:
         gpus = [g.__dict__ for g in query_gpus()]
     except PreflightError as exc:
         gpus = [{"error": str(exc)}]
-    return JSONResponse({
+    return {
         "status": "ok",
+        # Which machine answered. The gateway on idhefix reads this across the
+        # network now, and "ok" alone does not say from where.
+        "host": socket.gethostname(),
+        "engines": list(ENGINES),
+        "available_engines": [e for e in ENGINES
+                              if e in BACKENDS and settings.runner_python(e).exists()],
         "gpu": settings.gpu,
         "gpus": gpus,
         "jobs_root": str(settings.jobs_root),
@@ -299,7 +325,67 @@ async def health() -> JSONResponse:
         "jobs": {"total": len(jobs),
                  "running": len([j for j in jobs if j.status in RUNNING_STATUSES]),
                  "queued": len([j for j in jobs if j.status == "queued"])},
-    })
+    }
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Liveness, and what this host can train. Open: the one route without a key.
+
+    Off the event loop: it lists the job store on the share and shells out to
+    nvidia-smi, and the gateway now asks it with a 5 s timeout (serving#137)
+    while ``/gpu-claim`` shares this loop.
+    """
+    return JSONResponse(await asyncio.to_thread(_health_body))
+
+
+# HEAD is what `curl -I` and many probes send. Same answer, same exemption
+# (atr_training.access), and not a second entry in the schema.
+app.add_api_route("/health", health, methods=["HEAD"], include_in_schema=False)
+
+
+def _job_pids(jobs) -> dict[int, str]:
+    """pid -> job id for the runs this store says are live.
+
+    Live only. The gateway's version took every job with a pid, which was
+    harmless while the store had one writer. On the share it does not: after the
+    cutover this store holds the records idhefix wrote, each with an idhefix pid,
+    and a local process that happens to reuse one would be reported as that old
+    job's and dropped from ``unaccounted_mib`` — the silent failure #13 names.
+    A non-terminal job's pid is one this host's scheduler reconciled as alive
+    here (one trainer per store, #15).
+    """
+    return {job.pid: job.id for job in jobs if job.pid and not job.is_terminal}
+
+
+@app.get("/gpu")
+async def gpu() -> dict:
+    """This machine's cards, every process holding memory, and whose it is.
+
+    The shape the gateway's ``/train/gpu`` has always returned, plus ``host``;
+    the gateway now proxies here (serving#137) instead of reading its own cards.
+    See :mod:`atr_training.gpu` for what each field is for.
+    """
+    attribution = True
+    try:
+        jobs = await asyncio.to_thread(_store().list)
+    except OSError as exc:
+        # An unreadable store must not hide the cards. Everything is then
+        # unregistered, and the flag below says the attribution is missing.
+        logger.warning("job store unreadable for /gpu, reporting the cards "
+                       "unattributed: {}", exc)
+        jobs, attribution = [], False
+    job_pids = _job_pids(jobs)
+    try:
+        cards = await asyncio.to_thread(gpu_probe.inspect, job_pids)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — a wedged driver, a timeout
+        raise HTTPException(
+            status_code=502, detail=f"nvidia-smi failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    return {"host": socket.gethostname(), "cards": gpu_probe.card_rows(cards),
+            "job_attribution_available": attribution, "known_job_pids": len(job_pids)}
 
 
 def compute_gpu_claim() -> dict:
@@ -687,7 +773,7 @@ async def delete_job(job_id: str) -> dict:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    import uvicorn
+    # Through the launcher, so this entry point cannot bind what it would refuse.
+    from atr_training.serve import main
 
-    s = get_settings()
-    uvicorn.run(app, host=s.host, port=s.port)
+    raise SystemExit(main())

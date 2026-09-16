@@ -15,6 +15,8 @@ interpreter and runner module a job gets is looked up per engine in
 
 from __future__ import annotations
 
+import ipaddress
+from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
@@ -26,12 +28,96 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: ``<registry_root>/models.yaml`` — the gateway's ``CURATED_FILENAME``.
 CURATED_FILENAME = "models.yaml"
 
+#: Shortest ``ATR_TRAIN_API_KEY`` a non-loopback bind is started with.
+#: ``secrets.token_urlsafe(24)`` is 32 characters; anything shorter is a
+#: placeholder or a password somebody typed.
+MIN_API_KEY_LENGTH = 32
+
+
+@lru_cache(maxsize=16)
+def parse_allowed_clients(value: str) -> tuple:
+    """``ATR_TRAIN_ALLOWED_CLIENTS`` as a tuple of networks. Raises on any bad entry.
+
+    ``strict`` parsing on purpose: ``130.92.59.240/24`` is refused ("host bits
+    set") rather than quietly read as the whole /24 — a typo in the only source
+    restriction this box has must not widen it. ``/0`` is refused for the same
+    reason: it restricts nothing while looking like a rule. Empty items (a
+    trailing comma) are skipped. Cached because the middleware asks per request.
+    """
+    networks = []
+    for entry in (item.strip() for item in value.split(",")):
+        if not entry:
+            continue
+        try:
+            network = ipaddress.ip_network(entry)
+        except ValueError as exc:
+            raise ValueError(
+                f"ATR_TRAIN_ALLOWED_CLIENTS entry {entry!r} is not an IP address or "
+                f"network: {exc}") from None
+        if network.prefixlen == 0:
+            raise ValueError(
+                f"ATR_TRAIN_ALLOWED_CLIENTS entry {entry!r} admits every address; "
+                "name the hosts that may call (the gateway: 130.92.59.240)")
+        networks.append(network)
+    return tuple(networks)
+
 
 class TrainerSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ATR_TRAIN_", env_file=".env", extra="ignore")
 
+    #: Defaults for ``python -m atr_training.serve`` started by hand. The unit
+    #: passes both on its command line, so the deployed bind is in git.
     host: str = "127.0.0.1"
     port: int = 8204
+
+    # ── access (#13) ──────────────────────────────────────────────────────
+    #: The key a caller presents as ``X-API-Key``. **Shared with idhefix under the
+    #: same name**: the gateway reads its own ``ATR_TRAIN_API_KEY`` and sends it on
+    #: every ``/train/*`` call. Not the gateway's ``ATR_API_KEY`` — #9 split control
+    #: of this box from inference on that one, so a leaked caller key cannot start
+    #: training runs. Empty: this service answers nothing but ``/health``.
+    #: ``repr=False`` keeps it out of every repr of this object, and so out of logs.
+    api_key: str = Field(default="", repr=False)
+    #: A development switch, and only on loopback: a non-loopback client is never
+    #: served without the key, whatever this says (:mod:`atr_training.access`),
+    #: and the launcher refuses a non-loopback bind with it off.
+    require_auth: bool = True
+    #: Comma-separated IPs or CIDRs served besides loopback, which always is.
+    #: The only source restriction asteraix has: its ufw does not filter high
+    #: ports — a listener on :8299 was reached from idhefix and from a VPN client
+    #: on 16.09.2026 — and nobody there has sudo to add a rule. Empty admits
+    #: loopback callers only. A bad entry fails at startup, not at the first call.
+    allowed_clients: str = ""
+
+    @field_validator("allowed_clients")
+    @classmethod
+    def _allowed_clients_parse(cls, value: str) -> str:
+        parse_allowed_clients(value)
+        return value
+
+    def allowed_networks(self) -> tuple:
+        return parse_allowed_clients(self.allowed_clients)
+
+    def remote_access_problems(self) -> list[str]:
+        """What stops this service from serving a non-loopback caller; [] if nothing.
+
+        One list for two doors: the launcher refuses a non-loopback *bind* with
+        it, and the middleware refuses a non-loopback *client* with it — so
+        ``python -m uvicorn ... --host 0.0.0.0``, which skips the launcher, meets
+        the same three conditions at the first request. Names settings, never the
+        key's value or length.
+        """
+        problems = []
+        if not self.require_auth:
+            problems.append("ATR_TRAIN_REQUIRE_AUTH is false (allowed on a loopback bind only)")
+        if not self.api_key:
+            problems.append("ATR_TRAIN_API_KEY is empty")
+        elif len(self.api_key) < MIN_API_KEY_LENGTH:
+            problems.append(f"ATR_TRAIN_API_KEY is shorter than {MIN_API_KEY_LENGTH} characters")
+        if not self.allowed_networks():
+            problems.append("ATR_TRAIN_ALLOWED_CLIENTS is empty (name the gateway, "
+                            "130.92.59.240)")
+        return problems
 
     # ── layout ────────────────────────────────────────────────────────────
     #: One directory per job; all job state lives here (see jobstore).
@@ -169,9 +255,11 @@ class TrainerSettings(BaseSettings):
     #: to the engine: "can this box serve it" is a question about the path real
     #: clients take.
     gateway_url: str = "http://127.0.0.1:8200"
-    #: Same shared key the gateway already requires. Empty disables the gate,
-    #: which leaves models registered-but-disabled rather than wrongly advertised.
-    gateway_api_key: str = ""
+    #: The gateway's own ``ATR_API_KEY`` on idhefix, under this name here — not
+    #: ``api_key`` above, which guards the other direction (#9). Empty disables
+    #: the gate, which leaves models registered-but-disabled rather than wrongly
+    #: advertised.
+    gateway_api_key: str = Field(default="", repr=False)
     #: How long the gate keeps asking while the gateway answers ``404 unknown
     #: model``, and how far apart. The gateway reads ``trained/`` at most once per
     #: its ``registry_reload_interval_s`` (5 s), in a thread, and answers the

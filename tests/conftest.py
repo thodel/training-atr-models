@@ -14,6 +14,12 @@ checkout on asteraix, whose ``.env`` names that directory on purpose. Every
 pipeline test that reaches the register stage would then put a fake model into
 the registry the gateway on idhefix serves from. The gateway's suite had the same
 hole and closed it the same way (serving-atr-inference#138).
+
+The access settings (#13) are pinned the same way, for the same ``.env``: on
+asteraix it holds the real ``ATR_TRAIN_API_KEY``, which a test would otherwise
+read, send, and — on a failure — print. Every settings object in the suite gets
+:data:`TEST_API_KEY` instead, so the app's routes are exercised behind the real
+middleware; a test about an unconfigured trainer empties it explicitly.
 """
 
 from __future__ import annotations
@@ -29,6 +35,12 @@ import pytest
 # it with a real, empty directory per test.
 os.environ["ATR_TRAIN_REGISTRY_ROOT"] = "/nonexistent/atr-training-test-registry"
 os.environ["ATR_TRAIN_MODELS_CONFIG"] = ""
+
+#: Long enough for the launcher's 32-character floor, and recognisable in output.
+TEST_API_KEY = "test-trainer-key-0123456789abcdef-not-a-secret"
+os.environ["ATR_TRAIN_API_KEY"] = TEST_API_KEY
+os.environ["ATR_TRAIN_REQUIRE_AUTH"] = "true"
+os.environ["ATR_TRAIN_ALLOWED_CLIENTS"] = ""
 
 
 @pytest.fixture(autouse=True)
@@ -55,3 +67,18 @@ def _registry_never_touches_the_share(tmp_path_factory, monkeypatch):
     root = tmp_path_factory.mktemp("registry")
     monkeypatch.setenv("ATR_TRAIN_REGISTRY_ROOT", str(root))
     monkeypatch.setenv("ATR_TRAIN_MODELS_CONFIG", "")
+
+
+@pytest.fixture(autouse=True)
+def _access_settings_never_come_from_env_files(monkeypatch):
+    """Per test, for the reason the registry root is: a test that changes one of
+    these gets the suite's values back instead of leaking its own."""
+    monkeypatch.setenv("ATR_TRAIN_API_KEY", TEST_API_KEY)
+    monkeypatch.setenv("ATR_TRAIN_REQUIRE_AUTH", "true")
+    monkeypatch.setenv("ATR_TRAIN_ALLOWED_CLIENTS", "")
+
+
+@pytest.fixture
+def trainer_key() -> str:
+    """The key every ``TrainerSettings`` in the suite carries."""
+    return TEST_API_KEY

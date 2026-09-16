@@ -95,14 +95,20 @@ def app():
     return app_module.app
 
 
+#: Starlette's test client reports the host "testclient", which the access
+#: middleware refuses as it would any peer it cannot place (#13).
+LOOPBACK = ("127.0.0.1", 50000)
+
+
 @pytest.fixture
-def client(settings: TrainerSettings, spawn: FakeSpawn):
+def client(settings: TrainerSettings, spawn: FakeSpawn, trainer_key: str):
+    """The app behind its real middleware: a loopback caller with the key."""
     app = app_module.app
     app.state.settings = settings
     app.state.store = JobStore(settings.jobs_root)
     app.state.spawn = spawn
     app.state.vram_check = free_gpu
-    with TestClient(app) as c:
+    with TestClient(app, client=LOOPBACK, headers={"X-API-Key": trainer_key}) as c:
         yield c
     for attr in ("settings", "store", "spawn", "vram_check", "verify_spec"):
         if hasattr(app.state, attr):

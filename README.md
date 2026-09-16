@@ -34,6 +34,24 @@ Drei HTTP-Kanten, keine geteilte Python-Abhängigkeit:
 Die **Gewichte** queren gar kein Netz: beide Maschinen mounten
 `/mnt/wbkolleg_dh_1`.
 
+## Zugriff auf den Trainer (#13)
+
+Der Trainer bindet an `0.0.0.0:8204`. Die ufw auf asteraix filtert hohe Ports
+nicht, und niemand hat sudo für eine Quellregel — die Anwendung ist also die
+einzige Sperre, und sie sperrt im Zweifel:
+
+- Gestartet wird nur über `python -m atr_training.serve` (so auch die Unit). Der
+  Launcher verweigert jeden Bind ausserhalb von Loopback (Exit 2), solange in der
+  `.env` nicht alle drei stehen: `ATR_TRAIN_REQUIRE_AUTH` (Standard: an),
+  `ATR_TRAIN_API_KEY` (mindestens 32 Zeichen, **derselbe Wert wie auf idhefix**,
+  nicht der `ATR_API_KEY` des Gateways, #9) und `ATR_TRAIN_ALLOWED_CLIENTS`
+  (`130.92.59.240`).
+- Jede Route ausser `GET`/`HEAD /health` verlangt `X-API-Key`; Aufrufer ausserhalb
+  von Loopback und Allowlist bekommen 403, ein Trainer ohne Schlüssel beantwortet
+  nur `/health` (503). `/docs` und `/redoc` sind abgeschaltet.
+- `/health` nennt `engines` und `available_engines`, `GET /gpu` liest die Karten
+  **dieser** Maschine — der Gateway proxt beides (serving-atr-inference#137).
+
 ## Stand
 
 Im Aufbau. Plan und Reihenfolge:

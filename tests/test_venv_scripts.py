@@ -58,12 +58,17 @@ def test_the_checkpoint_root_is_never_on_the_share():
     assert not root.startswith("/mnt/"), root
 
 
-def test_the_unit_binds_loopback_in_the_unit_itself():
-    """Opening the service has to be a visible edit, next to its auth (#13)."""
+def test_the_bind_is_written_in_the_unit_itself():
+    """Widening the bind has to be a visible edit in git, not a .env line (#13).
+
+    It was loopback until #13 opened it; what makes 0.0.0.0 safe is pinned in
+    tests/test_trainer_access.py.
+    """
     unit = (REPO / "deploy/systemd/atr-train.service").read_text(encoding="utf-8")
     exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
-    assert "--host 127.0.0.1" in exec_line
-    assert "${" not in exec_line, "the bind must not come from the environment"
+    assert "--host 0.0.0.0" in exec_line and "--port 8204" in exec_line
+    assert "${" not in exec_line and "$ATR" not in exec_line, \
+        "the bind must not come from the environment"
 
 
 def test_the_unit_keeps_detached_runs_alive():
