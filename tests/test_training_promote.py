@@ -97,3 +97,32 @@ def test_flipping_a_model_that_is_not_there_reports_it(tmp_path: Path):
     overlay = tmp_path / "models.local.yaml"
     upsert_entry(overlay, trained("a"))
     assert set_enabled(overlay, "ghost", True) is False
+
+
+def test_the_gate_asks_for_a_model_that_is_not_enabled_yet(monkeypatch, tmp_path):
+    """Without the header the gateway answers 404 for every fresh registration.
+
+    That is how the gate behaved until the review of serving-atr-inference#138:
+    the model under test is registered enabled: false, and the gateway refuses a
+    disabled id to every caller. The value must match the gateway's.
+    """
+    import httpx
+
+    from atr_training.promote import PROMOTION_GATE_HEADER, http_recognizer
+
+    sent = {}
+
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return {"text": "ok"}
+
+    def post(url, headers=None, **kwargs):
+        sent.update(headers or {})
+        return Response()
+
+    monkeypatch.setattr(httpx, "post", post)
+    page = tmp_path / "page.jpg"
+    page.write_bytes(b"\xff\xd8\xff")
+    http_recognizer("http://127.0.0.1:8200", "k")("kraken-new", page)
+    assert PROMOTION_GATE_HEADER == "X-ATR-Promotion-Gate"
+    assert sent.get(PROMOTION_GATE_HEADER) == "1"
