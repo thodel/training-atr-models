@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# 77+ for the SPDX string form of `license` below; the TOML-table form
+# setuptools has accepted until now is deprecated and stops building 2027-02-18.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +9,7 @@ name = "training-atr-models"
 version = "0.1.0"
 description = "Training ATR models — kraken, TrOCR and VLM fine-tuning, split out of serving-atr-inference"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 # Orchestration deps ONLY. Every module-level third-party import in this package
 # is one of these five plus uvicorn and httpx; torch, transformers, peft, datasets
 # and PIL are imported *inside functions* and live in the per-engine venvs
