@@ -16,6 +16,8 @@ interpreter and runner module a job gets is looked up per engine in
 from __future__ import annotations
 
 import ipaddress
+import re
+import socket
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from atr_training.backends import runner_python
+from atr_training.jobstore import LEGACY_JOB_HOST, SLURM_HOST
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 #: ``<registry_root>/models.yaml`` — the gateway's ``CURATED_FILENAME``.
@@ -32,6 +35,9 @@ CURATED_FILENAME = "models.yaml"
 #: ``secrets.token_urlsafe(24)`` is 32 characters; anything shorter is a
 #: placeholder or a password somebody typed.
 MIN_API_KEY_LENGTH = 32
+
+#: What a host id may look like: it is written into job.json and claim files.
+_HOST_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 @lru_cache(maxsize=16)
@@ -119,6 +125,39 @@ class TrainerSettings(BaseSettings):
                             "130.92.59.240)")
         return problems
 
+    # ── which host this is (#15) ──────────────────────────────────────────
+    #: The name this service stamps on every job it accepts, and the only jobs it
+    #: will spawn, reconcile, cancel or count on its card. A pid means something
+    #: only on the machine that assigned it: with two trainers on one store, each
+    #: read the other's pids against its own /proc and wrote ``failed`` into runs
+    #: that were training on the other machine.
+    #:
+    #: A setting, not ``gethostname()``, because the hostnames are no identity:
+    #: idhefix reports ``srv`` and asteraix ``dhserver03`` (measured 16.09.2026).
+    #: The hostname stays the default so a box nobody configured still has a
+    #: stable name of its own.
+    host_id: str = Field(default_factory=socket.gethostname, validate_default=True)
+    #: The host a record WITHOUT ``host`` belongs to. Every such record in the
+    #: shared store — all 48 on 16.09.2026 — was written by the old trainer on
+    #: idhefix, which predates the field and will never write it.
+    legacy_job_host: str = LEGACY_JOB_HOST
+
+    @field_validator("host_id", "legacy_job_host")
+    @classmethod
+    def _host_names_are_plain(cls, value: str, info: ValidationInfo) -> str:
+        # The name goes into job records, claim files and log lines, and is
+        # compared byte for byte: a stray space would be a host nobody owns.
+        if not _HOST_ID_RE.fullmatch(value or ""):
+            env = f"ATR_TRAIN_{info.field_name.upper()}"
+            raise ValueError(f"{env} must be non-empty and match {_HOST_ID_RE.pattern}, "
+                             f"got {value!r}")
+        if info.field_name == "host_id" and value == SLURM_HOST:
+            # Slurm supervises those jobs. A trainer calling itself this would
+            # spawn every job UBELIX has queued, onto its own card.
+            raise ValueError(f"ATR_TRAIN_HOST_ID={SLURM_HOST!r} is reserved for jobs "
+                             "Slurm runs on UBELIX; no trainer may take it")
+        return value
+
     # ── layout ────────────────────────────────────────────────────────────
     #: One directory per job; all job state lives here (see jobstore).
     jobs_root: Path = Path.home() / "atr-cache" / "training"
@@ -130,6 +169,13 @@ class TrainerSettings(BaseSettings):
     #: ``_write_registration``) rather than served as a path idhefix cannot open.
     #: Absolute, for the reason ``registry_root`` is.
     trained_root: Path = Path.home() / "atr-cache" / "trained"
+    #: A weights directory under ``trained_root`` without ``metadata.json`` is
+    #: removed only once nothing in it has changed for this many hours. A
+    #: registration writes ``metadata.json`` LAST, so a directory in the middle of
+    #: one looks exactly like an orphan — and ``trained_root`` is shared, so the
+    #: registration can be the other machine's, for a job this store has never
+    #: seen (#15). At least an hour: a VLM registration copies gigabytes over SMB.
+    orphan_weights_min_age_h: float = Field(default=24.0, ge=1.0)
     #: The shared registry directory (#5, #14) — MUST equal the gateway's
     #: ``ATR_REGISTRY_ROOT`` on idhefix. The gateway publishes the curated
     #: ``models.yaml`` here, and every trained model is registered here as

@@ -21,10 +21,13 @@ four arms writing one report would each read back whichever CER landed last.
 
 The compiled JSONL names crops as ``data/crops/<role>/<n>.jpg`` relative to the
 job root, so ``<clone>/data/crops`` → symlink resolves to the shared tree.
+
+Every clone is stamped ``host: ubelix``, whatever the source says, for the reason
+``submit_job.py`` stamps it: ``train.sbatch`` runs them, and no trainer may (#15).
 """
 import sys
 
-from atr_training.jobstore import JobStore
+from atr_training.jobstore import SLURM_HOST, JobStore
 
 #: What the clones read and never write. eval_report.json is deliberately absent.
 SHARED_INPUTS = ("crops", "pages", "train.jsonl", "val.jsonl",
@@ -46,7 +49,7 @@ def fan_out(jobs_root: str, prepared_id: str, arms: list[tuple[str, str]]) -> li
     for model_id, base_model in arms:
         request = source.request.model_copy(update={"model_id": model_id,
                                                     "base_model": base_model})
-        job = store.create(request)
+        job = store.create(request, host=SLURM_HOST)
         for status in ("preparing", "compiling", "training"):
             store.advance(job, status)
         data = store.paths(job.id).data

@@ -105,7 +105,7 @@ def client(settings: TrainerSettings, spawn: FakeSpawn, trainer_key: str):
     """The app behind its real middleware: a loopback caller with the key."""
     app = app_module.app
     app.state.settings = settings
-    app.state.store = JobStore(settings.jobs_root)
+    app.state.store = JobStore(settings.jobs_root, host_id=settings.host_id)
     app.state.spawn = spawn
     app.state.vram_check = free_gpu
     with TestClient(app, client=LOOPBACK, headers={"X-API-Key": trainer_key}) as c:

@@ -23,7 +23,7 @@ def make_request(model_id: str = "kraken-thun-missiven-v1") -> TrainRequest:
 
 @pytest.fixture
 def store(tmp_path: Path) -> JobStore:
-    return JobStore(tmp_path / "training")
+    return JobStore(tmp_path / "training", host_id="asteraix")
 
 
 def test_create_lays_out_the_job_directory(store: JobStore):
@@ -267,7 +267,7 @@ def test_without_proc_it_falls_back_to_the_signal_probe(tmp_path):
 
 def test_reconcile_fails_a_job_whose_runner_went_defunct(tmp_path):
     """The end-to-end shape of #118: the record must move, and say why."""
-    store = JobStore(tmp_path / "jobs")
+    store = JobStore(tmp_path / "jobs", host_id="asteraix")
     job = store.create(make_request())
     job.pid = 2786095
     for status in ("preparing", "compiling", "training"):

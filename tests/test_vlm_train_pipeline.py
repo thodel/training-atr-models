@@ -163,7 +163,7 @@ def settings(tmp_path: Path) -> TrainerSettings:
 
 @pytest.fixture
 def store(settings: TrainerSettings) -> JobStore:
-    return JobStore(settings.jobs_root)
+    return JobStore(settings.jobs_root, host_id=settings.host_id)
 
 
 def request_with(**kw) -> TrainRequest:

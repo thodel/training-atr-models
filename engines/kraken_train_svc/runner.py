@@ -364,8 +364,9 @@ class Pipeline(BasePipeline):
         Atomic registration: ``metadata.json`` is written to a temp file first,
         then renamed over the weights copy. Any failure between the copy and the
         rename (full disk, CIFS hiccup, cancellation) leaves no partial artifact:
-        a directory without a ``metadata.json`` is an unambiguous orphan and is
-        cleaned up by :func:`cleanup_orphaned_weights`.
+        a directory without a ``metadata.json`` is an orphan, and the service
+        removes it once it has been left alone long enough that it cannot be a
+        registration still under way (``kraken_train_svc.app._cleanup_orphaned_weights``).
         """
         model_id = job.request.model_id
         dest_dir = self.settings.trained_root / model_id
@@ -419,28 +420,6 @@ class Pipeline(BasePipeline):
         }, dest_dir)
         logger.info("registered {} -> {} (disabled until promoted)", model_id, dest)
         return dest
-
-    def cleanup_orphaned_weights(self) -> int:
-        """Remove weight directories that have no ``metadata.json``.
-
-        Called on service startup and after a failed register stage (directly
-        or via the DELETE endpoint). A directory without metadata is an orphan
-        — it was left behind by a registration that never completed.
-
-        Returns the number of directories removed.
-        """
-        trained = Path(self.settings.trained_root)
-        removed = 0
-        for entry in trained.iterdir():
-            if not entry.is_dir():
-                continue
-            if (entry / "metadata.json").is_file():
-                continue
-            logger.warning("removing orphaned weights directory: {}", entry.name)
-            shutil.rmtree(entry)
-            removed += 1
-        return removed
-
 
     def _promote(self, job: TrainJob, model_path: Path) -> PromotionResult:
         """Serve one held-out page through the gateway; advertise only if it works.

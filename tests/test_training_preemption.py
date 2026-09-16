@@ -49,7 +49,7 @@ def settings(tmp_path):
 
 @pytest.fixture
 def store(settings):
-    return JobStore(settings.jobs_root)
+    return JobStore(settings.jobs_root, host_id=settings.host_id)
 
 
 # ── the lifecycle ───────────────────────────────────────────────────────────

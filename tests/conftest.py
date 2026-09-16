@@ -20,6 +20,10 @@ asteraix it holds the real ``ATR_TRAIN_API_KEY``, which a test would otherwise
 read, send, and — on a failure — print. Every settings object in the suite gets
 :data:`TEST_API_KEY` instead, so the app's routes are exercised behind the real
 middleware; a test about an unconfigured trainer empties it explicitly.
+
+The host identity (#15) too: that ``.env`` says ``ATR_TRAIN_HOST_ID=asteraix``,
+and a suite whose idea of "this host" changes with the machine it runs on would
+pass or fail by where it ran. :data:`TEST_HOST_ID` is a name no real host has.
 """
 
 from __future__ import annotations
@@ -41,6 +45,11 @@ TEST_API_KEY = "test-trainer-key-0123456789abcdef-not-a-secret"
 os.environ["ATR_TRAIN_API_KEY"] = TEST_API_KEY
 os.environ["ATR_TRAIN_REQUIRE_AUTH"] = "true"
 os.environ["ATR_TRAIN_ALLOWED_CLIENTS"] = ""
+
+#: "This host" for every settings object in the suite.
+TEST_HOST_ID = "test-trainer"
+os.environ["ATR_TRAIN_HOST_ID"] = TEST_HOST_ID
+os.environ["ATR_TRAIN_LEGACY_JOB_HOST"] = "idhefix"
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +85,13 @@ def _access_settings_never_come_from_env_files(monkeypatch):
     monkeypatch.setenv("ATR_TRAIN_API_KEY", TEST_API_KEY)
     monkeypatch.setenv("ATR_TRAIN_REQUIRE_AUTH", "true")
     monkeypatch.setenv("ATR_TRAIN_ALLOWED_CLIENTS", "")
+
+
+@pytest.fixture(autouse=True)
+def _host_identity_never_comes_from_env_files(monkeypatch):
+    """Per test, like the access settings."""
+    monkeypatch.setenv("ATR_TRAIN_HOST_ID", TEST_HOST_ID)
+    monkeypatch.setenv("ATR_TRAIN_LEGACY_JOB_HOST", "idhefix")
 
 
 @pytest.fixture

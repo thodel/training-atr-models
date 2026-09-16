@@ -700,7 +700,13 @@ class TrainJob(BaseModel):
     updated_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = None
     finished_at: datetime | None = None
-    #: PID of the detached runner process group leader.
+    #: The host whose service accepted the job (``TrainerSettings.host_id``), or
+    #: ``ubelix`` for a record Slurm supervises. Only that host may spawn,
+    #: reconcile or signal it, because ``pid`` below means nothing anywhere else
+    #: (#15). None on the records written before the field existed; read those
+    #: through :meth:`JobStore.host_of`, never directly.
+    host: str | None = None
+    #: PID of the detached runner process group leader — on ``host``.
     pid: int | None = None
     #: Why a queued job has not started yet (e.g. another job is running, or the
     #: GPU is busy). Never a failure — a queued job is still going to run.

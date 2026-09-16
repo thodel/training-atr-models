@@ -110,7 +110,7 @@ def test_the_prepare_stage_drops_reserved_pages(tmp_path, monkeypatch):
     monkeypatch.setattr("atr_training.runner_base.load_heldout",
                         lambda: load_heldout(registry))
 
-    store = JobStore(tmp_path / "jobs")
+    store = JobStore(tmp_path / "jobs", host_id="asteraix")
     job = TrainJob(id="20260915T000000Z-kraken-heldout",
                    request=TrainRequest(engine="kraken", model_id="kraken-heldout",
                                         datasets=[DatasetSpec(hf_repo="dh-unibe/x")]))
@@ -141,7 +141,7 @@ def test_a_selection_that_is_the_eval_set_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr("atr_training.runner_base.load_heldout",
                         lambda: load_heldout(registry))
 
-    store = JobStore(tmp_path / "jobs")
+    store = JobStore(tmp_path / "jobs", host_id="asteraix")
     job = TrainJob(id="20260915T000000Z-kraken-alleval",
                    request=TrainRequest(engine="kraken", model_id="kraken-alleval",
                                         datasets=[DatasetSpec(hf_repo="dh-unibe/x")]))
@@ -163,7 +163,7 @@ def test_a_line_granularity_manifest_is_left_alone(tmp_path, monkeypatch):
     from atr_training.settings import TrainerSettings
     from kraken_train_svc.runner import Pipeline
 
-    store = JobStore(tmp_path / "jobs")
+    store = JobStore(tmp_path / "jobs", host_id="asteraix")
     job = TrainJob(id="20260915T000000Z-kraken-lines",
                    request=TrainRequest(engine="kraken", model_id="kraken-lines",
                                         datasets=[DatasetSpec(hf_repo="dh-unibe/x")]))

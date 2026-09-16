@@ -66,7 +66,7 @@ def _job(store, settings, *, spec=CRUSHING_SPEC, pages=3, base_model=None, force
 
 
 def test_a_spec_that_crushes_the_line_is_refused(settings):
-    store = JobStore(settings.jobs_root)
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
     job, pipeline = _job(store, settings)
     with pytest.raises(StageFailed) as excinfo:
         pipeline._guard_line_geometry(job)
@@ -76,7 +76,7 @@ def test_a_spec_that_crushes_the_line_is_refused(settings):
 
 
 def test_a_generous_spec_passes(settings):
-    store = JobStore(settings.jobs_root)
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
     job, pipeline = _job(store, settings, spec=TALL_SPEC)
     pipeline._guard_line_geometry(job)  # does not raise
 
@@ -84,7 +84,7 @@ def test_a_generous_spec_passes(settings):
 def test_force_records_the_override_separately_from_convergence(settings):
     """A run that was known to be geometrically doomed must be distinguishable
     later from one that merely had too few steps."""
-    store = JobStore(settings.jobs_root)
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
     job, pipeline = _job(store, settings, force=True)
     pipeline._guard_line_geometry(job)
     assert job.geometry_override is not None
@@ -96,7 +96,7 @@ def test_finetuning_is_not_judged_because_kraken_ignores_the_spec(settings):
     """``--spec`` is dead text when ``--load`` is given: the loaded network's own
     architecture decides the geometry, so refusing on this spec would refuse a
     configuration that will never be used."""
-    store = JobStore(settings.jobs_root)
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
     job, pipeline = _job(store, settings, base_model="kraken-early_modern_german")
     pipeline._guard_line_geometry(job)  # does not raise
 
@@ -104,12 +104,12 @@ def test_finetuning_is_not_judged_because_kraken_ignores_the_spec(settings):
 def test_without_pagexml_the_guard_declines_to_judge(settings):
     """Line-level datasets (#45) arrive as crops with no geometry to measure. A
     guard that cannot measure must not refuse."""
-    store = JobStore(settings.jobs_root)
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
     job, pipeline = _job(store, settings, pages=0)
     pipeline._guard_line_geometry(job)  # does not raise
 
 
 def test_an_unparseable_spec_is_left_to_ketos(settings):
-    store = JobStore(settings.jobs_root)
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
     job, pipeline = _job(store, settings, spec="not a vgsl spec at all")
     pipeline._guard_line_geometry(job)  # does not raise

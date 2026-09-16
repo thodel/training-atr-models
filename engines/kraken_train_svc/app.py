@@ -19,7 +19,7 @@ Endpoints mirror what the gateway proxies in #35:
     GET    /jobs/{id}         one record
     GET    /jobs/{id}/log     tail a stage log
     GET    /jobs/{id}/curve   per-epoch metrics, live while training
-    POST   /jobs/{id}/cancel  SIGTERM the process group
+    POST   /jobs/{id}/cancel  SIGTERM the process group (this host's jobs only)
     DELETE /jobs/{id}         drop artifacts (never the registered model)
     GET    /gpu               this machine's cards and who holds them
     GET    /gpu-claim         whether a job holds the training card
@@ -28,6 +28,10 @@ Endpoints mirror what the gateway proxies in #35:
 Every route but ``/health`` needs ``X-API-Key`` and every caller must be
 loopback or in ``ATR_TRAIN_ALLOWED_CLIENTS`` (#13, :mod:`atr_training.access`).
 Start it with ``python -m atr_training.serve``, which refuses an unsafe bind.
+
+The job store is on the share and may hold other hosts' jobs (#15). They are
+listed and readable here like any other; this service spawns, reconciles,
+signals and counts only the jobs stamped with its own ``ATR_TRAIN_HOST_ID``.
 """
 
 from __future__ import annotations
@@ -65,7 +69,7 @@ from atr_training.hf_source import (
     VerificationUnavailable,
     verify_dataset_spec,
 )
-from atr_training.jobstore import JobStore, JobStoreError, reap_children
+from atr_training.jobstore import SLURM_HOST, JobStore, JobStoreError, reap_children
 
 from atr_training.preflight import (
     PreflightError,
@@ -99,7 +103,9 @@ def _settings() -> TrainerSettings:
 def _store() -> JobStore:
     store = getattr(app.state, "store", None)
     if store is None:
-        store = JobStore(_settings().jobs_root)
+        settings = _settings()
+        store = JobStore(settings.jobs_root, host_id=settings.host_id,
+                         legacy_host=settings.legacy_job_host)
         app.state.store = store
     return store
 
@@ -173,14 +179,27 @@ def schedule_once(
         logger.debug("reaped {} finished runner(s)", reaped)
 
     jobs = [store.reconcile(j) for j in store.list()]
+    # Only this host's jobs, for the count as much as for the queue (#15):
+    # max_concurrent is about THIS box's card, and another host's run neither
+    # occupies it nor is ours to start. Nor are their records ours to write —
+    # hold() below saves every job it considers.
+    mine = [j for j in jobs if store.owns(j)]
+    unspawned = [j for j in mine if j.status == "queued" and j.pid is None]
+    # Claimed but no pid yet: a scheduler of this host is starting it right now,
+    # between claim and pid save. It holds a slot, and it is not offered again —
+    # saving its record here could land after that pid save and erase it. A claim
+    # that never gets its pid is failed by reconcile above, so this cannot hold a
+    # slot for longer than CLAIM_ORPHAN_AFTER_S.
+    starting = {j.id for j in unspawned if store.is_claimed(j.id)}
     # A job stays "queued" from the moment it is spawned until its detached runner
     # writes the first status — a window that a second submit lands in easily,
     # since submitting schedules immediately. A queued job with a live pid has
     # therefore already been started, and starting it again would put two runners
     # on one job directory and one GPU.
-    running = [j for j in jobs
-               if j.status in RUNNING_STATUSES or (j.status == "queued" and j.pid is not None)]
-    queued = sorted([j for j in jobs if j.status == "queued" and j.pid is None],
+    running = [j for j in mine
+               if j.status in RUNNING_STATUSES or (j.status == "queued" and j.pid is not None)
+               or j.id in starting]
+    queued = sorted([j for j in unspawned if j.id not in starting],
                     key=lambda j: j.created_at)
     if not queued:
         return None
@@ -192,7 +211,9 @@ def schedule_once(
                 store.save(job)
 
     if len(running) >= settings.max_concurrent:
-        hold(f"waiting for {running[0].id} ({running[0].status})")
+        first = running[0]
+        hold(f"waiting for {first.id} "
+             f"({'starting' if first.id in starting else first.status})")
         return None
 
     # The oldest queued job goes first — no reordering to fit a smaller job into
@@ -203,6 +224,18 @@ def schedule_once(
         gpu = vram_check(settings.gpu, settings.min_free_vram_for(job.request.engine))
     except PreflightError as exc:
         hold(str(exc))
+        return None
+
+    # The claim is what makes "listed as unspawned" and "started by us" one
+    # step: whoever creates the file spawns, everyone else stands aside.
+    try:
+        store.claim(job.id)
+    except FileExistsError:
+        logger.info("{} was claimed by another scheduler since this tick listed it; "
+                    "leaving the start to that one", job.id)
+        return None
+    except OSError as exc:
+        hold(f"could not claim {job.id} for spawning: {exc}")
         return None
 
     logger.info("starting {} ({} job; GPU {} has {} MB free)",
@@ -241,23 +274,95 @@ async def _scheduler() -> None:  # pragma: no cover - timing loop
         await asyncio.sleep(_settings().poll_interval_s)
 
 
-def _cleanup_orphaned_weights(trained_root: Path | str) -> int:
-    """Remove weight directories that have no ``metadata.json``.
+def _newest_mtime(directory: Path) -> float:
+    """The latest mtime of ``directory`` and its top-level entries.
 
-    A directory without metadata is an orphan — it was left behind by a
-    registration that died before completing.  Called on service startup and
-    after DELETE, so orphans never accumulate.
+    A registration adds and rewrites entries at the top level, which moves either
+    the directory's own mtime or the entry's; one level is enough to see it.
+    """
+    newest = directory.stat().st_mtime
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+    return newest
+
+
+def _names_directory(job: TrainJob, directory: Path) -> bool:
+    """Whether ``job`` will register into, or has registered into, ``directory``.
+
+    Every runner registers into ``<trained_root>/<model_id>``; ``model_path`` is
+    that directory or a file in it, depending on the engine.
+    """
+    if job.request.model_id == directory.name:
+        return True
+    if not job.model_path:
+        return False
+    path = Path(job.model_path)
+    return path == directory or directory in path.parents
+
+
+def _cleanup_orphaned_weights(trained_root: Path | str, store: JobStore,
+                              min_age_h: float, now: float | None = None) -> int:
+    """Remove weight directories a registration left behind unfinished.
+
+    A registration writes ``metadata.json`` last, so a directory without it is
+    either an orphan or a registration still under way — and ``trained_root`` is
+    on the share, so the registration may be the other machine's (#15). Until
+    then this removed every directory without the file on each DELETE, and
+    would have deleted a model mid-registration on the other host with no word
+    to anyone. A directory goes only if ALL hold:
+
+    * it has no ``metadata.json``;
+    * nothing in it changed for ``min_age_h`` hours — a registration in progress
+      keeps writing, and this also covers one from a store this service does not
+      read;
+    * no job of ANY host in this store that is not terminal names it — a
+      registration that stalls is still its job's, and a job that has not
+      registered yet will write there.
+
+    Every candidate kept is logged with the reason, and every removal. Anything
+    that cannot be read keeps the directory: a wrong keep costs disk, a wrong
+    removal costs a trained model.
     """
     trained_root = Path(trained_root)
-    if not trained_root.is_dir():
+    try:
+        candidates = [entry for entry in trained_root.iterdir()
+                      if entry.is_dir() and not (entry / "metadata.json").is_file()]
+    except FileNotFoundError:
         return 0
+    except OSError as exc:
+        logger.warning("orphan cleanup skipped, {} is unreadable: {}", trained_root, exc)
+        return 0
+    if not candidates:
+        return 0
+    try:
+        live = [job for job in store.list() if not job.is_terminal]
+    except OSError as exc:
+        logger.warning("orphan cleanup skipped, the job store is unreadable ({}); keeping {} "
+                       "weights directories without metadata.json", exc, len(candidates))
+        return 0
+
+    now = time.time() if now is None else now
     removed = 0
-    for entry in trained_root.iterdir():
-        if not entry.is_dir():
+    for entry in candidates:
+        owner = next((job for job in live if _names_directory(job, entry)), None)
+        if owner is not None:
+            logger.info("keeping {} (no metadata.json): job {} on host {} is {} and names it",
+                        entry.name, owner.id, store.host_of(owner), owner.status)
             continue
-        if (entry / "metadata.json").is_file():
+        try:
+            age_h = (now - _newest_mtime(entry)) / 3600
+        except OSError as exc:
+            logger.info("keeping {} (no metadata.json): its age cannot be read: {}",
+                        entry.name, exc)
             continue
-        logger.warning("removing orphaned weights directory: {}", entry.name)
+        if age_h < min_age_h:
+            logger.info("keeping {} (no metadata.json): changed {:.1f} h ago, under the "
+                        "{:g} h a registration in progress is allowed", entry.name, age_h,
+                        min_age_h)
+            continue
+        logger.warning("removing orphaned weights directory {}: no metadata.json, unchanged "
+                       "for {:.1f} h, and no live job names it", entry.name, age_h)
         shutil.rmtree(entry, ignore_errors=True)
         removed += 1
     return removed
@@ -270,6 +375,10 @@ async def lifespan(_app: FastAPI):  # pragma: no cover - process lifecycle
     # A restart must not leave a killed job looking like it is still training.
     for job in _store().list():
         _store().reconcile(job)
+    # Its docstring always said "on startup", but until #15 only DELETE called it,
+    # so a registration that died stayed until someone deleted some job. It is
+    # safe here only because of the conditions #15 added.
+    _cleanup_orphaned_weights(settings.trained_root, _store(), settings.orphan_weights_min_age_h)
     # Seeded before the first tick: an empty cache would answer "no claim" to the
     # gateway, which is the one wrong answer this must never give.
     refresh_gpu_claim(_store().list())
@@ -344,18 +453,21 @@ async def health() -> JSONResponse:
 app.add_api_route("/health", health, methods=["HEAD"], include_in_schema=False)
 
 
-def _job_pids(jobs) -> dict[int, str]:
-    """pid -> job id for the runs this store says are live.
+def _job_pids(store: JobStore, jobs) -> dict[int, str]:
+    """pid -> job id for this host's runs that the store says are live.
 
     Live only. The gateway's version took every job with a pid, which was
     harmless while the store had one writer. On the share it does not: after the
     cutover this store holds the records idhefix wrote, each with an idhefix pid,
     and a local process that happens to reuse one would be reported as that old
     job's and dropped from ``unaccounted_mib`` — the silent failure #13 names.
-    A non-terminal job's pid is one this host's scheduler reconciled as alive
-    here (one trainer per store, #15).
+
+    This host's only, for the same reason: a live job of another host carries
+    that host's pid, which here is a stranger's or nobody's (#15). A
+    non-terminal job of this host has a pid its scheduler reconciled as alive.
     """
-    return {job.pid: job.id for job in jobs if job.pid and not job.is_terminal}
+    return {job.pid: job.id for job in jobs
+            if job.pid and not job.is_terminal and store.owns(job)}
 
 
 @app.get("/gpu")
@@ -375,7 +487,7 @@ async def gpu() -> dict:
         logger.warning("job store unreadable for /gpu, reporting the cards "
                        "unattributed: {}", exc)
         jobs, attribution = [], False
-    job_pids = _job_pids(jobs)
+    job_pids = _job_pids(_store(), jobs)
     try:
         cards = await asyncio.to_thread(gpu_probe.inspect, job_pids)
     except FileNotFoundError as exc:
@@ -406,10 +518,10 @@ def compute_gpu_claim() -> dict:
         "gpu": _settings().gpu,
         "claimed": False,
         "jobs": [],
-    } | _claim_from(_store().list())
+    } | _claim_from(_store(), _store().list())
 
 
-def _claim_from(jobs) -> dict:
+def _claim_from(store: JobStore, jobs) -> dict:
     """A running job claims the card from its first stage, not from ``train``.
 
     This gated on ``GPU_STAGES`` for half a day, on the reasoning that prepare and
@@ -433,6 +545,11 @@ def _claim_from(jobs) -> dict:
     closes: the card must be clear when a run begins, and nothing new may land on
     it afterwards. Models already resident keep serving throughout — what is
     refused is a launch.
+
+    Only this host's jobs claim this host's card (#15). Another host's run is on
+    another machine's GPU, and counting it would refuse launches here for as long
+    as that run lasts — the shared store would turn one host's training into
+    every host's.
     """
     claims = [
         {"id": j.id, "status": j.status, "stage": j.stage,
@@ -442,7 +559,7 @@ def _claim_from(jobs) -> dict:
          # `train` begins, and the trainer asks it to let go at that boundary
          # (atr_training.gpu_release).
          "holding": j.stage is None or j.stage in GPU_STAGES}
-        for j in jobs if j.status in RUNNING_STATUSES
+        for j in jobs if j.status in RUNNING_STATUSES and store.owns(j)
     ]
     return {"claimed": bool(claims), "jobs": claims,
             "holding": any(c["holding"] for c in claims)}
@@ -450,7 +567,7 @@ def _claim_from(jobs) -> dict:
 
 def refresh_gpu_claim(jobs) -> dict:
     """Store the claim computed from a listing the caller already has."""
-    claim = {"gpu": _settings().gpu} | _claim_from(jobs)
+    claim = {"gpu": _settings().gpu} | _claim_from(_store(), jobs)
     app.state.gpu_claim = claim
     app.state.gpu_claim_at = time.monotonic()
     return claim
@@ -564,6 +681,7 @@ async def submit(request: TrainRequest, response: Response,
     # one means whichever registers last silently replaces the other's weights
     # (#56). The job ids stay distinct — JobStore de-duplicates those — which is
     # exactly why this is easy to miss until the models are already overwritten.
+    # Every host's jobs count here: trained_root and the registry are shared (#15).
     clash = next((j for j in store.list()
                   if j.request.model_id == request.model_id and not j.is_terminal), None)
     if clash is not None:
@@ -597,8 +715,10 @@ async def submit(request: TrainRequest, response: Response,
         logger.warning("queuing {} unverified: {}",
                        request.model_id, checked["unverified_reason"])
 
-    job = store.create(request)
-    logger.info("queued job {} for model {}", job.id, request.model_id)
+    # Stamped here, at acceptance: the job belongs to the host that took it, and
+    # only this host will ever start it (#15).
+    job = store.create(request, host=settings.host_id)
+    logger.info("queued job {} for model {} on host {}", job.id, request.model_id, job.host)
     _schedule()  # start immediately when the box allows it, rather than at the next tick
     job = store.load(job.id)
     return {"job_id": job.id, "status": job.status, "queued_reason": job.queued_reason,
@@ -730,12 +850,29 @@ async def get_curve(job_id: str) -> dict:
     )
 
 
+def _refuse_foreign(store: JobStore, job: TrainJob) -> None:
+    """409 for a live job of another host, naming the host.
+
+    Its pid is that machine's: ``killpg`` on it here would SIGTERM whatever
+    local process group happens to carry the number (#15). And a queued one is
+    still that host's to start — marking it cancelled here would race its
+    scheduler writing the same record.
+    """
+    if job.is_terminal or store.owns(job):
+        return
+    host = store.host_of(job)
+    where = "with scancel, on UBELIX" if host == SLURM_HOST else "there"
+    raise HTTPException(status_code=409,
+                        detail=f"job {job.id} runs on host {host}; cancel it {where}")
+
+
 @app.post("/jobs/{job_id}/cancel")
 async def cancel(job_id: str) -> dict:
     store = _store()
     job = store.reconcile(_load(job_id))
     if job.is_terminal:
         raise HTTPException(status_code=409, detail=f"job {job_id} is already {job.status}")
+    _refuse_foreign(store, job)
     if job.pid is not None:
         try:
             os.killpg(os.getpgid(job.pid), signal.SIGTERM)
@@ -753,8 +890,17 @@ async def cancel(job_id: str) -> dict:
 
 @app.delete("/jobs/{job_id}")
 async def delete_job(job_id: str) -> dict:
+    """Drop a terminal job's artefacts.
+
+    A terminal job of ANOTHER host may be deleted here too: its job directory is
+    on the share and no process of it is left to signal, so nothing about it is
+    that host's alone — except its checkpoints, which are on that host's local
+    disk and are left for it. A live one is refused like a cancel (#15).
+    """
     store = _store()
+    settings = _settings()
     job = store.reconcile(_load(job_id))
+    _refuse_foreign(store, job)
     if not job.is_terminal:
         raise HTTPException(
             status_code=409,
@@ -764,13 +910,21 @@ async def delete_job(job_id: str) -> dict:
     # model lives outside the job directory and is never touched here.
     store.delete(job_id, keep=["job.json"])
     # Checkpoints live on local scratch outside the job dir, so the store cannot
-    # reach them — clean them up here or they leak.
-    ckpt = Path(job.checkpoint_dir) if job.checkpoint_dir else None
+    # reach them — clean them up here or they leak. Only this host's: another
+    # host's checkpoint_dir names a directory on ITS disk, and the same path here
+    # is not that directory.
+    ckpt = Path(job.checkpoint_dir) if job.checkpoint_dir and store.owns(job) else None
+    if job.checkpoint_dir and ckpt is None:
+        logger.info("job {} ran on host {}; its checkpoints ({}) are left for that host",
+                    job_id, store.host_of(job), job.checkpoint_dir)
     if ckpt is not None and ckpt.is_dir():
         shutil.rmtree(ckpt, ignore_errors=True)
     # Orphaned weights: a failed register stage may have left a weights directory
-    # with no metadata.json.  Clean it here so DELETE is always idempotent (#50).
-    orphaned = _cleanup_orphaned_weights(_settings().trained_root)
+    # with no metadata.json (#50). Under the same three conditions as at startup,
+    # so a leftover younger than orphan_weights_min_age_h waits for a later DELETE
+    # or restart: from here it looks exactly like a registration in progress.
+    orphaned = _cleanup_orphaned_weights(settings.trained_root, store,
+                                         settings.orphan_weights_min_age_h)
     return {"job_id": job_id, "deleted": True, "record_kept": True,
             "checkpoints_removed": ckpt is not None, "orphaned_weights_removed": orphaned}
 

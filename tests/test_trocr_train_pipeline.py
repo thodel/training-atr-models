@@ -199,7 +199,7 @@ def _run_trocr(tmp_path, registry_root):
         checkpoint_root=tmp_path / "scratch" / "checkpoints",
         min_free_disk_gb=0.0, gpu=1,
         artefact_cache=False, artefact_cache_root=tmp_path / "artefacts")
-    store = JobStore(settings.jobs_root)
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
     runner = _Runner()
     Pipeline = importlib.import_module("trocr_train_svc.runner").Pipeline
     job = store.create(TrainRequest(

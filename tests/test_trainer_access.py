@@ -55,7 +55,7 @@ def make_client(tmp_path, monkeypatch):
                                       "trained_root": tmp_path / "trained",
                                       "venvs_root": tmp_path / "venvs", **overrides})
         app.state.settings = settings
-        app.state.store = JobStore(settings.jobs_root)
+        app.state.store = JobStore(settings.jobs_root, host_id=settings.host_id)
         return TestClient(app, client=address, headers=headers or {})
 
     yield make

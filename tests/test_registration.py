@@ -472,7 +472,7 @@ def _register_through(engine: str, tmp_path: Path) -> tuple[Path, Path]:
     settings = TrainerSettings(
         _env_file=None, jobs_root=tmp_path / "jobs", trained_root=tmp_path / "trained",
         registry_root=registry_root, checkpoint_root=tmp_path / "ckpt")
-    store = JobStore(settings.jobs_root)
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
     module = {"kraken": "kraken_train_svc.runner", "trocr": "trocr_train_svc.runner",
               "vllm": "vlm_train_svc.runner"}[engine]
     pipeline = importlib.import_module(module).Pipeline(store, settings)

@@ -121,7 +121,7 @@ def settings(tmp_path: Path, venvs: Path) -> TrainerSettings:
 def client(settings, trainer_key, monkeypatch):
     app = app_module.app
     app.state.settings = settings
-    app.state.store = JobStore(settings.jobs_root)
+    app.state.store = JobStore(settings.jobs_root, host_id=settings.host_id)
     monkeypatch.setattr(app_module, "query_gpus",
                         lambda: [GpuInfo(0, 20986, 46068), GpuInfo(1, 45589, 46068)])
     yield TestClient(app, client=LOOPBACK, headers={"X-API-Key": trainer_key})
@@ -131,11 +131,15 @@ def client(settings, trainer_key, monkeypatch):
 
 
 def _job(store: JobStore, job_id: str, status: str, pid: int | None,
-         engine: str = "vllm") -> None:
+         engine: str = "vllm", host: str | None = None, legacy: bool = False) -> None:
+    """``host`` defaults to the store's own; ``legacy`` writes no host at all, as
+    the old trainer on idhefix did."""
     request = TrainRequest(model_id=job_id.split("-", 1)[1], engine=engine,
                            dataset=DatasetSpec(hf_repo=REPO_ID, train_projects=["P"]))
-    job = store.create(request, job_id=job_id)
+    job = store.create(request, job_id=job_id, host=host)
     job.status, job.pid = status, pid
+    if legacy:
+        job.host = None
     store.save(job)
 
 
@@ -213,22 +217,25 @@ def test_gpu_reports_the_cards_of_this_machine(client, procs, monkeypatch):
 
 def test_a_pid_from_another_host_is_never_attributed_locally(client, procs, monkeypatch,
                                                              tmp_path):
-    """pid 1843 here is a stranger's gunicorn. Two records name that pid, and
-    neither may claim it: idhefix's store (another host's pids, never read
-    here), and a finished job in THIS store — on the share it holds the records
-    idhefix wrote before the split, each with an idhefix pid. Only live runs of
-    this store count, which is what #414 needs to stay true: the stranger's
+    """pid 1843 here is a stranger's gunicorn. Several records name that pid, and
+    none may claim it: idhefix's store (another host's pids, never read here),
+    finished jobs in THIS store — on the share it holds the records idhefix
+    wrote before the split, each with an idhefix pid — and live jobs in this
+    store that belong to idhefix, stamped or legacy (#15). Only live runs of
+    this host count, which is what #414 needs to stay true: the stranger's
     memory stays in ``unaccounted_mib``."""
     monkeypatch.setattr(gpu, "_smi", _smi_stub([["1843", "10440", "GPU-aaa"],
                                                 ["4242", "24570", "GPU-bbb"]]))
     procs[1843] = ("change", 2251639.0, "gunicorn: worker", 1, "gunicorn.service")
     procs[4242] = ("tobias", 900.0, "python -m vlm_train_svc.runner", 1, "atr-train.service")
 
-    elsewhere = JobStore(tmp_path / "jobs-idhefix")
+    elsewhere = JobStore(tmp_path / "jobs-idhefix", host_id="idhefix")
     _job(elsewhere, "20260910T080000Z-idhefix-running", "training", 1843)
     here = client.app.state.store
-    _job(here, "20260908T101611Z-written-by-idhefix", "failed", 1843)
+    _job(here, "20260908T101611Z-written-by-idhefix", "failed", 1843, legacy=True)
     _job(here, "20260912T120000Z-cancelled-here", "cancelled", 1843)
+    _job(here, "20260915T070000Z-legacy-live-on-idhefix", "training", 1843, legacy=True)
+    _job(here, "20260916T090000Z-live-on-idhefix", "training", 1843, host="idhefix")
     _job(here, V5, "training", 4242)
 
     body = client.get("/gpu").json()

@@ -13,6 +13,16 @@ Nothing about a job is held only in the service's memory. The runner is a
 **detached** child (``start_new_session=True``), so restarting ``atr-train`` must
 reconcile against what is on disk and what is still running — never kill the run
 and never assume it survived (:meth:`JobStore.reconcile`).
+
+**A job belongs to one host** (#15). The store sits on the research share, which
+idhefix, asteraix and UBELIX all mount, and a record's ``pid`` is a statement
+about the machine that assigned it and no other. So every record names its host
+(:meth:`JobStore.host_of`), and a store opened with a ``host_id`` spawns,
+reconciles and signals only its own jobs. Two schedulers of one host are kept
+apart by a claim file taken with ``O_CREAT|O_EXCL`` before a spawn
+(:meth:`JobStore.claim`); on the share that call is exclusive across machines as
+well — created on asteraix, the same call on idhefix raised ``FileExistsError``
+(measured 16.09.2026).
 """
 
 from __future__ import annotations
@@ -21,8 +31,11 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
+
+from loguru import logger
 
 from atr_training.contracts import (
     STAGE_STATUS,
@@ -33,7 +46,21 @@ from atr_training.contracts import (
     utcnow,
 )
 
-__all__ = ["JobStoreError", "IllegalTransition", "JobPaths", "JobStore", "TRANSITIONS"]
+__all__ = ["JobStoreError", "IllegalTransition", "JobPaths", "JobStore", "SpawnClaim",
+           "TRANSITIONS", "SLURM_HOST", "LEGACY_JOB_HOST", "CLAIM_ORPHAN_AFTER_S"]
+
+#: The host on records Slurm supervises (``ubelix/submit_job.py``, ``fanout.py``).
+#: No trainer owns it, whatever its own ``host_id`` says: the runner of such a job
+#: lives on a compute node, and its pid is that node's.
+SLURM_HOST = "ubelix"
+#: Whose a record without ``host`` is — see ``TrainerSettings.legacy_job_host``.
+LEGACY_JOB_HOST = "idhefix"
+#: How long a claim may stand without the runner pid it promises. Claim → spawn →
+#: save pid takes well under a second, and the runner writes its own pid as its
+#: first act. Ten minutes past the claim with no pid, the scheduler died in
+#: between, and the job would otherwise sit queued for ever: a claimed job is
+#: never offered to the queue again.
+CLAIM_ORPHAN_AFTER_S = 600.0
 
 
 class JobStoreError(RuntimeError):
@@ -96,6 +123,11 @@ class JobPaths:
     @property
     def logs(self) -> Path:
         return self.root / "logs"
+
+    @property
+    def claim(self) -> Path:
+        """Taken exclusively before the runner is spawned (:meth:`JobStore.claim`)."""
+        return self.root / "spawn.claim"
 
     def log(self, stage: str) -> Path:
         return self.logs / f"{stage}.log"
@@ -178,11 +210,96 @@ def reap_children() -> int:
         reaped += 1
 
 
-class JobStore:
-    """Directory-backed store for :class:`TrainJob` records."""
+@dataclass(frozen=True)
+class SpawnClaim:
+    """Who claimed a job for spawning, and when. Any field may be unknown: the
+    file is created before its content is written, and a reader can land in
+    between."""
 
-    def __init__(self, root: str | Path) -> None:
+    host: str | None
+    pid: int | None
+    at: datetime | None
+
+
+class JobStore:
+    """Directory-backed store for :class:`TrainJob` records.
+
+    ``host_id`` is who is asking. The runner and the UBELIX scripts only load and
+    save one record and open the store without it; everything that judges a job
+    by its pid or starts one needs it, and refuses without it rather than
+    guessing (:meth:`owns`).
+    """
+
+    def __init__(self, root: str | Path, host_id: str | None = None,
+                 legacy_host: str = LEGACY_JOB_HOST,
+                 claim_orphan_after_s: float = CLAIM_ORPHAN_AFTER_S) -> None:
         self.root = Path(root)
+        self.host_id = host_id
+        self.legacy_host = legacy_host
+        self.claim_orphan_after_s = claim_orphan_after_s
+        # Foreign jobs are listed on every scheduler tick; saying once per job
+        # that they are left alone is information, saying it every 10 s is noise.
+        self._foreign_noted: set[str] = set()
+
+    # ── ownership (#15) ─────────────────────────────────────────────────────
+    def host_of(self, job: TrainJob) -> str:
+        """The host a job belongs to. The one place a missing ``host`` is read."""
+        return job.host or self.legacy_host
+
+    def owns(self, job: TrainJob) -> bool:
+        """Whether this store's host may spawn, reconcile or signal ``job``."""
+        if not self.host_id:
+            raise JobStoreError(
+                "this job store was opened without a host id, so it cannot tell its "
+                "own jobs from another machine's — and a pid is only meaningful on "
+                "the machine that assigned it (#15)")
+        host = self.host_of(job)
+        return host == self.host_id and host != SLURM_HOST
+
+    def claim(self, job_id: str, now: datetime | None = None) -> None:
+        """Claim ``job_id`` for spawning, or raise ``FileExistsError``.
+
+        ``O_CREAT|O_EXCL`` is the whole mechanism: one caller creates the file and
+        every other gets ``FileExistsError``. That is what keeps two schedulers of
+        one host (#12) from both starting a job each has listed as unstarted. On
+        the share the call is exclusive across machines too (measured
+        16.09.2026). Nothing else there would do: chmod, symlink and hardlink all
+        fail on that mount, and the tmp-file + ``os.replace`` the records use
+        overwrites rather than refuses.
+
+        The file stays after the spawn; a terminal job's goes with its artefacts.
+        """
+        if not self.host_id:
+            raise JobStoreError("a job can only be claimed by a store that knows its host")
+        fd = os.open(self.paths(job_id).claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump({"host": self.host_id, "pid": os.getpid(),
+                       "at": (now or utcnow()).isoformat()}, out)
+
+    def is_claimed(self, job_id: str) -> bool:
+        return self.paths(job_id).claim.exists()
+
+    def read_claim(self, job_id: str) -> SpawnClaim | None:
+        """The claim on ``job_id``, or None if there is none."""
+        path = self.paths(job_id).claim
+        try:
+            raw = path.read_text(encoding="utf-8")
+            mtime = path.stat().st_mtime
+        except FileNotFoundError:
+            return None
+        except OSError:
+            # It is there and cannot be read (a share hiccup): claimed, by
+            # someone, at a time nobody can vouch for — so never judged stale.
+            return SpawnClaim(host=None, pid=None, at=None)
+        try:
+            data = json.loads(raw)
+            return SpawnClaim(host=str(data["host"]), pid=int(data["pid"]),
+                              at=datetime.fromisoformat(data["at"]))
+        except (ValueError, KeyError, TypeError):
+            # Created, content not written yet — or never, if the writer died in
+            # between. The file's own time is the best there is.
+            return SpawnClaim(host=None, pid=None,
+                              at=datetime.fromtimestamp(mtime, tz=timezone.utc))
 
     # ── layout ──────────────────────────────────────────────────────────────
     def paths(self, job_id: str) -> JobPaths:
@@ -201,13 +318,24 @@ class JobStore:
         return job_id
 
     # ── CRUD ────────────────────────────────────────────────────────────────
-    def create(self, request: TrainRequest, job_id: str | None = None) -> TrainJob:
+    def create(self, request: TrainRequest, job_id: str | None = None,
+               host: str | None = None) -> TrainJob:
+        """Write a new ``queued`` record, belonging to ``host`` (default: this store's).
+
+        A new record without a host is refused: it would read as a legacy record
+        and belong to ``legacy_host`` — a job idhefix never saw, attributed to it.
+        """
+        host = host or self.host_id
+        if not host:
+            raise JobStoreError(
+                "a new job needs a host: open the store with host_id, or pass host= "
+                "(a record without one is read as a legacy idhefix record, #15)")
         job_id = job_id or self.new_job_id(request.model_id)
         paths = self.paths(job_id)
         if paths.job_json.exists():
             raise JobStoreError(f"job {job_id} already exists")
         paths.mkdirs()
-        job = TrainJob(id=job_id, request=request, status="queued")
+        job = TrainJob(id=job_id, request=request, status="queued", host=host)
         self.save(job)
         return job
 
@@ -304,7 +432,8 @@ class JobStore:
         return self.advance(job, "failed")
 
     def reconcile(
-        self, job: TrainJob, is_alive: Callable[[int], bool] = _pid_alive
+        self, job: TrainJob, is_alive: Callable[[int], bool] = _pid_alive,
+        now: datetime | None = None,
     ) -> TrainJob:
         """Bring a record in line with reality after a service restart.
 
@@ -312,14 +441,28 @@ class JobStore:
         killed (OOM, reboot, ``systemctl restart`` of the wrong thing). Mark it
         failed rather than leaving it "training" forever.
 
+        **Only this host's jobs.** Another host's job is returned untouched: its
+        pid cannot be confirmed or refuted from here. Judging it anyway is how two
+        trainers on one store declared each other's runs dead on every tick — or,
+        where the number happened to be taken locally, kept a dead run alive (#15).
+
         A ``queued`` job is only reconciled once it has a **pid**: that is what
         distinguishes "waiting its turn" (nothing to reconcile — it is supposed to
         sit there) from "spawned, but the runner died before writing its first
         status". The latter would otherwise stay queued forever while the
-        scheduler counted it as running.
+        scheduler counted it as running. The one exception is a job claimed for
+        spawning that never got a pid (:meth:`_reconcile_claim`).
         """
-        if job.is_terminal or (job.status == "queued" and job.pid is None):
+        if job.is_terminal:
             return job
+        if not self.owns(job):
+            if job.id not in self._foreign_noted:
+                self._foreign_noted.add(job.id)
+                logger.info("job {} ({}) belongs to host {}, not {}: not reconciled here",
+                            job.id, job.status, self.host_of(job), self.host_id)
+            return job
+        if job.status == "queued" and job.pid is None:
+            return self._reconcile_claim(job, now or utcnow())
         if job.pid is not None and is_alive(job.pid):
             return job
         reason = (
@@ -328,3 +471,31 @@ class JobStore:
             else f"job was {job.status} but no runner pid was recorded"
         )
         return self.fail(job, f"{reason}; see logs/ in the job directory")
+
+    def _reconcile_claim(self, job: TrainJob, now: datetime) -> TrainJob:
+        """Fail a queued job whose claim has stood too long without a pid.
+
+        The scheduler claims, spawns, then saves the pid, and the runner saves its
+        own pid first thing. A claim older than ``claim_orphan_after_s`` with no
+        pid means the scheduler died in between, or the runner died before it
+        could write. Such a job is never offered to the queue again, so without
+        this it would stay ``queued`` for ever and hold a slot.
+
+        A claim naming another host is left alone, for the reason foreign jobs
+        are. One with no readable owner is this host's: only an owner claims.
+        """
+        claim = self.read_claim(job.id)
+        if claim is None or claim.at is None:
+            return job
+        if claim.host is not None and claim.host != self.host_id:
+            return job
+        if (now - claim.at).total_seconds() < self.claim_orphan_after_s:
+            return job
+        by = (f"by {claim.host} (service pid {claim.pid})" if claim.host
+              else "by this host (the claim file is empty)")
+        return self.fail(job, (
+            f"claimed for spawning {by} at {claim.at:%Y-%m-%d %H:%M:%S} UTC, but no "
+            "runner pid was ever recorded: the scheduler stopped between claiming the "
+            "job and starting its runner, or the runner died before its first write "
+            "(see logs/runner.out, if it exists). A claimed job is never started "
+            "again — resubmit it"))

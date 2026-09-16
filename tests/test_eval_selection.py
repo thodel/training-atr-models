@@ -143,7 +143,7 @@ def test_the_runner_writes_a_stratified_subset_for_the_test_stage(tmp_path):
     from atr_training.settings import TrainerSettings
     from vlm_train_svc.runner import Pipeline
 
-    store = JobStore(tmp_path / "jobs")
+    store = JobStore(tmp_path / "jobs", host_id="asteraix")
     job = TrainJob(
         id="20260915T000000Z-vlm-subset",
         request=TrainRequest(
