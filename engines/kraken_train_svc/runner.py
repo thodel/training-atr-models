@@ -21,7 +21,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from atr_training.registry import ModelSpec, load_registry
+from atr_training.registry import ModelSpec  # writing side only, until #14
+from atr_training.shared_registry import RegistryUnavailable, load_shared_registry
 from atr_training.artefact_cache import key_for_specs
 from atr_training.base_models import BaseModelError, resolve_base_model
 from atr_training.contracts import Metrics, StageRecord, TrainJob, utcnow
@@ -254,9 +255,11 @@ class Pipeline(BasePipeline):
         registry changed under a queued job; it still fails with the same message
         rather than htrmopo's.
         """
+        registry, why_not = self._registry()
         try:
             resolved = resolve_base_model(
-                base_model, engine="kraken", registry=self._registry())
+                base_model, engine="kraken", registry=registry,
+                registry_error=why_not)
         except BaseModelError as exc:
             raise StageFailed(str(exc)) from exc
 
@@ -279,16 +282,17 @@ class Pipeline(BasePipeline):
         return candidates[0]
 
     def _registry(self):
-        """The tracked registry, or None when it cannot be read.
+        """``(registry, why_not)`` — the published registry on the share (#5).
 
-        None means "resolve DOIs only" rather than a failure: a job that names a
-        DOI has no business failing because config/models.yaml is missing.
+        Unreadable means "resolve DOIs only" rather than a failure: a job that
+        names a DOI has no business failing because the registry is missing. The
+        reason is kept, so a job that names an id fails with the actual cause.
         """
         try:
-            return load_registry(self.settings.models_config)
-        except (OSError, ValueError) as exc:
+            return load_shared_registry(self.settings.models_config), None
+        except RegistryUnavailable as exc:
             logger.warning("registry unavailable for base_model lookup: {}", exc)
-            return None
+            return None, str(exc)
 
     def _train(self, job: TrainJob, train_bin: Path, val_bin: Path,
                record: StageRecord) -> Path:

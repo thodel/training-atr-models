@@ -38,7 +38,7 @@ from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from atr_training.registry import load_registry
+from atr_training.shared_registry import RegistryUnavailable, load_shared_registry
 from atr_training.base_models import BaseModelError, resolve_base_model
 from atr_training.backends import BACKENDS, UnknownBackend, backend_for
 from atr_training.contracts import TrainJob, TrainRequest
@@ -87,19 +87,23 @@ def _store() -> JobStore:
 
 
 def _registry():
-    """The tracked registry for base_model lookups, or None if unreadable.
+    """``(registry, why_not)`` for base_model lookups.
 
-    Overridable on ``app.state`` so tests need no models.yaml on disk. None means
-    "accept DOIs, cannot resolve ids" rather than a failure — a job naming a DOI
-    should not be refused because the registry file is missing.
+    The registry is the file the gateway publishes to the share (#5). Unreadable
+    means ``(None, reason)``, not an error here: a job naming a DOI has no
+    business being refused because the registry is missing. The reason travels
+    on, so a job naming an *id* is told the registry was the problem rather
+    than its spelling.
+
+    Overridable on ``app.state`` so tests need no file on disk.
     """
     if (override := getattr(app.state, "registry", None)) is not None:
-        return override
+        return override, None
     try:
-        return load_registry(_settings().models_config)
-    except (OSError, ValueError) as exc:
+        return load_shared_registry(_settings().models_config), None
+    except RegistryUnavailable as exc:
         logger.warning("registry unavailable for base_model lookup: {}", exc)
-        return None
+        return None, str(exc)
 
 
 def _spawn(settings: TrainerSettings, job: TrainJob) -> int:
@@ -435,8 +439,9 @@ async def submit(request: TrainRequest, response: Response,
     # ten hours to learn that a registry id was spelled as a DOI (#76).
     if request.base_model:
         try:
+            registry, why_not = _registry()
             resolve_base_model(request.base_model, engine=request.engine,
-                               registry=_registry())
+                               registry=registry, registry_error=why_not)
         except BaseModelError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     # A network TMPDIR breaks temp-dir cleanup mid-compile; catch it at submit.

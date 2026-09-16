@@ -31,15 +31,34 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
-from atr_training.registry import Registry
+
+class _Entry(Protocol):
+    id: str
+    engine: str
+    zenodo_id: str | None
+    local_path: str | None
+
+
+class RegistryLike(Protocol):
+    """What resolving a base needs from a registry — and all it needs.
+
+    Structural on purpose. The trainer no longer imports the gateway's
+    ``Registry``; it reads the published file through
+    :class:`atr_training.shared_registry.SharedRegistry`, and the tests build
+    their own. Anything with these two methods will do.
+    """
+
+    def get(self, model_id: str) -> _Entry | None: ...
+    def by_engine(self, engine: str) -> list[_Entry]: ...
 
 __all__ = [
     "BaseModelError",
     "ResolvedBase",
     "DOI_RE",
     "HF_REPO_RE",
+    "RegistryLike",
     "resolve_base_model",
 ]
 
@@ -73,7 +92,7 @@ class ResolvedBase:
         return self.ref if not self.source_id else f"{self.source_id} → {self.ref}"
 
 
-def _kraken_base_ids(registry: Registry | None) -> list[str]:
+def _kraken_base_ids(registry: RegistryLike | None) -> list[str]:
     """Registry ids that can actually serve as a kraken fine-tuning base."""
     if registry is None:
         return []
@@ -86,13 +105,20 @@ def _kraken_base_ids(registry: Registry | None) -> list[str]:
 def resolve_base_model(
     base_model: str,
     engine: str = "kraken",
-    registry: Registry | None = None,
+    registry: RegistryLike | None = None,
     path_exists: Callable[[str], bool] | None = None,
+    registry_error: str | None = None,
 ) -> ResolvedBase:
     """Turn ``base_model`` into something the engine can load, or explain why not.
 
     ``path_exists`` is injectable so this stays testable without touching the
     filesystem; it defaults to a real check.
+
+    ``registry_error`` is why ``registry`` is None, when the caller tried to load
+    one and could not. It changes only the message, and the message is the whole
+    point: without it, a valid id against an unreadable registry was reported as
+    "not a registry id", and the user went looking for a typo that was not
+    theirs.
     """
     exists = path_exists or (lambda p: Path(p).expanduser().exists())
     ref = (base_model or "").strip()
@@ -105,11 +131,12 @@ def resolve_base_model(
         return ResolvedBase(ref=str(Path(ref).expanduser()), kind="path")
 
     if engine in _KRAKEN_LIKE:
-        return _resolve_kraken(ref, registry)
+        return _resolve_kraken(ref, registry, registry_error)
     return _resolve_hf(ref, engine)
 
 
-def _resolve_kraken(ref: str, registry: Registry | None) -> ResolvedBase:
+def _resolve_kraken(ref: str, registry: RegistryLike | None,
+                    registry_error: str | None = None) -> ResolvedBase:
     if registry is not None and (spec := registry.get(ref)) is not None:
         if spec.engine != "kraken":
             raise BaseModelError(
@@ -126,6 +153,16 @@ def _resolve_kraken(ref: str, registry: Registry | None) -> ResolvedBase:
 
     if DOI_RE.match(ref) or RECORD_RE.match(ref):
         return ResolvedBase(ref=ref, kind="zenodo")
+
+    if registry is None:
+        # Not "not a registry id": with no registry there was nothing to look it
+        # up in, and saying otherwise sends the user after a typo.
+        why = f" ({registry_error})" if registry_error else " (none is configured)"
+        raise BaseModelError(
+            f"base_model {ref!r} is not a file or a Zenodo reference, and no "
+            f"registry was available to look it up as an id{why}. A Zenodo DOI "
+            "(10.xxxx/zenodo.NNNN) or a path would not need one."
+        )
 
     known = _kraken_base_ids(registry)
     hint = f" Known registry ids: {known}." if known else ""

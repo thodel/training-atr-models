@@ -1,4 +1,17 @@
-"""Model registry — loads ``config/models.yaml`` into typed ``ModelSpec`` objects.
+"""TEMPORARY — the gateway's registry schema, copied here in #3.
+
+Only the WRITING side still uses this: the three runners' register stage and
+`overlay.py` build a `ModelSpec` to record a trained model. #14 replaces that
+with one file per model on the share, and this module goes with it.
+
+The READING side no longer does. Resolving a base model reads the file the
+gateway publishes to the share, through `atr_training.shared_registry`, which
+needs four fields instead of all of these. A test pins that nothing new starts
+depending on this copy.
+
+Original docstring follows.
+
+Model registry — loads ``config/models.yaml`` into typed ``ModelSpec`` objects.
 
 The registry is the single source of truth the gateway exposes via ``/models``.
 Clients (e.g. agentic_historian/model_selector.py) score script/lang/century

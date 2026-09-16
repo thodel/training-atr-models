@@ -37,9 +37,15 @@ class TrainerSettings(BaseSettings):
     trained_root: Path = Path.home() / "atr-cache" / "trained"
     #: The gitignored registry overlay trained models are registered in.
     overlay_path: Path = REPO_ROOT / "config" / "models.local.yaml"
-    #: The tracked registry, read only to resolve a ``base_model`` given as a
+    #: The model registry, read only to resolve a ``base_model`` given as a
     #: registry id rather than a Zenodo DOI (#76). Never written to.
-    models_config: Path = REPO_ROOT / "config" / "models.yaml"
+    #:
+    #: On the SHARE, not in this repo (#5). The gateway on idhefix publishes the
+    #: curated file there (serving-atr-inference#138); a copy here would drift
+    #: without a word. Only kraken ever resolves an id — 12 of 26 kraken jobs as
+    #: of 16.09.2026 — so vllm and trocr never read this.
+    models_config: Path = Path(
+        "/mnt/wbkolleg_dh_1/Textrecognition_Training/registry/models.yaml")
     #: Checkpoints go to LOCAL disk, not the job directory on the share. Lightning
     #: saves them via a temp file + rename; with the target on CIFS and the temp
     #: local that rename is cross-device, and the fsspec version datasets<4 pins

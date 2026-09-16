@@ -131,18 +131,51 @@ def test_a_doi_resolves_without_any_registry():
 
 
 def test_a_registry_id_without_a_registry_says_so_plainly():
-    with pytest.raises(BaseModelError, match="not a file, a registry id"):
+    """The name always promised this; the assertion used to check the opposite.
+
+    It matched "not a file, a registry id" — i.e. it pinned the claim that the
+    id was invalid, when the actual problem was that there was nothing to look
+    it up in. A user reading that goes after a typo that is not theirs.
+    """
+    with pytest.raises(BaseModelError, match="no registry was available") as err:
         resolve_base_model("kraken-medieval_generic_b", "kraken", None,
+                           path_exists=never_exists)
+    assert "not a registry id" not in str(err.value)
+    assert "none is configured" in str(err.value)
+
+
+def test_an_unreadable_registry_names_the_reason():
+    """The path and the cause, so the fix is obvious from the message alone."""
+    why = "/mnt/…/registry/models.yaml: no such file — has the gateway published it?"
+    with pytest.raises(BaseModelError) as err:
+        resolve_base_model("kraken-early_modern_german", "kraken", None,
+                           path_exists=never_exists, registry_error=why)
+    assert why in str(err.value)
+    assert "no registry was available" in str(err.value)
+
+
+def test_a_typo_against_a_readable_registry_still_says_typo(registry):
+    """The old message is right when there WAS a registry to look in."""
+    with pytest.raises(BaseModelError, match="not a file, a registry id"):
+        resolve_base_model("kraken-medieval_generic_z", "kraken", registry,
                            path_exists=never_exists)
 
 
-# ── the real registry, since that is what the box uses ──────────────────────
-def test_the_shipped_registry_resolves_the_id_that_failed():
+# ── the published registry, as the box reads it ─────────────────────────────
+def test_the_published_registry_resolves_the_id_that_failed():
+    """Against a snapshot of the file the gateway publishes (#5).
+
+    This used to read config/models.yaml from this repo. That copy is gone: it
+    would have drifted from the gateway's without anyone noticing. The snapshot
+    under tests/fixtures is a CONTRACT fixture — it pins the shape, not the
+    current list of models.
+    """
     from pathlib import Path
 
-    from atr_training.registry import load_registry
+    from atr_training.shared_registry import load_shared_registry
 
-    config = Path(__file__).resolve().parents[1] / "config" / "models.yaml"
+    snapshot = Path(__file__).resolve().parent / "fixtures" / "registry" / "models.yaml"
     resolved = resolve_base_model("kraken-medieval_generic_b", "kraken",
-                                  load_registry(config), path_exists=never_exists)
+                                  load_shared_registry(snapshot),
+                                  path_exists=never_exists)
     assert resolved.ref.startswith("10.5281/zenodo.")
