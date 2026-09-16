@@ -44,6 +44,13 @@ def bind_problems(host: str, settings: TrainerSettings) -> list[str]:
     return settings.remote_access_problems()
 
 
+def settings_errors(exc: ValidationError) -> str:
+    """One line per error: where, and the validator's message — never the input."""
+    return "\n".join(
+        f"  {'.'.join(map(str, error['loc'])) or 'settings'}: {error['msg']}"
+        for error in exc.errors(include_input=False, include_url=False))
+
+
 def main(argv: list[str] | None = None, *, settings: TrainerSettings | None = None,
          run: Callable[..., object] | None = None) -> int:
     """Parse, judge, start. ``settings`` and ``run`` are test seams."""
@@ -51,11 +58,14 @@ def main(argv: list[str] | None = None, *, settings: TrainerSettings | None = No
         try:
             settings = get_settings()
         except ValidationError as exc:
-            # A bad ATR_TRAIN_ALLOWED_CLIENTS entry lands here. The message shows
-            # the offending input; no validator exists on the key, so it is never
-            # among them.
-            print(f"atr-train: refusing to start, the settings do not validate:\n{exc}",
-                  file=sys.stderr)
+            # A bad ATR_TRAIN_ALLOWED_CLIENTS entry lands here. Not str(exc): for
+            # an error raised by a model-level validator pydantic prints the whole
+            # input as input_value — the key included, truncated in the middle so
+            # its first dozen characters show. No such validator raises today;
+            # this must not depend on it. The messages are the validators' own
+            # and name the offending entry.
+            print("atr-train: refusing to start, the settings do not validate:\n"
+                  + settings_errors(exc), file=sys.stderr)
             return EXIT_REFUSED
 
     parser = argparse.ArgumentParser(prog="python -m atr_training.serve",

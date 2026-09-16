@@ -384,7 +384,10 @@ async def gpu() -> dict:
         raise HTTPException(
             status_code=502, detail=f"nvidia-smi failed: {type(exc).__name__}: {exc}",
         ) from exc
-    return {"host": socket.gethostname(), "cards": gpu_probe.card_rows(cards),
+    # services_expected=False: nothing of ours on this box holds a card except
+    # through a job, so a stray in atr-train.service is a finished run's leftover.
+    rows = gpu_probe.card_rows(cards, services_expected=False)
+    return {"host": socket.gethostname(), "cards": rows,
             "job_attribution_available": attribution, "known_job_pids": len(job_pids)}
 
 

@@ -13,7 +13,10 @@ serving half (tests/test_isolation.py).
 ``inspect`` and its helpers are the gateway's, unchanged, so the two files diff
 cleanly. Not copied: ``card_memory``, the gateway's launch-sizing helper — the
 trainer sizes a start with :func:`atr_training.preflight.check_vram`. Added:
-:func:`card_rows`, the totals the gateway's route computed inline.
+:func:`card_rows`, the totals the gateway's route computed inline — with one
+divergence, made explicit there: on this host an unregistered process in one of
+our units counts as unaccounted, because here no unit of ours holds memory
+except through a job.
 
 The gateway's own account of why this module exists:
 
@@ -235,26 +238,45 @@ def inspect(job_pids: dict | None = None) -> list:
     return cards
 
 
-def card_rows(cards: list) -> list[dict]:
+def card_rows(cards: list, *, services_expected: bool) -> list[dict]:
     """The cards as JSON rows, each with the three totals the route reports.
 
     The arithmetic of the gateway's ``/train/gpu`` local reading
-    (``train_routes._local_reading``), unchanged, so a caller reads the same
-    numbers whichever side produced them.
+    (``train_routes._local_reading``), with one rule made a parameter, because
+    the two hosts differ in exactly that rule — and required, so no caller
+    inherits the other host's answer:
+
+    ``services_expected=True`` is the gateway's: memory held by one of our units
+    is explained even when no job owns it. On idhefix, where the trainer shared
+    the cards with the inference engines, most such memory is an engine's, held
+    by design (atr-trocr.service, 1.6 GB on card 1).
+
+    ``services_expected=False`` is the trainer's: on asteraix no unit of ours
+    holds GPU memory except through a job. The service itself never touches a
+    card (deploy/systemd/atr-train.service), and a runner stays in that unit's
+    cgroup — ``start_new_session`` does not leave it, and ``KillMode=process``
+    keeps it there past a restart. So an unregistered process in
+    atr-train.service is the leftover of a run the store calls finished: a
+    data-loader worker that outlived its runner, a ``ketos`` a cancelled job
+    left behind. Under the gateway's rule those land in ``service_mib`` only and
+    ``unaccounted_mib`` reads 0 — the stray this endpoint exists to show, hidden
+    by the field meant to show it, for as long as ``/proc`` still has it (the
+    ``[Not Found]`` row has no readable cgroup and counts either way).
+    ``service_mib`` is the same under both rules.
     """
     rows = []
     for card in cards:
         procs = [vars(p) for p in card.processes]
         row = {k: v for k, v in vars(card).items() if k != "processes"}
         row["processes"] = procs
-        # What nobody here can explain: not a training job, not one of our
-        # services. An engine holding memory is expected and must not be summed
-        # with a stray, or the number stops meaning anything and the row that
-        # matters gets read past — which is how a sixteen-hour orphan stays
-        # invisible.
+        # What nobody here can explain: not a training job, not (where one is
+        # expected) one of our services. An engine holding memory is expected
+        # and must not be summed with a stray, or the number stops meaning
+        # anything and the row that matters gets read past — which is how a
+        # sixteen-hour orphan stays invisible.
         row["unaccounted_mib"] = sum(
             p["used_mib"] for p in procs
-            if not p["registered"] and not p["own_service"])
+            if not p["registered"] and not (services_expected and p["own_service"]))
         row["service_mib"] = sum(
             p["used_mib"] for p in procs if p["own_service"])
         row["orphaned_mib"] = sum(

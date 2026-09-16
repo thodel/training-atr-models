@@ -241,6 +241,35 @@ def test_a_pid_from_another_host_is_never_attributed_locally(client, procs, monk
     assert body["known_job_pids"] == 1
 
 
+def test_a_leftover_of_a_finished_run_is_unaccounted(client, procs, monkeypatch):
+    """A failed kraken job's runner is gone from the live pids, but its ketos
+    still holds card 1 — in atr-train.service, where every runner stays
+    (start_new_session does not leave the cgroup; KillMode=process keeps it
+    past a restart). Nothing of ours holds a card on this box except through a
+    job, so that memory is what a queued job is waiting for. Under the gateway's
+    rule it read 0 unaccounted and showed only in service_mib."""
+    monkeypatch.setattr(gpu, "_smi", _smi_stub([["1843", "24570", "GPU-aaa"],
+                                                ["7777", "27530", "GPU-bbb"]]))
+    procs[1843] = ("tobias", 30512.4, "python -m vlm_train_svc.runner train", 1,
+                   "atr-train.service")
+    procs[4242] = ("tobias", 108010.0, "python -m kraken_train_svc.runner", 1,
+                   "atr-train.service")
+    procs[7777] = ("tobias", 108000.0, "ketos train -f page", 4242, "atr-train.service")
+    store = client.app.state.store
+    _job(store, V5, "training", 1843)
+    _job(store, "20260915T090000Z-kraken-failed", "failed", 4242, engine="kraken")
+
+    body = client.get("/gpu").json()
+    live, stale = body["cards"]
+    assert live["unaccounted_mib"] == 0 and live["service_mib"] == 24570
+    leftover = stale["processes"][0]
+    assert (leftover["registered"], leftover["own_service"], leftover["orphaned"]) == \
+        (False, True, False)
+    assert stale["unaccounted_mib"] == 27530
+    assert stale["service_mib"] == 27530, "still one of ours, and still said so"
+    assert body["known_job_pids"] == 1
+
+
 def test_gpu_asks_the_probe_with_this_store_s_live_pids_only(client, monkeypatch):
     """The seam itself: what the route hands to the inspection."""
     seen = []
@@ -286,23 +315,35 @@ def test_an_unreadable_store_still_reports_the_cards(client, procs, monkeypatch)
 
 
 def test_the_inspection_is_the_gateway_s(procs, monkeypatch):
-    """The duplicate behaves as the original: orphans, children, strangers."""
+    """The duplicate behaves as the original: orphans, children, strangers —
+    and, with ``services_expected=True``, an engine of ours is not a stray
+    (the gateway's own suite pins that with the same atr-trocr row)."""
     monkeypatch.setattr(gpu, "_smi", _smi_stub([["2743851", "27530", "GPU-aaa"],
                                                 ["5001", "3000", "GPU-bbb"],
-                                                ["7777", "6000", "GPU-bbb"]]))
+                                                ["7777", "6000", "GPU-bbb"],
+                                                ["6100", "1600", "GPU-bbb"]]))
     procs[4242] = ("tobias", 900.0, "ketos train", 1)
     procs[5001] = ("tobias", 890.0, "python -c from multiprocessing", 4242)
     procs[7777] = ("tobias", 108000.0, "ketos train -f page", 1)
-    idle, busy = gpu.card_rows(gpu.inspect({4242: "job-a"}))
+    procs[6100] = ("tobias", 5000.0, "trocr engine", 1, "atr-trocr.service")
+    cards = gpu.inspect({4242: "job-a"})
+    idle, busy = gpu.card_rows(cards, services_expected=True)
 
     orphan = idle["processes"][0]
     assert orphan["orphaned"] is True and orphan["registered"] is False
     assert idle["orphaned_mib"] == idle["unaccounted_mib"] == 27530
 
-    child, stray = busy["processes"]
+    child, stray, engine = busy["processes"]
     assert child["registered"] is True and child["job_id"] == "job-a"
     assert stray["registered"] is False and stray["age_s"] == 108000.0
+    assert (engine["registered"], engine["own_service"]) == (False, True)
     assert busy["unaccounted_mib"] == 6000
+    assert busy["service_mib"] == 1600
+
+    # The trainer's rule differs in that one row and nowhere else.
+    _, trainer_busy = gpu.card_rows(cards, services_expected=False)
+    assert trainer_busy["unaccounted_mib"] == 6000 + 1600
+    assert trainer_busy["service_mib"] == 1600
 
 
 def test_the_contract_fixtures_carry_no_secret(trainer_key):

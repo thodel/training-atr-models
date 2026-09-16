@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from loguru import logger
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 from starlette.routing import Route
 
 from atr_training import access, serve
@@ -287,49 +287,90 @@ class FakeRun:
     ("130.92.59.242", {"allowed_clients": ""}, False, ["ATR_TRAIN_ALLOWED_CLIENTS"]),
     ("asteraix", {"allowed_clients": ""}, False, ["ATR_TRAIN_ALLOWED_CLIENTS"]),
 ])
-def test_the_launcher_refuses_an_unsafe_bind(host, env, starts, missing, monkeypatch,
+@pytest.mark.parametrize("check", [False, True], ids=["start", "check"])
+def test_the_launcher_refuses_an_unsafe_bind(host, env, starts, missing, check, monkeypatch,
                                              capsys, trainer_key):
-    """Settings through their real environment names, as the unit's .env gives them."""
+    """Settings through their real environment names, as the unit's .env gives them.
+
+    ``--check`` (install_user_unit.sh) must judge exactly as a start does: the
+    process test below relies on it to never start a server.
+    """
     for field, value in env.items():
         monkeypatch.setenv(ENV_OF[field], value)
     run = FakeRun()
-    code = serve.main(["--host", host, "--port", "8204"], settings=TrainerSettings(), run=run)
-    err = capsys.readouterr().err
+    argv = ["--host", host, "--port", "8204", *(["--check"] if check else [])]
+    code = serve.main(argv, settings=TrainerSettings(), run=run)
+    out, err = capsys.readouterr()
+    # Both streams, on every path: the starting ones are the ones every deploy takes.
+    for secret in (trainer_key, SHORT_KEY):
+        assert secret not in out + err
 
     if starts:
         assert code == 0 and err == ""
-        assert run.calls == [(serve.APP, {"host": host, "port": 8204, "proxy_headers": False})]
+        if check:
+            assert run.calls == [] and "may be bound" in out
+        else:
+            assert run.calls == [(serve.APP, {"host": host, "port": 8204,
+                                              "proxy_headers": False})]
         return
     assert code == serve.EXIT_REFUSED == 2
-    assert run.calls == []
+    assert run.calls == [] and out == ""
     named = err.split("Missing:", 1)[1]
     for name in ENV_OF.values():
         assert (name in named) is (name in missing), (name, named)
-    for secret in (trainer_key, SHORT_KEY):
-        assert secret not in err
 
 
 def test_the_launcher_refuses_an_unsafe_bind_as_a_process(tmp_path):
-    """The module the unit runs, as the unit runs it: exit code and stderr only."""
+    """The module the unit runs, from a clean interpreter: exit code and output.
+
+    Always with ``--check``, which is decided after the bind is judged (the test
+    above pins that). Without it, the regression this test exists to catch — a
+    bad key let through — would not fail fast: uvicorn runs the app's lifespan
+    before it binds, so the child would create the job directories, reconcile
+    every record there and start the scheduler, then listen on 0.0.0.0:8204
+    until the timeout. A guarded probe on 16.09.2026 did exactly that. And in
+    case ``--check`` itself regresses, the child's home and every root of the
+    store point into tmp_path: its defaults are ``~/atr-cache`` and this
+    checkout's ``.venvs``, which on asteraix are the real ones.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
     env = {**os.environ,
            "PYTHONPATH": os.pathsep.join([str(REPO / "src"), str(REPO / "engines")]),
+           "HOME": str(home),
+           "ATR_TRAIN_JOBS_ROOT": str(tmp_path / "jobs"),
+           "ATR_TRAIN_TRAINED_ROOT": str(tmp_path / "trained"),
+           "ATR_TRAIN_CHECKPOINT_ROOT": str(tmp_path / "checkpoints"),
+           "ATR_TRAIN_VENVS_ROOT": str(tmp_path / "venvs"),
            "ATR_TRAIN_API_KEY": SHORT_KEY, "ATR_TRAIN_ALLOWED_CLIENTS": IDHEFIX}
-    argv = [sys.executable, "-m", "atr_training.serve", "--host", "0.0.0.0", "--port", "8204"]
-    refused = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True,
-                             timeout=60)
+    argv = [sys.executable, "-m", "atr_training.serve", "--check",
+            "--host", "0.0.0.0", "--port", "8204"]
+
+    def launch(**overrides) -> subprocess.CompletedProcess:
+        return subprocess.run(argv, cwd=tmp_path, env={**env, **overrides},
+                              capture_output=True, text=True, timeout=20)
+
+    refused = launch()
     assert refused.returncode == 2, refused.stderr
     assert f"ATR_TRAIN_API_KEY is shorter than {MIN_API_KEY_LENGTH}" in refused.stderr
     assert SHORT_KEY not in refused.stdout + refused.stderr
 
-    bad_list = subprocess.run(argv, cwd=tmp_path, capture_output=True, text=True, timeout=60,
-                              env={**env, "ATR_TRAIN_ALLOWED_CLIENTS": "130.92.59.240/24"})
+    # A long, distinctive key: pydantic truncates a printed input in the middle,
+    # so a whole-key check would miss the prefix that shows.
+    key = "process-test-key-" + "0123456789abcdef" * 2
+    bad_list = launch(ATR_TRAIN_API_KEY=key, ATR_TRAIN_ALLOWED_CLIENTS="130.92.59.240/24")
     assert bad_list.returncode == 2
     assert "host bits set" in bad_list.stderr and "Traceback" not in bad_list.stderr
+    for secret in (key, key[:8], key[-8:]):
+        assert secret not in bad_list.stdout + bad_list.stderr
 
-    # --check judges without binding anything, which is what the install script asks.
-    ok = subprocess.run([*argv, "--check"], cwd=tmp_path, capture_output=True, text=True,
-                        timeout=60, env={**env, "ATR_TRAIN_API_KEY": "x" * MIN_API_KEY_LENGTH})
+    # What install_user_unit.sh asks: may the unit's bind start with this .env?
+    ok = launch(ATR_TRAIN_API_KEY=key)
     assert ok.returncode == 0, ok.stderr
+    assert "may be bound" in ok.stdout
+    assert key[:8] not in ok.stdout + ok.stderr
+    assert list(home.iterdir()) == [] and not (tmp_path / "jobs").exists(), \
+        "--check started the service"
 
 
 def _unit() -> configparser.SectionProxy:
@@ -402,6 +443,13 @@ def test_the_key_is_never_logged(make_client, trainer_key, capsys):
         for key in ("", SHORT_KEY):
             serve.main(["--host", "0.0.0.0"], run=FakeRun(),
                        settings=TrainerSettings(api_key=key, require_auth=False))
+        # And the paths every deploy takes: a start, and install_user_unit.sh's check.
+        good = TrainerSettings(api_key=trainer_key, allowed_clients=IDHEFIX)
+        for extra in ([], ["--check"]):
+            run = FakeRun()
+            assert serve.main(["--host", "0.0.0.0", "--port", "8204", *extra],
+                              settings=good, run=run) == 0
+            assert len(run.calls) == (0 if extra else 1)
         settings = TrainerSettings(api_key=trainer_key, gateway_api_key=presented)
         shown = [repr(settings), str(settings)]
     finally:
@@ -412,6 +460,31 @@ def test_the_key_is_never_logged(make_client, trainer_key, capsys):
     everything = "\n".join([*lines, *bodies, *shown, printed.out, printed.err])
     for secret in (trainer_key, presented, SHORT_KEY):
         assert secret not in everything
+
+
+def test_a_settings_error_never_prints_the_key(monkeypatch, capsys, trainer_key):
+    """For an error raised by a model-level validator, pydantic's own message
+    carries the whole input as ``input_value`` — the key's first and last
+    characters, truncated in the middle. Only field validators raise today;
+    the launcher's refusal must not depend on that staying true."""
+    class Refusing(TrainerSettings):
+        @classmethod
+        def settings_customise_sources(cls, settings_cls, init_settings, **sources):
+            # The key as the only input, so pydantic's truncation cannot hide it.
+            return (init_settings,)
+
+        @model_validator(mode="after")
+        def _refuse(self) -> "Refusing":
+            raise ValueError("a model-level check failed")
+
+    monkeypatch.setattr(serve, "get_settings", lambda: Refusing(api_key=trainer_key))
+    run = FakeRun()
+    assert serve.main(["--check", "--host", "0.0.0.0"], run=run) == serve.EXIT_REFUSED
+    out, err = capsys.readouterr()
+    assert "settings: Value error, a model-level check failed" in err
+    assert run.calls == []
+    for secret in (trainer_key, trainer_key[:8], trainer_key[-8:]):
+        assert secret not in out + err
 
 
 def test_the_example_env_would_not_open_the_service_by_accident():
