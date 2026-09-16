@@ -6,7 +6,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Written by the register stage; never committed.
+# Written by the register stage until #14, which moved registration to the
+# share. Still ignored, so a leftover in an old checkout is never committed.
 config/models.local.yaml
 
 # Local state that must not follow the repo between machines.

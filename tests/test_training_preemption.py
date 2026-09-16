@@ -40,7 +40,6 @@ def settings(tmp_path):
     return TrainerSettings(
         jobs_root=tmp_path / "training",
         trained_root=tmp_path / "trained",
-        overlay_path=tmp_path / "models.local.yaml",
         checkpoint_root=tmp_path / "local-scratch" / "checkpoints",
         venvs_root=venvs,
         min_free_disk_gb=0.0,

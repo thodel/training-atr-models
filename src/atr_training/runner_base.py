@@ -60,6 +60,7 @@ from atr_training.prepare import (
 )
 from atr_training.pagexml import line_boxes
 from atr_training.promote import PromotionResult
+from atr_training.registration import RegistrationError, manual_registration, write_registration
 from atr_training.settings import TrainerSettings
 from atr_training.vgsl_geometry import (
     LineGeometryError,
@@ -661,8 +662,37 @@ class BasePipeline(ABC):
 
     @abstractmethod
     def _register(self, job: TrainJob, model_artifact: Path, metrics: Metrics) -> Path:
-        """Copy the model out of the job's scratch and add it to the overlay,
-        ``enabled: false`` until something has actually served it."""
+        """Copy the model out of the job's scratch and register it in the shared
+        registry (:meth:`_write_registration`), ``enabled: false`` until something
+        has actually served it."""
+
+    def _write_registration(self, job: TrainJob, spec: dict[str, Any],
+                            weights_dir: Path) -> Path:
+        """Write ``trained/<id>.yaml``; a failure fails the job, and says so usefully.
+
+        Called last in ``_register``, after the weights and ``metadata.json``
+        are in place — so the weights survive the startup cleanup, which removes
+        only directories without ``metadata.json``.
+
+        Failing is the point (#14). From the split until this issue, every
+        registration went into a file the gateway never read, and the job still
+        read ``completed``. A job whose model nobody can serve is not complete.
+        But the expensive half — up to a day of GPU — did succeed, so the message
+        says where it is and how to finish by hand instead of suggesting a rerun.
+        """
+        root = self.settings.registry_root
+        # Before the write, so a failed job's record points at the weights too.
+        job.model_path = spec.get("local_path") or str(weights_dir)
+        try:
+            return write_registration(root, spec)
+        except RegistrationError as exc:
+            raise StageFailed(
+                f"the model is trained but NOT registered: {exc}\n"
+                f"Its weights are already at {weights_dir} (with metadata.json) — "
+                "nothing needs retraining. Once the registry is writable, register it "
+                "by hand:\n"
+                + manual_registration(root, spec)
+            ) from exc
 
     def _maybe_publish(self, job: TrainJob, model_path: Path) -> str:
         """Publish to the Hub when the score clears the threshold (#88).

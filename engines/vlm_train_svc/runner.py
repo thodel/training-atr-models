@@ -12,7 +12,7 @@ prepare      HF rows → ``pages/*.{jpg,xml}``        *identical* — shared cod
 compile      ``ketos compile`` → ``.arrow``         crop lines → ``*.jsonl``
 train        ``ketos train`` → ``best_*.mlmodel``   QLoRA → LoRA adapter dir
 test         ``ketos test`` → CER from the report   generate + score → CER
-register     copy weights, overlay entry            copy adapter, overlay entry
+register     copy weights, trained/<id>.yaml        copy adapter, trained/<id>.yaml
 ===========  =====================================  =============================
 
 ``compile`` runs in-process because cropping is PIL and a subprocess per page
@@ -32,7 +32,6 @@ from pathlib import Path
 
 from loguru import logger
 
-from atr_training.registry import ModelSpec
 from atr_training.contracts import (
     VLM_MAX_SAMPLE_CHARS,
     Metrics,
@@ -44,7 +43,6 @@ from atr_training.artefact_cache import key_for_specs
 from atr_training.cropping import write_crops
 from atr_training.eval_subset import plan_eval_subset, source_key
 from atr_training.manifests import read_manifest
-from atr_training.overlay import upsert_entry
 from atr_training.promote import PromotionResult
 from atr_training.runner_base import BasePipeline, StageFailed, run_job
 from atr_training.vlm_cmd import (
@@ -338,7 +336,7 @@ class Pipeline(BasePipeline):
 
     # ── register ────────────────────────────────────────────────────────────
     def _register(self, job: TrainJob, adapter: Path, metrics: Metrics) -> Path:
-        """Copy the adapter out of local scratch and record it in the overlay.
+        """Copy the adapter out of local scratch and register it on the share.
 
         Registered **disabled**, exactly as kraken's is — and here the gap between
         "trained" and "servable" is wider than a promotion gate: vLLM 0.11 refuses
@@ -386,22 +384,20 @@ class Pipeline(BasePipeline):
             encoding="utf-8",
         )
 
-        upsert_entry(
-            self.settings.overlay_path,
-            ModelSpec(
-                id=model_id,
-                engine="vllm",
-                local_path=str(dest_dir),
-                base_model=job.request.base_model,
-                enabled=False,  # not servable until merged, then promoted
-                task="htr",
-                level=params.granularity,
-                # The prompt travels with the model: serving it with different
-                # wording than it was tuned on is a silent distribution shift.
-                prompt=params.prompt,
-            ),
-        )
-        job.model_path = str(dest_dir)
+        self._write_registration(job, {
+            "id": model_id,
+            "engine": "vllm",
+            # vLLM never serves from here (the gateway looks in vllm_merged_dir);
+            # this is where scripts/merge_loras.py on idhefix finds the adapter.
+            "local_path": str(dest_dir),
+            "base_model": job.request.base_model,
+            "enabled": False,  # not servable until merged, then promoted
+            "task": "htr",
+            "level": params.granularity,
+            # The prompt travels with the model: serving it with different
+            # wording than it was tuned on is a silent distribution shift.
+            "prompt": params.prompt,
+        }, dest_dir)
         logger.info("registered {} -> {} (disabled until merged and promoted)",
                     model_id, dest_dir)
         return dest_dir

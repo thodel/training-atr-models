@@ -717,8 +717,8 @@ def record_publication(model: TrainedModel, repo_id: str, url: str,
 
     This is what makes a second ``publish_to_hub.py`` run a no-op instead of a
     duplicate push. It is deliberately stored beside the weights rather than in
-    the registry overlay: the overlay describes what this box can *serve*, and a
-    hub repo has no bearing on that.
+    the model's registration (``trained/<id>.yaml``): a registration describes
+    what the gateway can *serve*, and a hub repo has no bearing on that.
     """
     published = {"repo_id": repo_id, "url": url, "at": (when or utcnow()).isoformat()}
     metadata = dict(model.metadata)

@@ -111,8 +111,11 @@ def test_the_registry_is_read_from_the_share_not_from_this_repo():
     Nothing may reintroduce one: the default is the share, and config/models.yaml
     no longer exists here.
     """
-    default = TrainerSettings.model_fields["models_config"].default
+    default = TrainerSettings.model_fields["registry_root"].default
     assert str(default).startswith("/mnt/wbkolleg_dh_1/"), default
+    # models_config has no default of its own: it is derived from the root
+    # (tests/test_registration.py::test_models_config_follows_registry_root).
+    assert TrainerSettings.model_fields["models_config"].default is None
     repo = Path(__file__).resolve().parents[1]
     assert not (repo / "config" / "models.yaml").exists()
 

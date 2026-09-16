@@ -192,12 +192,10 @@ class _Runner:
         raise AssertionError(f"{flag} was never passed (commands: {self.commands})")
 
 
-@pytest.fixture
-def trocr_run(tmp_path):
-    """One completed TrOCR job, plus the runner that saw its argv."""
+def _run_trocr(tmp_path, registry_root):
     settings = TrainerSettings(
         jobs_root=tmp_path / "training", trained_root=tmp_path / "trained",
-        overlay_path=tmp_path / "models.local.yaml",
+        registry_root=registry_root,
         checkpoint_root=tmp_path / "scratch" / "checkpoints",
         min_free_disk_gb=0.0, gpu=1,
         artefact_cache=False, artefact_cache_root=tmp_path / "artefacts")
@@ -211,6 +209,32 @@ def trocr_run(tmp_path):
         params=TrOCRTrainParams(epochs=1, batch_size=1), force=True))
     done = Pipeline(store, settings, runner=runner, source=_Source()).execute(job.id)
     return done, store, runner
+
+
+@pytest.fixture
+def trocr_run(tmp_path):
+    """One completed TrOCR job, plus the runner that saw its argv."""
+    (tmp_path / "registry").mkdir()
+    return _run_trocr(tmp_path, tmp_path / "registry")
+
+
+def test_a_trocr_model_is_registered_on_the_share(trocr_run, tmp_path):
+    from atr_training.registration import read_registration
+
+    job, _, _ = trocr_run
+    spec = read_registration(tmp_path / "registry", "trocr-pin-v1")
+    assert spec.engine == "trocr" and spec.level == "line" and spec.enabled is False
+    assert spec.local_path == job.model_path == str(tmp_path / "trained" / "trocr-pin-v1")
+    assert spec.base_model == "microsoft/trocr-base-handwritten"
+
+
+def test_a_failed_trocr_registration_fails_the_job_and_says_where_the_weights_are(tmp_path):
+    job, _, _ = _run_trocr(tmp_path, tmp_path / "unmounted" / "registry")
+    weights = tmp_path / "trained" / "trocr-pin-v1"
+    assert job.status == "failed"
+    assert f"weights are already at {weights}" in job.error
+    assert "-m atr_training.registration --root" in job.error
+    assert (weights / "metadata.json").is_file()
 
 
 def test_every_compiled_crop_is_where_the_trainer_will_look(trocr_run):

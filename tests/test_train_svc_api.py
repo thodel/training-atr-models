@@ -75,7 +75,6 @@ def settings(tmp_path: Path, venvs: Path) -> TrainerSettings:
     return TrainerSettings(
         jobs_root=tmp_path / "training",
         trained_root=tmp_path / "trained",
-        overlay_path=tmp_path / "models.local.yaml",
         venvs_root=venvs,
         # Isolated deliberately: the default is ~/atr-cache/checkpoints, so a test
         # that writes checkpoints would land in the developer's home directory and
@@ -618,11 +617,11 @@ class TestBaseModelAtSubmit:
 
     @pytest.fixture(autouse=True)
     def registry(self, app):
-        from atr_training.registry import ModelSpec, Registry
+        from atr_training.shared_registry import BaseEntry, SharedRegistry
 
-        app.state.registry = Registry([
-            ModelSpec(id="kraken-late_medieval_german", engine="kraken",
-                      zenodo_id="10.5281/zenodo.15366732", task="htr"),
+        app.state.registry = SharedRegistry([
+            BaseEntry(id="kraken-late_medieval_german", engine="kraken",
+                      zenodo_id="10.5281/zenodo.15366732"),
         ])
         yield
         if hasattr(app.state, "registry"):

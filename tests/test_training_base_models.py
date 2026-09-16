@@ -12,26 +12,28 @@ prepare and compile had already run.
 
 import pytest
 
-from atr_training.registry import ModelSpec, Registry
 from atr_training.base_models import (
     BaseModelError,
     resolve_base_model,
 )
+from atr_training.shared_registry import BaseEntry, SharedRegistry
 
 
 @pytest.fixture
-def registry() -> Registry:
-    return Registry([
-        ModelSpec(id="kraken-late_medieval_german", engine="kraken",
-                  zenodo_id="10.5281/zenodo.15366732", task="htr"),
-        ModelSpec(id="kraken-medieval_generic_b", engine="kraken",
-                  zenodo_id="10.5281/zenodo.18220238", task="htr"),
-        ModelSpec(id="kraken-locally-trained", engine="kraken",
-                  local_path="/atr-cache/trained/x/x.mlmodel", enabled=False),
-        ModelSpec(id="qwen3vl-8b-hebrew", engine="vllm",
-                  hf_repo="wjbmattingly/Qwen3-VL-8B-hebrew-3-epochs",
-                  base_model="Qwen/Qwen3-VL-8B-Instruct"),
-    ])
+def registry() -> SharedRegistry:
+    # BaseEntry ignores the fields a lookup does not need (task, hf_repo, ...),
+    # exactly as it does when it reads the published file.
+    return SharedRegistry([BaseEntry.model_validate(e) for e in [
+        dict(id="kraken-late_medieval_german", engine="kraken",
+             zenodo_id="10.5281/zenodo.15366732", task="htr"),
+        dict(id="kraken-medieval_generic_b", engine="kraken",
+             zenodo_id="10.5281/zenodo.18220238", task="htr"),
+        dict(id="kraken-locally-trained", engine="kraken",
+             local_path="/atr-cache/trained/x/x.mlmodel", enabled=False),
+        dict(id="qwen3vl-8b-hebrew", engine="vllm",
+             hf_repo="wjbmattingly/Qwen3-VL-8B-hebrew-3-epochs",
+             base_model="Qwen/Qwen3-VL-8B-Instruct"),
+    ]])
 
 
 def never_exists(_path: str) -> bool:

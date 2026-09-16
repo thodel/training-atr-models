@@ -22,7 +22,7 @@ from atr_training.contracts import (
     VlmTrainParams,
 )
 from atr_training.jobstore import JobStore
-from atr_training.overlay import load_overlay
+from atr_training.registration import read_registration, trained_dir
 from atr_training.settings import TrainerSettings
 from atr_training.vlm_cmd import ADAPTER_CONFIG
 from atr_training.vlm_dataset import read_jsonl
@@ -148,10 +148,11 @@ def settings(tmp_path: Path) -> TrainerSettings:
     venvs = tmp_path / "venvs"
     (venvs / "vlm-train" / "bin").mkdir(parents=True)
     (venvs / "vlm-train" / "bin" / "python").touch()
+    (tmp_path / "registry").mkdir()
     return TrainerSettings(
         jobs_root=tmp_path / "training",
         trained_root=tmp_path / "trained",
-        overlay_path=tmp_path / "models.local.yaml",
+        registry_root=tmp_path / "registry",
         checkpoint_root=tmp_path / "local-scratch" / "checkpoints",
         venvs_root=venvs,
         min_free_disk_gb=0.0,
@@ -408,23 +409,40 @@ def test_a_rerun_replaces_the_adapter_rather_than_mixing_it(store, settings):
 
 
 def test_registered_model_is_disabled_and_carries_its_prompt(store, settings):
-    run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
-    specs = load_overlay(settings.overlay_path)
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+    assert [p.name for p in trained_dir(settings.registry_root).iterdir()] == [
+        "qwen3vl-thun-v1.yaml"]
+    spec = read_registration(settings.registry_root, "qwen3vl-thun-v1")
 
-    assert [s.id for s in specs] == ["qwen3vl-thun-v1"]
-    assert specs[0].engine == "vllm"
-    assert specs[0].enabled is False        # not servable until merged, then promoted
-    assert specs[0].base_model == "Qwen/Qwen3-VL-8B-Instruct"
-    assert specs[0].level == "line"
+    assert spec.engine == "vllm"
+    assert spec.enabled is False        # not servable until merged, then promoted
+    assert spec.base_model == "Qwen/Qwen3-VL-8B-Instruct"
+    assert spec.level == "line"
+    # scripts/merge_loras.py on idhefix finds the adapter here
+    assert spec.local_path == job.model_path == str(settings.trained_root / "qwen3vl-thun-v1")
     # serving with different wording than it was tuned on is a silent shift
-    assert specs[0].prompt and "ranscribe" in specs[0].prompt
+    assert spec.prompt and "ranscribe" in spec.prompt
 
 
 def test_a_failed_job_registers_nothing(store, settings):
     run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}),
                  FakeRunner(fail_on="train"))
-    assert load_overlay(settings.overlay_path) == []
+    assert not trained_dir(settings.registry_root).exists()
     assert not settings.trained_root.joinpath("qwen3vl-thun-v1").exists()
+
+
+def test_a_failed_registration_fails_the_job_and_says_where_the_adapter_is(
+        store, settings, tmp_path):
+    """A day of QLoRA is not lost because the share was away for a minute."""
+    settings = settings.model_copy(update={"registry_root": tmp_path / "unmounted"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    dest = settings.trained_root / "qwen3vl-thun-v1"
+    assert job.status == "failed"
+    assert f"weights are already at {dest}" in job.error
+    assert "-m atr_training.registration --root" in job.error
+    assert (dest / "adapter_model.safetensors").read_bytes() == b"ADAPTER"
+    assert (dest / "metadata.json").is_file()
 
 
 # ── samples too long to afford (#110) ───────────────────────────────────────

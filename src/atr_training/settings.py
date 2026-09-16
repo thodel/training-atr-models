@@ -17,12 +17,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from atr_training.backends import runner_python
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+#: ``<registry_root>/models.yaml`` — the gateway's ``CURATED_FILENAME``.
+CURATED_FILENAME = "models.yaml"
 
 
 class TrainerSettings(BaseSettings):
@@ -36,17 +38,28 @@ class TrainerSettings(BaseSettings):
     jobs_root: Path = Path.home() / "atr-cache" / "training"
     #: Promoted weights, one directory per trained model.
     trained_root: Path = Path.home() / "atr-cache" / "trained"
-    #: The gitignored registry overlay trained models are registered in.
-    overlay_path: Path = REPO_ROOT / "config" / "models.local.yaml"
-    #: The model registry, read only to resolve a ``base_model`` given as a
-    #: registry id rather than a Zenodo DOI (#76). Never written to.
+    #: The shared registry directory (#5, #14) — MUST equal the gateway's
+    #: ``ATR_REGISTRY_ROOT`` on idhefix. The gateway publishes the curated
+    #: ``models.yaml`` here, and every trained model is registered here as
+    #: ``trained/<id>.yaml`` (:mod:`atr_training.registration`).
     #:
-    #: On the SHARE, not in this repo (#5). The gateway on idhefix publishes the
-    #: curated file there (serving-atr-inference#138); a copy here would drift
-    #: without a word. Only kraken ever resolves an id — 12 of 26 kraken jobs as
-    #: of 16.09.2026 — so vllm and trocr never read this.
-    models_config: Path = Path(
-        "/mnt/wbkolleg_dh_1/Textrecognition_Training/registry/models.yaml")
+    #: It replaced ``overlay_path`` (``<repo>/config/models.local.yaml``). After
+    #: the split that file was in THIS checkout, on the other machine from the
+    #: gateway, and all three runners registered into it without a word (#14).
+    #: Absolute, like the gateway's: a relative root is a different registry for
+    #: every working directory, which is the problem the share exists to remove.
+    registry_root: Path = Path("/mnt/wbkolleg_dh_1/Textrecognition_Training/registry")
+    #: The curated registry, read only to resolve a ``base_model`` given as a
+    #: registry id rather than a Zenodo DOI (#76). Never written to. Only kraken
+    #: ever resolves an id — 12 of 26 kraken jobs as of 16.09.2026 — so vllm and
+    #: trocr never read this.
+    #:
+    #: Derived from ``registry_root`` unless set explicitly
+    #: (ATR_TRAIN_MODELS_CONFIG), for the reason ``ketos`` follows ``venvs_root``
+    #: below: two fields naming one place drift apart, and then base models are
+    #: read from one registry while models are registered into another. Empty
+    #: counts as unset.
+    models_config: Path | None = None
     #: Checkpoints go to LOCAL disk, not the job directory on the share. Lightning
     #: saves them via a temp file + rename; with the target on CIFS and the temp
     #: local that rename is cross-device, and the fsspec version datasets<4 pins
@@ -110,6 +123,31 @@ class TrainerSettings(BaseSettings):
     def _ketos_follows_the_venvs(self) -> "TrainerSettings":
         if self.ketos is None:
             self.ketos = self.venvs_root / "kraken-train" / "bin" / "ketos"
+        return self
+
+    @field_validator("registry_root", mode="before")
+    @classmethod
+    def _registry_root_is_absolute(cls, value):
+        # Before, not after: pydantic would turn "" into Path("."), and the
+        # message should show what was actually configured.
+        if value is None or not str(value).strip() or not Path(str(value)).is_absolute():
+            raise ValueError(
+                f"registry_root must be an absolute path (the gateway's ATR_REGISTRY_ROOT), "
+                f"got {value!r}")
+        return value
+
+    @field_validator("models_config", mode="before")
+    @classmethod
+    def _empty_models_config_is_unset(cls, value):
+        # `ATR_TRAIN_MODELS_CONFIG=` in .env means "derive it", not the cwd.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _models_config_follows_the_registry(self) -> "TrainerSettings":
+        if self.models_config is None:
+            self.models_config = self.registry_root / CURATED_FILENAME
         return self
 
     def runner_python(self, engine: str) -> Path:

@@ -7,13 +7,14 @@ torch at module scope and can only be AST-tested — see
 tests/test_issue30_engine_failures.py.)
 """
 
+import os
 from pathlib import Path
 
 import pytest
 
 from atr_training.contracts import DatasetSpec, KrakenTrainParams, TrainRequest
 from atr_training.jobstore import JobStore
-from atr_training.overlay import load_overlay
+from atr_training.registration import read_registration, registration_path, trained_dir
 
 from kraken_train_svc.runner import Pipeline
 from atr_training.settings import TrainerSettings
@@ -111,10 +112,13 @@ class FakeRunner:
 
 @pytest.fixture
 def settings(tmp_path: Path) -> TrainerSettings:
+    # The registry root exists, as the gateway leaves it; trained/ is the
+    # trainer's to create.
+    (tmp_path / "registry").mkdir()
     return TrainerSettings(
         jobs_root=tmp_path / "training",
         trained_root=tmp_path / "trained",
-        overlay_path=tmp_path / "models.local.yaml",
+        registry_root=tmp_path / "registry",
         checkpoint_root=tmp_path / "local-scratch" / "checkpoints",
         ketos=tmp_path / "ketos",
         min_free_disk_gb=0.0,
@@ -368,19 +372,141 @@ def test_register_does_not_copy_file_metadata(store, settings, monkeypatch):
 
 def test_registered_model_is_disabled_until_promoted(store, settings):
     """Registering is not evidence the gateway can serve it (#36 promotes)."""
-    run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
-    specs = load_overlay(settings.overlay_path)
-    assert [s.id for s in specs] == ["kraken-thun-missiven-v1"]
-    assert specs[0].enabled is False
-    assert specs[0].local_path.endswith("kraken-thun-missiven-v1.mlmodel")
-    assert specs[0].engine == "kraken"
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+    assert sorted(p.name for p in trained_dir(settings.registry_root).iterdir()) == [
+        "kraken-thun-missiven-v1.yaml"]
+    spec = read_registration(settings.registry_root, "kraken-thun-missiven-v1")
+    assert spec.enabled is False
+    assert spec.engine == "kraken"
+    # Absolute, and the very file the job reports: the kraken engine on the
+    # other machine opens this path.
+    assert spec.local_path == job.model_path
+    assert Path(spec.local_path).is_absolute()
+    assert spec.local_path.endswith("kraken-thun-missiven-v1.mlmodel")
 
 
 def test_a_failed_job_registers_nothing(store, settings):
     run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}),
                  FakeRunner(fail_on="train"))
-    assert load_overlay(settings.overlay_path) == []
+    assert not trained_dir(settings.registry_root).exists()
     assert not settings.trained_root.joinpath("kraken-thun-missiven-v1").exists()
+
+
+def test_a_failed_registration_fails_the_job_and_says_where_the_weights_are(
+        store, settings, tmp_path):
+    """Until #14 a registration that reached nobody still read `completed`.
+
+    Here the registry root is missing — the share not mounted. The job fails,
+    and the record says the expensive half is safe and how to finish by hand.
+    """
+    settings = settings.model_copy(update={"registry_root": tmp_path / "unmounted" / "registry"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    weights_dir = settings.trained_root / "kraken-thun-missiven-v1"
+    weights = weights_dir / "kraken-thun-missiven-v1.mlmodel"
+    assert job.status == "failed"
+    assert job.error.startswith("StageFailed in register")
+    assert [s.status for s in job.stages if s.name == "register"] == ["failed"]
+    assert "NOT registered" in job.error
+    assert f"weights are already at {weights_dir}" in job.error
+    assert "-m atr_training.registration --root" in job.error
+    assert str(tmp_path / "unmounted" / "registry") in job.error
+    # ... and they are: the startup cleanup keeps a directory with metadata.json.
+    assert weights.read_bytes() == b"WEIGHTS"
+    assert (weights_dir / "metadata.json").is_file()
+    assert job.model_path == str(weights)
+    assert not (tmp_path / "unmounted").exists(), "the missing share was built locally"
+
+
+def test_the_command_in_a_failed_registration_registers_the_model(store, settings, tmp_path):
+    """The advice in the message works as written, once the share is back —
+    pasted into a shell from another directory, with nothing else on the path."""
+    import re
+    import subprocess
+
+    missing = tmp_path / "later" / "registry"
+    failed = run_pipeline(store, settings.model_copy(update={"registry_root": missing}),
+                          FakeSource({"train": 4, "eval": 2}), FakeRunner())
+    command = re.search(r"^PYTHONPATH=.*?^EOF$", failed.error, re.S | re.M)
+    assert command, failed.error
+
+    missing.mkdir(parents=True)                       # the share is back
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    done = subprocess.run(["bash", "-c", command.group(0)], cwd=tmp_path, env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    spec = read_registration(missing, "kraken-thun-missiven-v1")
+    assert spec.local_path == failed.model_path and spec.enabled is False
+
+
+# ── the promotion gate's write (#36, #14) ───────────────────────────────────
+def _gate_answers(monkeypatch, text: str = "Item ontfaen van Janne") -> list[str]:
+    import kraken_train_svc.runner as kraken_runner
+
+    asked: list[str] = []
+
+    def recognizer(url, key):
+        def recognize(model_id, image):
+            asked.append(model_id)
+            return text
+        return recognize
+
+    monkeypatch.setattr(kraken_runner, "http_recognizer", recognizer)
+    return asked
+
+
+def test_a_passed_gate_enables_the_registration(store, settings, monkeypatch):
+    asked = _gate_answers(monkeypatch)
+    settings = settings.model_copy(update={"gateway_api_key": "k"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert asked == ["kraken-thun-missiven-v1"]
+    assert job.status == "completed", job.error
+    assert job.promoted is True
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is True
+
+
+def test_a_gate_that_cannot_rewrite_the_file_does_not_claim_a_promotion(
+        store, settings, monkeypatch):
+    """The model served, but the gateway advertises what the file says. A
+    record saying `promoted` over a file saying `enabled: false` would be the
+    #30/#31 confusion again, from the other side. The run itself still counts."""
+    import kraken_train_svc.runner as kraken_runner
+    from atr_training.registration import RegistrationError
+
+    _gate_answers(monkeypatch)
+
+    def share_gone(root, model_id, enabled=True):
+        raise RegistrationError(registration_path(root, model_id), "Host is down")
+
+    monkeypatch.setattr(kraken_runner, "set_enabled", share_gone)
+    settings = settings.model_copy(update={"gateway_api_key": "k"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert job.promoted is False
+    assert "gate passed" in job.promotion_reason and "Host is down" in job.promotion_reason
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is False
+
+
+def test_a_gate_whose_registration_vanished_does_not_claim_a_promotion(
+        store, settings, monkeypatch):
+    import kraken_train_svc.runner as kraken_runner
+
+    _gate_answers(monkeypatch)
+    real = kraken_runner.set_enabled
+
+    def withdrawn_first(root, model_id, enabled=True):
+        registration_path(root, model_id).unlink()
+        return real(root, model_id, enabled)
+
+    monkeypatch.setattr(kraken_runner, "set_enabled", withdrawn_first)
+    settings = settings.model_copy(update={"gateway_api_key": "k"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert job.promoted is False
+    assert "no registration" in job.promotion_reason
 
 
 # ── a failed job must carry its evidence, not just its exception type ────────

@@ -8,14 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from atr_training.overlay import load_overlay, set_enabled, upsert_entry
-from atr_training.registry import ModelSpec
 from atr_training.promote import held_out_page, promote
-
-
-def trained(model_id: str = "kraken-thun-v1", enabled: bool = False) -> ModelSpec:
-    return ModelSpec(id=model_id, engine="kraken", local_path=f"/w/{model_id}",
-                     enabled=enabled, task="htr")
 
 
 # ── the gate ────────────────────────────────────────────────────────────────
@@ -82,21 +75,8 @@ def test_no_manifest_is_not_an_error(tmp_path: Path):
     assert held_out_page(tmp_path) is None
 
 
-# ── what the gate is allowed to write ───────────────────────────────────────
-def test_promotion_flips_exactly_one_entry(tmp_path: Path):
-    overlay = tmp_path / "models.local.yaml"
-    upsert_entry(overlay, trained("a"))
-    upsert_entry(overlay, trained("b"))
-
-    assert set_enabled(overlay, "b", True) is True
-    by_id = {s.id: s.enabled for s in load_overlay(overlay)}
-    assert by_id == {"a": False, "b": True}
-
-
-def test_flipping_a_model_that_is_not_there_reports_it(tmp_path: Path):
-    overlay = tmp_path / "models.local.yaml"
-    upsert_entry(overlay, trained("a"))
-    assert set_enabled(overlay, "ghost", True) is False
+# What the gate is allowed to write — one registration's `enabled` — is tested
+# with the writer, in tests/test_registration.py.
 
 
 def test_the_gate_asks_for_a_model_that_is_not_enabled_yet(monkeypatch, tmp_path):

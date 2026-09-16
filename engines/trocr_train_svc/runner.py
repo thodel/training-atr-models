@@ -38,11 +38,9 @@ from pathlib import Path
 
 from loguru import logger
 
-from atr_training.registry import ModelSpec
 from atr_training.contracts import Metrics, StageRecord, TrainJob, utcnow
 from atr_training.cropping import write_crops
 from atr_training.manifests import read_manifest
-from atr_training.overlay import upsert_entry
 from atr_training.runner_base import BasePipeline, StageFailed, run_job
 from atr_training.trocr_cmd import (
     evaluate_cmd,
@@ -158,7 +156,7 @@ class Pipeline(BasePipeline):
 
     # ── register ────────────────────────────────────────────────────────────
     def _register(self, job: TrainJob, checkpoint: Path, metrics: Metrics) -> Path:
-        """Copy the checkpoint out of local scratch and record it in the overlay.
+        """Copy the checkpoint out of local scratch and register it on the share.
 
         Registered **disabled**: registering is not evidence that the gateway can
         serve it. The promotion gate (#36) flips it after one real recognition.
@@ -196,19 +194,15 @@ class Pipeline(BasePipeline):
             encoding="utf-8",
         )
 
-        upsert_entry(
-            self.settings.overlay_path,
-            ModelSpec(
-                id=model_id,
-                engine="trocr",
-                local_path=str(dest_dir),
-                base_model=job.request.base_model,
-                enabled=False,  # promotion gate: #36
-                task="htr",
-                level="line",
-            ),
-        )
-        job.model_path = str(dest_dir)
+        self._write_registration(job, {
+            "id": model_id,
+            "engine": "trocr",
+            "local_path": str(dest_dir),
+            "base_model": job.request.base_model,
+            "enabled": False,  # promotion gate: #36
+            "task": "htr",
+            "level": "line",
+        }, dest_dir)
         logger.info("registered {} -> {} (disabled until promoted)",
                     model_id, dest_dir)
         return dest_dir

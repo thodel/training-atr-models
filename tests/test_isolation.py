@@ -13,7 +13,10 @@ for the modules a test happens to import. This reads every file.
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 ROOTS = ("src", "engines", "ubelix", "scripts", "eval")
@@ -46,23 +49,20 @@ def test_nothing_imports_the_serving_package():
     assert not offenders, "the serving half is imported here:\n  " + "\n  ".join(offenders)
 
 
-def test_the_temporary_registry_copy_is_only_used_for_writing():
-    """registry.py came over in #3 so the moved code would import.
-
-    #5 took the reading side off it — base-model lookups now read the file the
-    gateway publishes to the share. What is left is the writing side, and #14
-    removes that. Until then, nothing new may start depending on the copy.
+@pytest.mark.parametrize("module", ["atr_training.registry", "atr_training.overlay"])
+def test_the_temporary_registry_copy_and_the_overlay_are_gone(module):
+    """registry.py came over in #3 so the moved code would import; overlay.py
+    wrote a file in this checkout that the gateway, on another machine, never
+    read. #5 took the reading side off the copy and #14 the writing side: a
+    registration is one file on the share (atr_training.registration), with a
+    schema of this repo's own. Neither module may come back, nor an import of
+    either.
     """
-    allowed = {
-        "src/atr_training/overlay.py",
-        "engines/kraken_train_svc/runner.py",
-        "engines/trocr_train_svc/runner.py",
-        "engines/vlm_train_svc/runner.py",
-    }
-    users = {
-        str(path.relative_to(REPO))
+    assert importlib.util.find_spec(module) is None, f"{module} exists again"
+    users = [
+        f"{path.relative_to(REPO)}:{line}"
         for path in _python_files()
-        for _, module in _imported_modules(path)
-        if module == "atr_training.registry"
-    }
-    assert users <= allowed, f"new users of the temporary copy: {sorted(users - allowed)}"
+        for line, imported in _imported_modules(path)
+        if imported == module or imported.startswith(module + ".")
+    ]
+    assert not users, f"{module} is imported by: {users}"

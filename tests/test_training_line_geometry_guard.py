@@ -41,7 +41,6 @@ def settings(tmp_path: Path) -> TrainerSettings:
     return TrainerSettings(
         jobs_root=tmp_path / "training",
         trained_root=tmp_path / "trained",
-        overlay_path=tmp_path / "models.local.yaml",
         checkpoint_root=tmp_path / "scratch",
         ketos=tmp_path / "ketos",
         min_free_disk_gb=0.0,

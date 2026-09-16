@@ -21,7 +21,6 @@ from pathlib import Path
 
 from loguru import logger
 
-from atr_training.registry import ModelSpec  # writing side only, until #14
 from atr_training.shared_registry import RegistryUnavailable, load_shared_registry
 from atr_training.artefact_cache import key_for_specs
 from atr_training.base_models import BaseModelError, resolve_base_model
@@ -40,7 +39,7 @@ from atr_training.chunking import chunks, is_plan, read_plan
 from atr_training.manifests import binary_manifest, write_manifest
 from atr_training.prepare import materialize
 from atr_training.promote import PromotionResult, held_out_page, http_recognizer, promote
-from atr_training.overlay import set_enabled, upsert_entry
+from atr_training.registration import RegistrationError, set_enabled
 from atr_training.runner_base import (
     BasePipeline,
     Cancelled,
@@ -352,9 +351,9 @@ class Pipeline(BasePipeline):
         return metrics
 
     def _register(self, job: TrainJob, weights: Path, metrics: Metrics) -> Path:
-        """Copy the weights out of local scratch and record them in the overlay.
+        """Copy the weights out of local scratch and register them on the share.
 
-        The entry is written **disabled**: registering is not evidence that the
+        The registration is written **disabled**: registering is not evidence that the
         gateway can serve it. The promotion gate (#36) flips it after one real
         recognition — the lesson of #30/#31.
 
@@ -404,18 +403,16 @@ class Pipeline(BasePipeline):
         )
         tmp_meta.rename(dest_dir / "metadata.json")
 
-        upsert_entry(
-            self.settings.overlay_path,
-            ModelSpec(
-                id=model_id,
-                engine="kraken",
-                local_path=str(dest),
-                enabled=False,  # promotion gate: #36
-                task="htr",
-                level="page",
-            ),
-        )
-        job.model_path = str(dest)
+        self._write_registration(job, {
+            "id": model_id,
+            "engine": "kraken",
+            # Opened by the kraken engine beside the gateway, on the other
+            # machine: absolute, and under the mount both of them share.
+            "local_path": str(dest),
+            "enabled": False,  # promotion gate: #36
+            "task": "htr",
+            "level": "page",
+        }, dest_dir)
         logger.info("registered {} -> {} (disabled until promoted)", model_id, dest)
         return dest
 
@@ -459,9 +456,25 @@ class Pipeline(BasePipeline):
             job.request.model_id, page,
             http_recognizer(self.settings.gateway_url, self.settings.gateway_api_key),
         )
-        if verdict.promoted:
-            set_enabled(self.settings.overlay_path, job.request.model_id, True)
-            logger.info("{} promoted: {!r}", job.request.model_id, verdict.sample)
+        if not verdict.promoted:
+            return verdict
+        model_id = job.request.model_id
+        # The model served, but it is advertised only once its file says so. A
+        # rewrite that fails is reported as "not promoted", never raised: the
+        # gate never fails a run (runner_base._finish), and the record must not
+        # claim a promotion the gateway cannot see.
+        try:
+            flipped = set_enabled(self.settings.registry_root, model_id, True)
+        except RegistrationError as exc:
+            return PromotionResult(
+                False, f"the gate passed, but enabling the registration failed: {exc}",
+                sample=verdict.sample)
+        if not flipped:
+            return PromotionResult(
+                False, f"the gate passed, but {model_id} has no registration under "
+                       f"{self.settings.registry_root} to enable any more",
+                sample=verdict.sample)
+        logger.info("{} promoted: {!r}", model_id, verdict.sample)
         return verdict
 
 
