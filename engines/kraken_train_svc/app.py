@@ -296,7 +296,19 @@ def schedule_once(
         # forever while the record still says "queued".
         logger.error("cannot start {}: {}", job.id, exc)
         return store.fail(job, f"could not start the {job.request.engine} runner: {exc}")
-    return store.save(job)
+    # Record the pid on what is on disk now, not on the copy loaded before the
+    # spawn. The runner is detached and saves its own pid and `preparing` as its
+    # first act; saving the pre-spawn copy after that put the record back to
+    # `queued` until the runner's next write — which in prepare can be an hour
+    # away, and the bot shows `queued` for a run that is working (#15 review).
+    try:
+        current = store.load(job.id)
+    except JobStoreError:
+        current = job
+    if current.pid is not None:
+        return current              # the runner has written; its record stands
+    current.pid, current.queued_reason = job.pid, None
+    return store.save(current)
 
 
 def _schedule() -> TrainJob | None:

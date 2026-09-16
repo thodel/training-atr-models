@@ -1008,3 +1008,33 @@ def test_startup_cleanup_reads_the_newest_mtime_of_the_directory_and_its_entries
         settings.trained_root, store, min_age_h=24, registry_root=settings.registry_root)
     assert not stale.exists() and removed == 1
     assert rewritten.is_dir() and added.is_dir() and empty.is_dir()
+
+
+def test_a_fast_runner_s_first_write_is_not_undone_by_the_pid_save(tmp_path, root, venvs):
+    """The runner saves its pid and `preparing` before the scheduler saves the pid."""
+    settings = trainer_settings(tmp_path, venvs, "asteraix")
+    store = JobStore(root, host_id="asteraix")
+    job = store.create(request())
+
+    def fast_runner(settings, job):
+        mine = store.load(job.id)
+        mine.pid = os.getpid()
+        store.advance(mine, "preparing")
+        return mine.pid
+
+    started = app_module.schedule_once(store, settings, spawn=fast_runner, vram_check=free_gpu)
+    on_disk = store.load(job.id)
+    assert on_disk.status == "preparing", "the pid save put a started run back to queued"
+    assert on_disk.pid == os.getpid()
+    assert started.status == "preparing"
+
+
+def test_a_slow_runner_still_gets_its_pid_recorded(tmp_path, root, venvs):
+    settings = trainer_settings(tmp_path, venvs, "asteraix")
+    store = JobStore(root, host_id="asteraix")
+    job = store.create(request())
+    app_module.schedule_once(store, settings, spawn=lambda s, j: os.getpid(),
+                             vram_check=free_gpu)
+    on_disk = store.load(job.id)
+    assert on_disk.status == "queued" and on_disk.pid == os.getpid()
+    assert on_disk.host == "asteraix"
