@@ -163,8 +163,7 @@ def app(settings: TrainerSettings):
     app.state.vram_check = free_gpu
     app.state.verify_spec = lambda spec, settings, **kw: []
     yield app
-    for attr in ("settings", "store", "spawn", "vram_check", "verify_spec",
-                 "gpu_claim", "gpu_claim_at"):
+    for attr in ("settings", "store", "spawn", "vram_check", "verify_spec"):
         if hasattr(app.state, attr):
             delattr(app.state, attr)
 
@@ -365,22 +364,6 @@ def test_the_running_count_is_per_host(asteraix, idhefix, tmp_path, venvs):
                                     vram_check=free_gpu) is None
     assert asteraix.load(waiting.id).queued_reason == f"waiting for {mine.id} (training)"
     assert spawns.calls == [("asteraix", mine.id)]
-
-
-def test_another_host_s_run_does_not_claim_this_card(client, app, root):
-    """/gpu-claim tells the gateway whether THIS card is spoken for."""
-    other = JobStore(root, host_id="idhefix")
-    job = other.create(request("v5"))
-    _running(other, job.id, 1843)
-    app_module.refresh_gpu_claim(store_of(app).list())
-    assert client.get("/gpu-claim").json()["claimed"] is False
-
-    mine = store_of(app).create(request("mine"))
-    _running(store_of(app), mine.id, os.getpid())
-    app_module.refresh_gpu_claim(store_of(app).list())
-    body = client.get("/gpu-claim").json()
-    assert body["claimed"] is True
-    assert [j["id"] for j in body["jobs"]] == [mine.id]
 
 
 def test_a_claim_without_a_pid_is_failed_after_the_window(asteraix, tmp_path, venvs):

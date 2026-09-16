@@ -103,7 +103,7 @@ def test_every_route_but_health_needs_the_key(make_client, trainer_key):
     assert {("POST", "/jobs"), ("POST", "/jobs/verify"), ("GET", "/jobs"),
             ("GET", "/jobs/{job_id}"), ("GET", "/jobs/{job_id}/log"),
             ("GET", "/jobs/{job_id}/curve"), ("POST", "/jobs/{job_id}/cancel"),
-            ("DELETE", "/jobs/{job_id}"), ("GET", "/gpu-claim"), ("GET", "/gpu"),
+            ("DELETE", "/jobs/{job_id}"), ("GET", "/gpu"),
             ("GET", "/openapi.json"), ("GET", "/health"), ("HEAD", "/health")} <= checked
 
 
@@ -139,8 +139,7 @@ def test_an_unconfigured_trainer_serves_only_health(make_client, trainer_key):
     c = make_client(api_key="", headers={"X-API-Key": trainer_key})
     assert c.get("/health").status_code == 200
     for method, path in [("GET", "/jobs"), ("POST", "/jobs"), ("GET", "/gpu"),
-                         ("GET", "/gpu-claim"), ("GET", "/openapi.json"),
-                         ("GET", "/no-such-route")]:
+                         ("GET", "/openapi.json"), ("GET", "/no-such-route")]:
         answer = c.request(method, path)
         assert answer.status_code == 503, (method, path)
         assert answer.json() == {"detail": access.UNCONFIGURED}
@@ -438,7 +437,7 @@ def test_the_key_is_never_logged(make_client, trainer_key, capsys):
             # would apply to this one's requests too.
             c = make_client(address=address, headers={"X-API-Key": key} if key else None,
                             **overrides)
-            for path in ("/jobs", "/gpu-claim", "/health", "/no-such-route"):
+            for path in ("/jobs", "/jobs/20260916T061502Z-x", "/health", "/no-such-route"):
                 bodies.append(c.get(path).text)
         for key in ("", SHORT_KEY):
             serve.main(["--host", "0.0.0.0"], run=FakeRun(),
