@@ -1,0 +1,41 @@
+# training-atr-models
+
+Training für ATR-Modelle — kraken, TrOCR und VLM-Feinabstimmung. Herausgelöst aus
+[`serving-atr-inference`](https://github.com/thodel/serving-atr-inference) am
+16.09.2026, läuft auf **asteraix** (130.92.59.242).
+
+## Warum getrennt
+
+Bis zum Split liefen Serving und Training auf **einer** Maschine und teilten sich
+**eine** Karte. Was das kostet, steht in einem Satz aus `docs/UBELIX_PLAN.md`:
+
+> der Lauf `qwen3vl-german-pages-v3` hält ~30 GB, also startete vLLM mit 0,59 GB
+> frei und starb. Das blockiert *jedes* Gateway-VLM, solange dieses Training läuft.
+
+Auf asteraix stehen **zwei A40 à 46 GB** zur Verfügung, über NVLink verbunden
+(4 Links à 14,06 GB/s, P2P aktiv) — statt der 31,6 GB, die ein Lauf sich auf
+idhefix mit den Serving-Diensten teilte.
+
+## Die Naht
+
+Der Bot auf tei und der ATR-MCP sprechen weiterhin **ausschliesslich** den
+Gateway auf idhefix an (`:8200`), der `/train/*` hierher durchreicht. Beide
+ändern sich durch den Split nicht — und genau daran lässt sich ablesen, ob die
+Trennung sauber ist.
+
+Drei HTTP-Kanten, keine geteilte Python-Abhängigkeit:
+
+| Kante | Richtung |
+|---|---|
+| `/train/*`-Proxy | idhefix → asteraix:8204 |
+| Promotion-Gate | asteraix → idhefix:8200/ocr |
+| `eval/` | asteraix → idhefix:8200/recognize |
+
+Die **Gewichte** queren gar kein Netz: beide Maschinen mounten
+`/mnt/wbkolleg_dh_1`.
+
+## Stand
+
+Im Aufbau. Plan und Reihenfolge:
+[`docs/SPLIT_PLAN.md`](https://github.com/thodel/serving-atr-inference/blob/main/docs/SPLIT_PLAN.md)
+im Serving-Repo, Epics ab #1.

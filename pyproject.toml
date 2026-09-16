@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "training-atr-models"
+version = "0.1.0"
+description = "Training ATR models — kraken, TrOCR and VLM fine-tuning, split out of serving-atr-inference"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# Orchestration deps ONLY. Every module-level third-party import in this package
+# is one of these five plus uvicorn and httpx; torch, transformers, peft, datasets
+# and PIL are imported *inside functions* and live in the per-engine venvs
+# (.venvs/{kraken,trocr,vlm}-train). That is not an accident to be tidied up: the
+# trainer service spawns a detached runner in the engine's own venv, so the
+# service itself never needs an ML stack, and the suite runs without one.
+#
+# If a test starts needing torch, that is a design regression worth failing on —
+# the same rule the serving repo keeps for its gateway.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "loguru>=0.7",
+    # Cropping materialises line images (training/cropping.py). Imported lazily
+    # there, but the suite exercises it, so it is a real dependency of the tests
+    # rather than of the engines.
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# ruff is PINNED, not floored, and the reason is inherited from the serving repo:
+# `ruff>=0.4` let CI install a newer ruff than the tree was cleaned against, and
+# a tree that was clean locally reported 125 errors in CI. A linter whose rule set
+# changes between the machine you fix it on and the machine that judges it cannot
+# be a gate. Bumping the pin is a deliberate commit.
+dev = ["pytest>=8.0", "ruff==0.15.20"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# Same three roots as the serving repo, so `pytest` alone reproduces what a
+# developer runs: the package under src/, the repo root for scripts/, and
+# engines/ for the three train services.
+pythonpath = ["src", ".", "engines"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

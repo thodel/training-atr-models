@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.venvs/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Written by the register stage; never committed.
+config/models.local.yaml
+
+# Local state that must not follow the repo between machines.
+.env
