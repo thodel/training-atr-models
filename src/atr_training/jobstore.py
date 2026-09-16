@@ -47,7 +47,8 @@ from atr_training.contracts import (
 )
 
 __all__ = ["JobStoreError", "IllegalTransition", "JobPaths", "JobStore", "SpawnClaim",
-           "TRANSITIONS", "SLURM_HOST", "LEGACY_JOB_HOST", "CLAIM_ORPHAN_AFTER_S"]
+           "TRANSITIONS", "SLURM_HOST", "LEGACY_JOB_HOST", "CLAIM_ORPHAN_AFTER_S",
+           "CLAIM_SPAWN", "CLAIM_CANCEL", "CLAIM_CLOSE"]
 
 #: The host on records Slurm supervises (``ubelix/submit_job.py``, ``fanout.py``).
 #: No trainer owns it, whatever its own ``host_id`` says: the runner of such a job
@@ -61,6 +62,15 @@ LEGACY_JOB_HOST = "idhefix"
 #: between, and the job would otherwise sit queued for ever: a claimed job is
 #: never offered to the queue again.
 CLAIM_ORPHAN_AFTER_S = 600.0
+
+#: What a claim was taken for. One file, one owner, whatever the purpose: a
+#: scheduler about to start the job, a cancel of a job that has not started,
+#: or an operator closing another host's record (:mod:`atr_training.close_job`).
+#: Whoever creates the file decides the job's next state; everyone else stands
+#: aside.
+CLAIM_SPAWN = "spawn"
+CLAIM_CANCEL = "cancel"
+CLAIM_CLOSE = "close"
 
 
 class JobStoreError(RuntimeError):
@@ -219,6 +229,9 @@ class SpawnClaim:
     host: str | None
     pid: int | None
     at: datetime | None
+    #: :data:`CLAIM_SPAWN` for a file without the key: that is all it was used
+    #: for before the cancel took it too.
+    purpose: str = CLAIM_SPAWN
 
 
 class JobStore:
@@ -256,8 +269,9 @@ class JobStore:
         host = self.host_of(job)
         return host == self.host_id and host != SLURM_HOST
 
-    def claim(self, job_id: str, now: datetime | None = None) -> None:
-        """Claim ``job_id`` for spawning, or raise ``FileExistsError``.
+    def claim(self, job_id: str, now: datetime | None = None,
+              purpose: str = CLAIM_SPAWN) -> None:
+        """Claim ``job_id`` for spawning (or ``purpose``), or raise ``FileExistsError``.
 
         ``O_CREAT|O_EXCL`` is the whole mechanism: one caller creates the file and
         every other gets ``FileExistsError``. That is what keeps two schedulers of
@@ -267,6 +281,11 @@ class JobStore:
         fail on that mount, and the tmp-file + ``os.replace`` the records use
         overwrites rather than refuses.
 
+        The same file is the lock between starting a queued job and cancelling it
+        before it starts: a cancel that only rewrote the record was undone by a
+        tick that had listed the job earlier and then saved its own copy, and
+        the job started anyway (#15 review). So a cancel takes the claim too.
+
         The file stays after the spawn; a terminal job's goes with its artefacts.
         """
         if not self.host_id:
@@ -274,7 +293,7 @@ class JobStore:
         fd = os.open(self.paths(job_id).claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as out:
             json.dump({"host": self.host_id, "pid": os.getpid(),
-                       "at": (now or utcnow()).isoformat()}, out)
+                       "at": (now or utcnow()).isoformat(), "for": purpose}, out)
 
     def is_claimed(self, job_id: str) -> bool:
         return self.paths(job_id).claim.exists()
@@ -294,7 +313,8 @@ class JobStore:
         try:
             data = json.loads(raw)
             return SpawnClaim(host=str(data["host"]), pid=int(data["pid"]),
-                              at=datetime.fromisoformat(data["at"]))
+                              at=datetime.fromisoformat(data["at"]),
+                              purpose=str(data.get("for", CLAIM_SPAWN)))
         except (ValueError, KeyError, TypeError):
             # Created, content not written yet — or never, if the writer died in
             # between. The file's own time is the best there is.
@@ -465,12 +485,35 @@ class JobStore:
             return self._reconcile_claim(job, now or utcnow())
         if job.pid is not None and is_alive(job.pid):
             return job
+        # After the liveness check, not before: a runner writes its terminal
+        # status and then exits, so a read taken once the pid is dead sees that
+        # write. The copy passed in may be older — the scheduler lists every
+        # record before it judges any — and failing it would replace the
+        # `completed` (or `cancelled`) the runner wrote a moment ago with
+        # "runner process N is gone": the false "failed" #15 is about, from the
+        # host's own tick (#15 review, reproduced with a real child process).
+        if (newer := self._newer_on_disk(job)) is not None:
+            return newer
         reason = (
             f"runner process {job.pid} is gone while the job was {job.status}"
             if job.pid is not None
             else f"job was {job.status} but no runner pid was recorded"
         )
         return self.fail(job, f"{reason}; see logs/ in the job directory")
+
+    def _newer_on_disk(self, job: TrainJob) -> TrainJob | None:
+        """The record on disk if it changed since ``job`` was read, else None.
+
+        Every save stamps ``updated_at``, so a different stamp is a later write.
+        A record that cannot be read right now comes back as ``job`` itself:
+        nothing is judged on a copy that cannot be confirmed, and the next tick
+        asks again.
+        """
+        try:
+            fresh = self.load(job.id)
+        except JobStoreError:
+            return job
+        return fresh if fresh.updated_at != job.updated_at else None
 
     def _reconcile_claim(self, job: TrainJob, now: datetime) -> TrainJob:
         """Fail a queued job whose claim has stood too long without a pid.
@@ -483,14 +526,28 @@ class JobStore:
 
         A claim naming another host is left alone, for the reason foreign jobs
         are. One with no readable owner is this host's: only an owner claims.
+
+        A **cancel** claim on a job still queued is a cancel whose write was lost
+        (a tick saved its older copy over it, or the save failed after the
+        claim). Nobody will start the job — the claim is taken — so the cancel is
+        completed here, at once, rather than failed ten minutes later under a
+        message about a scheduler that never touched it.
         """
         claim = self.read_claim(job.id)
         if claim is None or claim.at is None:
             return job
         if claim.host is not None and claim.host != self.host_id:
             return job
+        if claim.purpose == CLAIM_CANCEL:
+            if (newer := self._newer_on_disk(job)) is not None:
+                return newer
+            job.error = job.error or "cancelled before it started"
+            return self.advance(job, "cancelled")
         if (now - claim.at).total_seconds() < self.claim_orphan_after_s:
             return job
+        # The pid may have been saved after this copy was read (see reconcile).
+        if (newer := self._newer_on_disk(job)) is not None:
+            return newer
         by = (f"by {claim.host} (service pid {claim.pid})" if claim.host
               else "by this host (the claim file is empty)")
         return self.fail(job, (

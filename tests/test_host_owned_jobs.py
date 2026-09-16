@@ -23,9 +23,16 @@ from fastapi.testclient import TestClient
 from loguru import logger
 from pydantic import ValidationError
 
-from atr_training.contracts import DatasetSpec, TrainRequest, utcnow
-from atr_training.jobstore import CLAIM_ORPHAN_AFTER_S, JobStore, JobStoreError
-from atr_training.preflight import GpuInfo
+from atr_training import close_job
+from atr_training.contracts import DatasetSpec, Metrics, TrainRequest, utcnow
+from atr_training.jobstore import (
+    CLAIM_CANCEL,
+    CLAIM_ORPHAN_AFTER_S,
+    JobStore,
+    JobStoreError,
+)
+from atr_training.preflight import GpuInfo, PreflightError
+from atr_training.registration import registration_path, trained_dir, write_registration
 from atr_training.settings import TrainerSettings
 from kraken_train_svc import app as app_module
 
@@ -91,8 +98,12 @@ def _strip_host(store: JobStore, job_id: str) -> None:
 
 
 def _age(path: Path, hours: float) -> None:
-    """Backdate a directory and its top-level entries — children first, since
-    touching a child is what moves the directory's own mtime."""
+    """Backdate a directory and its top-level entries, all to the same moment.
+
+    Both, because utime on a child never moves the directory's mtime (only
+    adding, removing or renaming an entry does), and the cleanup reads both.
+    Which of the two it reads is pinned by
+    test_startup_cleanup_reads_the_newest_mtime_of_the_directory_and_its_entries."""
     then = time.time() - hours * 3600
     for child in path.iterdir():
         os.utime(child, (then, then))
@@ -479,12 +490,15 @@ def test_cancel_never_signals_a_pid_from_another_host(client, app, root, monkeyp
     theirs_queued = idhefix.create(request("theirs-queued"))
     slurm = _running(idhefix, idhefix.create(request("slurm"), host="ubelix").id, os.getpid())
 
-    for job, host in ((stamped, "idhefix"), (legacy, "idhefix"),
-                      (theirs_queued, "idhefix"), (slurm, "ubelix")):
+    for job, state in ((stamped, "runs on host idhefix"), (legacy, "runs on host idhefix"),
+                       (theirs_queued, "is queued on host idhefix"),
+                       (slurm, "runs on host ubelix")):
         before = idhefix.paths(job.id).job_json.read_bytes()
         for answer in (client.post(f"/jobs/{job.id}/cancel"), client.delete(f"/jobs/{job.id}")):
             assert answer.status_code == 409, answer.text
-            assert answer.json()["detail"].startswith(f"job {job.id} runs on host {host}; ")
+            detail = answer.json()["detail"]
+            assert detail.startswith(f"job {job.id} {state}; "), detail
+            assert close_job.close_command(job.id) in detail, "no way out is named"
         assert idhefix.paths(job.id).job_json.read_bytes() == before
         assert idhefix.paths(job.id).data.is_dir(), "a live job's artefacts were dropped"
     assert "cancel it there" in client.post(f"/jobs/{stamped.id}/cancel").json()["detail"]
@@ -625,8 +639,372 @@ def test_startup_cleanup_removes_an_old_orphan(app, settings, root, trainer_key,
     # The window is the setting's, not a constant.
     later = _weights_dir(settings, "another-orphan")
     _age(later, hours=48)
-    removed = app_module._cleanup_orphaned_weights(settings.trained_root, store,
-                                                   min_age_h=72)
+    removed = app_module._cleanup_orphaned_weights(
+        settings.trained_root, store, min_age_h=72, registry_root=settings.registry_root)
     assert removed == 0 and later.is_dir()
-    assert app_module._cleanup_orphaned_weights(settings.trained_root, store,
-                                                min_age_h=24) == 1
+    assert app_module._cleanup_orphaned_weights(
+        settings.trained_root, store, min_age_h=24, registry_root=settings.registry_root) == 1
+
+
+# ── records written after the tick listed them (#15 review) ────────────────
+def test_reconcile_never_fails_a_job_on_an_older_copy_of_its_record(asteraix):
+    """The tick lists every record before it judges any. A runner that writes
+    its last status and exits in between did not die: its `completed` stays."""
+    for last in ("completed", "cancelled"):
+        job = _running(asteraix, asteraix.create(request(f"ends-{last}")).id, PID_NEVER,
+                       status="registering")
+        listed = asteraix.load(job.id)
+
+        def finishes_then_exits(pid, job_id=job.id, last=last):
+            record = asteraix.load(job_id)
+            record.metrics = Metrics(cer=0.05)
+            asteraix.advance(record, last)
+            return False  # by the time anyone looks, the process is gone
+
+        out = asteraix.reconcile(listed, is_alive=finishes_then_exits)
+        on_disk = asteraix.load(job.id)
+        assert out.status == on_disk.status == last
+        assert on_disk.error is None, on_disk.error
+
+    # The same for an old claim: the pid was saved after the listing.
+    claimed = asteraix.create(request("claimed-then-started"))
+    asteraix.claim(claimed.id, now=utcnow() - timedelta(seconds=CLAIM_ORPHAN_AFTER_S + 60))
+    listed = asteraix.load(claimed.id)
+    started = asteraix.load(claimed.id)
+    started.pid = PID_NEVER
+    asteraix.save(started)
+    out = asteraix.reconcile(listed)
+    assert out.status == "queued" and out.pid == PID_NEVER
+    assert asteraix.load(claimed.id).status == "queued"
+
+    # A record nobody wrote since is judged as before.
+    dead = asteraix.reconcile(asteraix.load(claimed.id), is_alive=lambda pid: False)
+    assert dead.status == "failed" and str(PID_NEVER) in dead.error
+
+
+def test_a_waiting_tick_never_erases_a_start_it_did_not_see(asteraix, tmp_path, venvs):
+    """Two schedulers of one host — the submit's pass on the event loop, the tick
+    in a thread. S has listed the job and waits on nvidia-smi; T claims, spawns
+    and saves the pid; S reads the card as busy and holds. S used to save its
+    old copy, without the pid: ten minutes later the live run was failed as
+    never started, and a second job went onto the card."""
+    settings = trainer_settings(tmp_path, venvs, "asteraix")
+    other = JobStore(asteraix.root, host_id="asteraix")
+    spawns = Spawns()
+    job = asteraix.create(request("m1"))
+
+    def busy_once_the_other_has_started_it(gpu, min_free_mb):
+        started = app_module.schedule_once(other, settings, spawn=spawns, vram_check=free_gpu)
+        assert started is not None and started.id == job.id
+        raise PreflightError("GPU 1 has 1200 MB free, need 20000 MB")
+
+    assert app_module.schedule_once(asteraix, settings, spawn=spawns,
+                                    vram_check=busy_once_the_other_has_started_it) is None
+    record = asteraix.load(job.id)
+    assert record.pid == os.getpid() and record.status == "queued"
+    assert record.queued_reason is None, "the waiting tick wrote a job it did not start"
+
+    later = utcnow() + timedelta(seconds=CLAIM_ORPHAN_AFTER_S + 60)
+    assert asteraix.reconcile(record, is_alive=lambda pid: True, now=later).error is None
+    second = asteraix.create(request("m2"))
+    assert app_module.schedule_once(asteraix, settings, spawn=spawns,
+                                    vram_check=free_gpu) is None
+    assert spawns.calls == [("asteraix", job.id)]
+    assert asteraix.load(second.id).queued_reason == f"waiting for {job.id} (queued)"
+
+    # Claimed since the listing, pid not saved yet: not written either, since
+    # that save could land after the pid's. Other waiting jobs still are.
+    roomier = trainer_settings(tmp_path, venvs, "asteraix", max_concurrent=2)
+    third = asteraix.create(request("m3"))
+    before = asteraix.paths(second.id).job_json.read_bytes()
+
+    def busy_once_the_other_has_claimed_it(gpu, min_free_mb):
+        other.claim(second.id)
+        raise PreflightError("GPU 1 has 900 MB free, need 20000 MB")
+
+    assert app_module.schedule_once(asteraix, roomier, spawn=spawns,
+                                    vram_check=busy_once_the_other_has_claimed_it) is None
+    assert asteraix.paths(second.id).job_json.read_bytes() == before
+    assert asteraix.load(third.id).queued_reason.startswith("GPU 1 has 900 MB free")
+
+
+def test_a_job_that_changed_after_the_listing_is_not_started(asteraix, tmp_path, venvs):
+    """The spawn starts from the record on disk once the claim is held, not from
+    the listing: a writer that takes no claim — the old trainer on idhefix, or
+    a cancel on the old code — may have moved the job in between."""
+    settings = trainer_settings(tmp_path, venvs, "asteraix")
+    spawns = Spawns()
+    cancelled = asteraix.create(request("cancelled-meanwhile"))
+
+    def cancelled_meanwhile(gpu, min_free_mb):
+        asteraix.advance(asteraix.load(cancelled.id), "cancelled")
+        return free_gpu(gpu, min_free_mb)
+
+    assert app_module.schedule_once(asteraix, settings, spawn=spawns,
+                                    vram_check=cancelled_meanwhile) is None
+    assert spawns.calls == []
+    assert asteraix.load(cancelled.id).status == "cancelled"
+
+    started = asteraix.create(request("started-elsewhere"))
+
+    def started_meanwhile(gpu, min_free_mb):
+        record = asteraix.load(started.id)
+        record.pid = PID_NEVER
+        asteraix.save(record)
+        return free_gpu(gpu, min_free_mb)
+
+    assert app_module.schedule_once(asteraix, settings, spawn=spawns,
+                                    vram_check=started_meanwhile) is None
+    assert spawns.calls == []
+    assert asteraix.load(started.id).pid == PID_NEVER
+
+
+@pytest.fixture
+def bare_client(app, trainer_key):
+    """The routes without the lifespan: no background tick, so a test can put a
+    cancel inside a tick of its own."""
+    return TestClient(app, client=LOOPBACK, headers={"X-API-Key": trainer_key})
+
+
+def test_a_cancel_of_a_queued_job_is_never_undone_by_a_tick(app, bare_client, settings,
+                                                            monkeypatch):
+    """The caller is told `cancelled`; no tick that listed the job earlier may
+    make it queued again, let alone start it."""
+    store = store_of(app)
+    tick = JobStore(store.root, host_id="asteraix")
+    spawns = Spawns()
+
+    # While the tick waits for VRAM: hold() rewrote the waiting reason from its
+    # old copy — on nearly every tick, since the free MB change.
+    waiting = store.create(request("waiting"))
+
+    def cancelled_while_the_card_is_busy(gpu, min_free_mb):
+        answer = bare_client.post(f"/jobs/{waiting.id}/cancel")
+        assert answer.json()["status"] == "cancelled", answer.text
+        raise PreflightError("GPU 1 has 812 MB free, need 20000 MB")
+
+    assert app_module.schedule_once(tick, settings, spawn=spawns,
+                                    vram_check=cancelled_while_the_card_is_busy) is None
+    record = store.load(waiting.id)
+    assert record.status == "cancelled" and record.queued_reason is None
+    assert app_module.schedule_once(tick, settings, spawn=spawns, vram_check=free_gpu) is None
+
+    # Between the listing and the claim: the cancel holds the claim now.
+    listed = store.create(request("listed"))
+
+    def cancelled_before_the_claim(gpu, min_free_mb):
+        answer = bare_client.post(f"/jobs/{listed.id}/cancel")
+        assert answer.json()["status"] == "cancelled", answer.text
+        return free_gpu(gpu, min_free_mb)
+
+    assert app_module.schedule_once(tick, settings, spawn=spawns,
+                                    vram_check=cancelled_before_the_claim) is None
+    assert store.load(listed.id).status == "cancelled"
+    assert spawns.calls == []
+
+    # While the tick is starting it — claim held, pid not saved yet: refused,
+    # and a moment later an ordinary cancel of a running job.
+    signalled = []
+    monkeypatch.setattr(app_module.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(app_module.os, "killpg", lambda pgid, sig: signalled.append(pgid))
+    starting = store.create(request("starting"))
+    during_spawn = []
+
+    def spawn_and_cancel(settings, job):
+        during_spawn.append(bare_client.post(f"/jobs/{starting.id}/cancel"))
+        return spawns(settings, job)
+
+    started = app_module.schedule_once(tick, settings, spawn=spawn_and_cancel,
+                                       vram_check=free_gpu)
+    assert started is not None and started.id == starting.id
+    assert during_spawn[0].status_code == 409
+    assert "being started right now" in during_spawn[0].json()["detail"]
+    assert store.load(starting.id).pid == os.getpid()
+    again = bare_client.post(f"/jobs/{starting.id}/cancel")
+    assert again.status_code == 200 and signalled == [os.getpid()]
+
+    # A cancel whose write was lost after all: its claim says what was meant.
+    lost = store.create(request("lost"))
+    store.claim(lost.id, purpose=CLAIM_CANCEL)
+    completed = store.reconcile(store.load(lost.id))
+    assert completed.status == "cancelled"
+    assert completed.error == "cancelled before it started"
+    assert app_module.schedule_once(tick, settings, spawn=spawns, vram_check=free_gpu) is None
+    assert spawns.calls == [("asteraix", starting.id)]
+
+
+# ── another host's record, once nothing on that host watches it ────────────
+def test_another_host_s_stuck_record_can_be_closed_by_hand(client, app, root, monkeypatch,
+                                                           capsys):
+    """After the cutover idhefix's trainer is disabled for good. A legacy record
+    it left queued is never started, judged or cancelled here — by design — and
+    held its model_id for ever, while the two 409s sent the caller to each other.
+    The service names the way out, and the tool takes it without a signal."""
+    idhefix = JobStore(root, host_id="idhefix")
+    left = idhefix.create(request())  # BODY's model_id
+    _strip_host(idhefix, left.id)
+    for _ in range(3):
+        app_module._schedule()
+    assert store_of(app).load(left.id).status == "queued"
+    assert app.state.spawn.calls == []
+
+    for answer in (client.post(f"/jobs/{left.id}/cancel"), client.delete(f"/jobs/{left.id}")):
+        assert answer.status_code == 409
+        assert "is queued on host idhefix" in answer.json()["detail"]
+    resubmit = client.post("/jobs", json=BODY)
+    assert resubmit.status_code == 409
+    detail = resubmit.json()["detail"]
+    assert "cancel that job on host idhefix" in detail
+    assert close_job.close_command(left.id) in detail, "the resubmit names no way out"
+
+    monkeypatch.setenv("ATR_TRAIN_HOST_ID", "asteraix")
+    args = [left.id, "--root", str(root), "--reason", "idhefix's trainer is disabled (cutover)"]
+    before = idhefix.paths(left.id).job_json.read_bytes()
+    assert close_job.main(args) == close_job.EXIT_OK
+    assert "add --yes" in capsys.readouterr().out
+    assert idhefix.paths(left.id).job_json.read_bytes() == before, "a dry run wrote"
+
+    assert close_job.main([*args, "--yes"]) == close_job.EXIT_OK
+    closed = store_of(app).load(left.id)
+    assert closed.status == "cancelled"
+    assert closed.host is None, "the owner was rewritten"
+    assert "closed by hand on asteraix: host idhefix no longer runs it" in closed.error
+    assert "(cutover)" in closed.error
+    assert client.post("/jobs", json=BODY).status_code == 202, "the model_id is still taken"
+    assert client.delete(f"/jobs/{left.id}").status_code == 200
+
+    # A Slurm job scancelled while training — on the preemptable template the
+    # runner took SIGTERM for a preemption and left `training`.
+    slurm = _running(idhefix, idhefix.create(request("scancelled"), host="ubelix").id,
+                     PID_NEVER)
+    assert "with scancel" in client.post(f"/jobs/{slurm.id}/cancel").json()["detail"]
+    assert close_job.main([slurm.id, "--root", str(root), "--reason", "sacct: CANCELLED",
+                           "--yes"]) == close_job.EXIT_OK
+    gone = store_of(app).load(slurm.id)
+    assert gone.status == "failed" and "the Slurm job no longer runs it" in gone.error
+
+
+def test_closing_by_hand_refuses_what_it_cannot_vouch_for(root, tmp_path, monkeypatch,
+                                                          capsys):
+    asteraix = JobStore(root, host_id="asteraix")
+    idhefix = JobStore(root, host_id="idhefix")
+    lines: list[str] = []
+
+    def close(job_id, reason="checked on idhefix", out=lines.append):
+        return close_job.close_job(asteraix, job_id, reason, write=True, out=out)
+
+    # This host's own job: the service cancels those, and signals the runner.
+    mine = _running(asteraix, asteraix.create(request("mine")).id, PID_NEVER)
+    assert close(mine.id) == close_job.EXIT_REFUSED
+    assert f"POST /jobs/{mine.id}/cancel" in lines[-1]
+    assert asteraix.load(mine.id).status == "training"
+
+    # A queued job its own scheduler is starting: that host is not gone.
+    starting = idhefix.create(request("starting"))
+    idhefix.claim(starting.id)
+    assert close(starting.id) == close_job.EXIT_REFUSED
+    assert "claimed for spawning by idhefix" in lines[-1]
+    assert idhefix.load(starting.id).status == "queued"
+
+    # A record that changes while the tool runs is still being written — and a
+    # claim the tool took for it is given back.
+    for busy in (_running(idhefix, idhefix.create(request("busy")).id, PID_NEVER),
+                 idhefix.create(request("busy-queued"))):
+        def written_meanwhile(line, job_id=busy.id):
+            lines.append(line)
+            if line.startswith("job      "):
+                idhefix.save(idhefix.load(job_id))
+
+        assert close(busy.id, out=written_meanwhile) == close_job.EXIT_REFUSED
+        assert "changed while this ran" in lines[-1]
+        assert idhefix.load(busy.id).status == busy.status
+        assert not idhefix.is_claimed(busy.id)
+
+    # No reason, no close. A finished job is left as it is.
+    assert close(busy.id, reason="  ") == close_job.EXIT_USAGE
+    done = idhefix.fail(idhefix.create(request("done")), "finished")
+    assert close(done.id) == close_job.EXIT_OK and "already failed" in lines[-1]
+    assert idhefix.load(done.id).error == "finished"
+
+    # Without a configured host id, "this host" would be the bare hostname and
+    # this host's own jobs would pass as another's.
+    monkeypatch.delenv("ATR_TRAIN_HOST_ID")
+    monkeypatch.chdir(tmp_path)  # no .env here
+    assert close_job.main([mine.id, "--root", str(root), "--reason", "x",
+                           "--yes"]) == close_job.EXIT_USAGE
+    assert "ATR_TRAIN_HOST_ID is not set" in capsys.readouterr().err
+    assert asteraix.load(mine.id).status == "training"
+
+
+# ── the cleanup's other two guards (#15 review) ─────────────────────────────
+def test_startup_cleanup_leaves_registered_weights_alone(app, settings, root, trainer_key, logs,
+                                                         tmp_path):
+    """The curated-clash failure tells the operator to copy the weights under a
+    new id and register that by hand. That writes the YAML, never metadata.json."""
+    rescued = _weights_dir(settings, "kraken-rescued-v1")
+    write_registration(settings.registry_root, {
+        "id": "kraken-rescued-v1", "engine": "kraken",
+        "local_path": str(rescued / "kraken-rescued-v1.mlmodel")})
+    # Registered under another id: found through local_path.
+    copied = _weights_dir(settings, "copied-by-hand")
+    write_registration(settings.registry_root, {
+        "id": "kraken-other-v1", "engine": "kraken",
+        "local_path": str(copied / "copied-by-hand.mlmodel")})
+    # A registration that no longer validates still names its directory.
+    broken = _weights_dir(settings, "kraken-broken-v1")
+    registration_path(settings.registry_root, "kraken-broken-v1").write_text(
+        "id: [unclosed\n", encoding="utf-8")
+    orphan = _weights_dir(settings, "nobody-registered-this")
+    for directory in (rescued, copied, broken, orphan):
+        _age(directory, hours=48)
+
+    _start(app, trainer_key)
+
+    assert (rescued / "kraken-rescued-v1.mlmodel").read_bytes() == b"WEIGHTS"
+    assert copied.is_dir() and broken.is_dir()
+    assert not orphan.exists(), "the cleanup did not run at all"
+    assert any("keeping kraken-rescued-v1" in line and "registration kraken-rescued-v1" in line
+               for line in logs), logs
+    assert any("keeping copied-by-hand" in line and "registration kraken-other-v1" in line
+               for line in logs), logs
+
+    # A registry that cannot be read protects nothing it names — so nothing goes.
+    later = _weights_dir(settings, "another-orphan")
+    _age(later, hours=48)
+    store = JobStore(root, host_id="asteraix")
+    assert app_module._cleanup_orphaned_weights(
+        settings.trained_root, store, min_age_h=24, registry_root=tmp_path / "unmounted") == 0
+    assert later.is_dir()
+    assert trained_dir(settings.registry_root).is_dir()
+    assert app_module._cleanup_orphaned_weights(
+        settings.trained_root, store, min_age_h=24, registry_root=settings.registry_root) == 1
+
+
+def test_startup_cleanup_reads_the_newest_mtime_of_the_directory_and_its_entries(settings,
+                                                                                 root):
+    """Either time alone is wrong. A retried registration rewrites the weights in
+    place (mkdir(exist_ok=True), then copyfile): the file's mtime moves, the
+    directory's does not. A directory that just received an old file is new
+    while its entry is old. An empty directory has only its own time."""
+    store = JobStore(root, host_id="asteraix")
+    old = time.time() - 48 * 3600
+
+    rewritten = _weights_dir(settings, "rewritten")
+    weights = rewritten / "rewritten.mlmodel"
+    os.utime(weights, (old, old))
+    weights.write_bytes(b"RETRIED")
+    os.utime(rewritten, (old, old))
+
+    added = _weights_dir(settings, "added")
+    os.utime(added / "added.mlmodel", (old, old))
+
+    empty = settings.trained_root / "empty"
+    empty.mkdir()
+
+    stale = _weights_dir(settings, "stale")
+    _age(stale, hours=48)
+
+    removed = app_module._cleanup_orphaned_weights(
+        settings.trained_root, store, min_age_h=24, registry_root=settings.registry_root)
+    assert not stale.exists() and removed == 1
+    assert rewritten.is_dir() and added.is_dir() and empty.is_dir()

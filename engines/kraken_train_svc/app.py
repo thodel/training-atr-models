@@ -69,7 +69,14 @@ from atr_training.hf_source import (
     VerificationUnavailable,
     verify_dataset_spec,
 )
-from atr_training.jobstore import SLURM_HOST, JobStore, JobStoreError, reap_children
+from atr_training.close_job import close_command
+from atr_training.jobstore import (
+    CLAIM_CANCEL,
+    SLURM_HOST,
+    JobStore,
+    JobStoreError,
+    reap_children,
+)
 
 from atr_training.preflight import (
     PreflightError,
@@ -78,6 +85,13 @@ from atr_training.preflight import (
     check_tmpdir,
     check_vram,
     query_gpus,
+)
+from atr_training.registration import (
+    SUFFIX as REGISTRATION_SUFFIX,
+    RegistrationError,
+    is_registration_name,
+    read_registration,
+    trained_dir,
 )
 from atr_training.runner_base import tail
 from atr_training.settings import TrainerSettings, get_settings
@@ -205,10 +219,29 @@ def schedule_once(
         return None
 
     def hold(reason: str) -> None:
-        for job in queued:
-            if job.queued_reason != reason:
-                job.queued_reason = reason
-                store.save(job)
+        # From a fresh read, never from the listing. `starting` covers only the
+        # claims that existed when this tick listed; a scheduler of this host
+        # that claimed, spawned and saved the pid since (the submit's pass runs on
+        # the event loop while the tick runs in a thread) would otherwise have
+        # that pid erased by this save, and ten minutes later the live run was
+        # failed as "no runner pid was ever recorded" and a second job started
+        # on the card (#15 review, reproduced). The same stale save turned a
+        # cancel back into `queued`. The claim is checked AFTER the read. A claim
+        # taken later still has to spawn and save the pid, so this save can only
+        # overtake that one by milliseconds — and the runner saves its own pid as
+        # its first act, seconds later, which repairs it.
+        for listed in queued:
+            if listed.queued_reason == reason:
+                continue
+            try:
+                job = store.load(listed.id)
+            except JobStoreError:
+                continue
+            if (job.status != "queued" or job.pid is not None
+                    or job.queued_reason == reason or store.is_claimed(job.id)):
+                continue
+            job.queued_reason = reason
+            store.save(job)
 
     if len(running) >= settings.max_concurrent:
         first = running[0]
@@ -236,6 +269,20 @@ def schedule_once(
         return None
     except OSError as exc:
         hold(f"could not claim {job.id} for spawning: {exc}")
+        return None
+    # The claim is ours: from here no scheduler or cancel of this host writes
+    # the record. The listing may still predate a write made before the claim,
+    # or without one — the old trainer on idhefix spawning or cancelling it.
+    # Spawn from what is on disk, and only if it is still waiting to start.
+    try:
+        job = store.load(job.id)
+    except JobStoreError as exc:
+        logger.warning("{} was claimed but cannot be read back, not starting it: {}",
+                       job.id, exc)
+        return None
+    if job.status != "queued" or job.pid is not None:
+        logger.info("{} is {} (pid {}) since this tick listed it; not starting it",
+                    job.id, job.status, job.pid)
         return None
 
     logger.info("starting {} ({} job; GPU {} has {} MB free)",
@@ -277,8 +324,12 @@ async def _scheduler() -> None:  # pragma: no cover - timing loop
 def _newest_mtime(directory: Path) -> float:
     """The latest mtime of ``directory`` and its top-level entries.
 
-    A registration adds and rewrites entries at the top level, which moves either
-    the directory's own mtime or the entry's; one level is enough to see it.
+    Both, and the maximum. Rewriting an entry in place moves the entry's mtime
+    and not the directory's — a retried registration does exactly that
+    (``mkdir(exist_ok=True)``, then ``copyfile`` over the old weights). Adding
+    an entry moves the directory's, while a copy that keeps times leaves the
+    entry old. An empty directory has only its own time. One level is enough:
+    a registration writes at the top level.
     """
     newest = directory.stat().st_mtime
     with os.scandir(directory) as entries:
@@ -301,8 +352,50 @@ def _names_directory(job: TrainJob, directory: Path) -> bool:
     return path == directory or directory in path.parents
 
 
+def _registered_weights(registry_root: Path | str) -> list[tuple[str, Path | None]] | None:
+    """``(id, local_path)`` for every trained registration; None if unreadable.
+
+    A registration that does not validate still names its directory through its
+    file name — the id — so it keeps that one; its ``local_path`` cannot be
+    trusted and is not used.
+    """
+    root = Path(registry_root)
+    if not root.is_dir():
+        return None
+    try:
+        names = [p.name for p in trained_dir(root).iterdir() if is_registration_name(p.name)]
+    except FileNotFoundError:
+        return []  # nothing trained has been registered yet
+    except OSError as exc:
+        logger.warning("the registry {} cannot be listed: {}", trained_dir(root), exc)
+        return None
+    found: list[tuple[str, Path | None]] = []
+    for name in names:
+        model_id = name[: -len(REGISTRATION_SUFFIX)]
+        try:
+            registration = read_registration(root, model_id)
+        except RegistrationError as exc:
+            logger.warning("registration {} is unusable ({}); keeping the directory named "
+                           "after it all the same", model_id, exc)
+            registration = None
+        local = registration.local_path if registration is not None else None
+        found.append((model_id, Path(local) if local else None))
+    return found
+
+
+def _registration_for(directory: Path, registered: list[tuple[str, Path | None]]) -> str | None:
+    """The id of a registration that names ``directory``, by id or by local_path."""
+    for model_id, local in registered:
+        if model_id == directory.name:
+            return model_id
+        if local is not None and (local == directory or directory in local.parents):
+            return model_id
+    return None
+
+
 def _cleanup_orphaned_weights(trained_root: Path | str, store: JobStore,
-                              min_age_h: float, now: float | None = None) -> int:
+                              min_age_h: float, *, registry_root: Path | str,
+                              now: float | None = None) -> int:
     """Remove weight directories a registration left behind unfinished.
 
     A registration writes ``metadata.json`` last, so a directory without it is
@@ -318,7 +411,14 @@ def _cleanup_orphaned_weights(trained_root: Path | str, store: JobStore,
       read;
     * no job of ANY host in this store that is not terminal names it — a
       registration that stalls is still its job's, and a job that has not
-      registered yet will write there.
+      registered yet will write there;
+    * no registration in ``registry_root`` names it, by id or by
+      ``local_path``. A model registered by hand never gets ``metadata.json``:
+      the curated-clash failure tells the operator to copy the weights to
+      ``<trained_root>/<new_id>`` and run ``python -m atr_training.registration``,
+      which writes only the YAML. Without this the next restart deleted those
+      weights and left the gateway a registration pointing at nothing (#15
+      review, reproduced).
 
     Every candidate kept is logged with the reason, and every removal. Anything
     that cannot be read keeps the directory: a wrong keep costs disk, a wrong
@@ -341,6 +441,12 @@ def _cleanup_orphaned_weights(trained_root: Path | str, store: JobStore,
         logger.warning("orphan cleanup skipped, the job store is unreadable ({}); keeping {} "
                        "weights directories without metadata.json", exc, len(candidates))
         return 0
+    registered = _registered_weights(registry_root)
+    if registered is None:
+        logger.warning("orphan cleanup skipped, the registry {} is unreadable; keeping {} "
+                       "weights directories without metadata.json", registry_root,
+                       len(candidates))
+        return 0
 
     now = time.time() if now is None else now
     removed = 0
@@ -349,6 +455,10 @@ def _cleanup_orphaned_weights(trained_root: Path | str, store: JobStore,
         if owner is not None:
             logger.info("keeping {} (no metadata.json): job {} on host {} is {} and names it",
                         entry.name, owner.id, store.host_of(owner), owner.status)
+            continue
+        if (model_id := _registration_for(entry, registered)) is not None:
+            logger.info("keeping {} (no metadata.json): the registration {} names it",
+                        entry.name, model_id)
             continue
         try:
             age_h = (now - _newest_mtime(entry)) / 3600
@@ -378,7 +488,8 @@ async def lifespan(_app: FastAPI):  # pragma: no cover - process lifecycle
     # Its docstring always said "on startup", but until #15 only DELETE called it,
     # so a registration that died stayed until someone deleted some job. It is
     # safe here only because of the conditions #15 added.
-    _cleanup_orphaned_weights(settings.trained_root, _store(), settings.orphan_weights_min_age_h)
+    _cleanup_orphaned_weights(settings.trained_root, _store(), settings.orphan_weights_min_age_h,
+                              registry_root=settings.registry_root)
     # Seeded before the first tick: an empty cache would answer "no claim" to the
     # gateway, which is the one wrong answer this must never give.
     refresh_gpu_claim(_store().list())
@@ -685,12 +796,20 @@ async def submit(request: TrainRequest, response: Response,
     clash = next((j for j in store.list()
                   if j.request.model_id == request.model_id and not j.is_terminal), None)
     if clash is not None:
+        if store.owns(clash):
+            way_out = "cancel that job first."
+        else:
+            # "Cancel that job first" alone sent the caller to a cancel that
+            # answers 409 for another host's job — a circle once that host is
+            # retired (#15 review).
+            way_out = (f"cancel that job on host {store.host_of(clash)}, where it belongs. "
+                       + _foreign_way_out(store, clash))
         raise HTTPException(
             status_code=409,
             detail=(f"job {clash.id} is already {clash.status} for model_id "
                     f"{request.model_id!r}. Two live jobs writing one model_id means the "
                     "second overwrites the first's registered weights — choose a different "
-                    "model_id, or cancel that job first."),
+                    f"model_id, or {way_out}"),
         )
     # The gateway skips a trained registration whose id is curated, and its
     # promotion gate answers that id with the curated weights — so the run would
@@ -850,8 +969,25 @@ async def get_curve(job_id: str) -> dict:
     )
 
 
+def _foreign_way_out(store: JobStore, job: TrainJob) -> str:
+    """How a person closes another host's record once that host no longer runs it.
+
+    Nothing in the service does: it never judges another host's job. A retired
+    host (the old trainer on idhefix after the cutover) or a Slurm job that is
+    gone would otherwise leave the record live for ever. The tool needs a shell
+    on a machine that mounts the store, on purpose — a caller of this API
+    cannot confirm that a process on another machine is gone.
+    """
+    host = store.host_of(job)
+    gone = ("If the Slurm job is gone (scancelled, or it never ran)" if host == SLURM_HOST
+            else f"If host {host} no longer runs it (its trainer is retired, or the "
+                 "process is confirmed gone there)")
+    return (f"{gone}, an operator can close the record without signalling anything: "
+            f"{close_command(job.id)}")
+
+
 def _refuse_foreign(store: JobStore, job: TrainJob) -> None:
-    """409 for a live job of another host, naming the host.
+    """409 for a live job of another host, naming the host and the way out.
 
     Its pid is that machine's: ``killpg`` on it here would SIGTERM whatever
     local process group happens to carry the number (#15). And a queued one is
@@ -861,9 +997,12 @@ def _refuse_foreign(store: JobStore, job: TrainJob) -> None:
     if job.is_terminal or store.owns(job):
         return
     host = store.host_of(job)
+    state = "is queued on" if job.status == "queued" else "runs on"
     where = "with scancel, on UBELIX" if host == SLURM_HOST else "there"
-    raise HTTPException(status_code=409,
-                        detail=f"job {job.id} runs on host {host}; cancel it {where}")
+    raise HTTPException(
+        status_code=409,
+        detail=(f"job {job.id} {state} host {host}; cancel it {where}. "
+                + _foreign_way_out(store, job)))
 
 
 @app.post("/jobs/{job_id}/cancel")
@@ -873,6 +1012,8 @@ async def cancel(job_id: str) -> dict:
     if job.is_terminal:
         raise HTTPException(status_code=409, detail=f"job {job_id} is already {job.status}")
     _refuse_foreign(store, job)
+    if job.status == "queued" and job.pid is None:
+        return _cancel_unstarted(store, job_id)
     if job.pid is not None:
         try:
             os.killpg(os.getpgid(job.pid), signal.SIGTERM)
@@ -883,6 +1024,38 @@ async def cancel(job_id: str) -> dict:
     # job has nobody to do that, so record it here.
     job = store.load(job_id)
     if job.status == "queued" or job.pid is None:
+        job.error = "cancelled before it started"
+        job = store.advance(job, "cancelled")
+    return job.model_dump(mode="json")
+
+
+def _cancel_unstarted(store: JobStore, job_id: str) -> dict:
+    """Cancel a job nobody has started, holding the claim a spawn would need.
+
+    Rewriting the record alone lost the race: a tick that listed the job before
+    this call saved its own copy after it — hold() rewrites a waiting job's
+    reason on nearly every tick — or spawned it and saved the pid, and the job
+    was queued again and started, while the caller had been told `cancelled`
+    (#15 review, reproduced both ways). Once the claim is ours, no scheduler
+    starts the job and none writes its record. If a scheduler holds it, the job
+    is being started this instant; a moment later it has a pid and cancels like
+    any running job.
+    """
+    try:
+        store.claim(job_id, purpose=CLAIM_CANCEL)
+    except FileExistsError:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"job {job_id} is being started right now; ask again in a few "
+                    "seconds, and the cancel will stop its runner")) from None
+    except OSError as exc:
+        raise HTTPException(status_code=503,
+                            detail=f"job {job_id} could not be claimed for the cancel: {exc}"
+                            ) from exc
+    # If this write is lost after all, the claim says what was meant, and the
+    # next reconcile completes the cancel (JobStore._reconcile_claim).
+    job = store.load(job_id)
+    if job.status == "queued" and job.pid is None:
         job.error = "cancelled before it started"
         job = store.advance(job, "cancelled")
     return job.model_dump(mode="json")
@@ -924,7 +1097,8 @@ async def delete_job(job_id: str) -> dict:
     # so a leftover younger than orphan_weights_min_age_h waits for a later DELETE
     # or restart: from here it looks exactly like a registration in progress.
     orphaned = _cleanup_orphaned_weights(settings.trained_root, store,
-                                         settings.orphan_weights_min_age_h)
+                                         settings.orphan_weights_min_age_h,
+                                         registry_root=settings.registry_root)
     return {"job_id": job_id, "deleted": True, "record_kept": True,
             "checkpoints_removed": ckpt is not None, "orphaned_weights_removed": orphaned}
 
