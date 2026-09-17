@@ -8,9 +8,12 @@
 #       --cpus-per-task=12 --time=15:00:00
 #
 # 1. preflight.py refuses a submission that is known to fail or to run the wrong
-#    code: a checkout behind origin/main (the container imports the code when the
-#    job STARTS — two runs were lost to that), or CPUs x walltime above the QoS
-#    cap (job_gratis: 11,520 CPU-minutes, GPU jobs included). #147.
+#    code: a checkout behind origin/main or with uncommitted changes, or CPUs x
+#    walltime above the QoS cap (job_gratis: 11,520 CPU-minutes, GPU jobs
+#    included). #147.
+#    Then the code is PINNED: ATR_CODE_COMMIT=HEAD travels with the job, and the
+#    batch file runs a worktree of that commit (pin_code.sh) — so a job that
+#    queues for two days, or is requeued, runs what was submitted.
 # 2. A spec, if the job takes one, is validated here rather than inside the batch
 #    job — a bad spec otherwise costs a queue wait and an allocation before
 #    anything says so. Job 14431367 died 13 s in on a capital letter in model_id.
@@ -31,6 +34,17 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 
 bash -n "$SBATCH_FILE"
 python3 "$REPO/ubelix/preflight.py" "$SBATCH_FILE" ${EXTRA[@]+"${EXTRA[@]}"}
+
+# Pin the code (#147, part 2): the job runs this commit, however long it queues
+# and however often it is requeued — see pin_code.sh. An explicit ATR_CODE_COMMIT
+# is kept (re-running an old commit on purpose); ATR_UNPINNED=1 opts out.
+if [ "${ATR_UNPINNED:-0}" = "1" ]; then
+  unset ATR_CODE_COMMIT
+  echo "code: UNPINNED — the job runs whatever $REPO holds when it starts"
+else
+  export ATR_CODE_COMMIT=${ATR_CODE_COMMIT:-$(git -C "$REPO" rev-parse HEAD)}
+  echo "code: pinned to $ATR_CODE_COMMIT"
+fi
 
 # Which spec: the one given, else the default the file names. A file whose SPEC is
 # mandatory (${SPEC:?}) needs one; a file that names no SPEC takes none.

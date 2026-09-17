@@ -140,3 +140,37 @@ def test_main_passes_a_good_submission(clones, tmp_path, monkeypatch):
     script.write_text(TRAIN)
     monkeypatch.setenv("ATR_PREFLIGHT_REPO", str(mine))
     assert pf.main([str(script), "--qos=job_gratis", "-c", "12", "-t", "15:00:00"]) == 0
+
+
+# ── uncommitted changes (#147, part 2: the job runs a worktree of HEAD) ────
+def test_a_dirty_checkout_is_refused_because_the_pinned_job_would_not_see_it(
+        clones, tmp_path, monkeypatch, capsys):
+    _, _, mine = clones
+    (mine / "f.txt").write_text("edited, not committed\n")
+    script = tmp_path / "t.sbatch"
+    script.write_text(TRAIN)
+    monkeypatch.setenv("ATR_PREFLIGHT_REPO", str(mine))
+    monkeypatch.delenv("ATR_UNPINNED", raising=False)
+
+    assert pf.main([str(script)]) == 1
+    assert "uncommitted changes" in capsys.readouterr().err
+
+
+def test_an_unpinned_submission_may_run_a_dirty_checkout(clones, tmp_path, monkeypatch):
+    _, _, mine = clones
+    (mine / "f.txt").write_text("edited, not committed\n")
+    script = tmp_path / "t.sbatch"
+    script.write_text(TRAIN)
+    monkeypatch.setenv("ATR_PREFLIGHT_REPO", str(mine))
+    monkeypatch.setenv("ATR_UNPINNED", "1")
+    assert pf.main([str(script)]) == 0
+
+
+def test_an_untracked_file_is_not_a_change(clones, tmp_path, monkeypatch):
+    _, _, mine = clones
+    (mine / "notes.txt").write_text("scratch\n")
+    script = tmp_path / "t.sbatch"
+    script.write_text(TRAIN)
+    monkeypatch.setenv("ATR_PREFLIGHT_REPO", str(mine))
+    monkeypatch.delenv("ATR_UNPINNED", raising=False)
+    assert pf.main([str(script)]) == 0

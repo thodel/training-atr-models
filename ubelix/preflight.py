@@ -6,7 +6,7 @@
 Runs on the UBELIX login node (python 3.9, no container), before `sbatch`.
 Exit 0: submit. Exit 1: do not, with the reason on stderr.
 
-Two checks, each for something that has already cost a run:
+Three checks, the first two for something that has already cost a run:
 
 * **The checkout is behind origin/main.** The container imports the training
   code from the checkout (~/training-atr-models) when a job *starts*. The v3 medieval eval
@@ -16,6 +16,10 @@ Two checks, each for something that has already cost a run:
 * **CPUs x walltime exceeds the QoS cap.** job_gratis allows 11,520 CPU-minutes
   per user, for GPU jobs too; 16 CPUs x 24 h was rejected at submission and
   ended the xix-v2 chain after a 16-hour prepare.
+
+* **Uncommitted changes to tracked files.** submit.sh pins the job to HEAD
+  (pin_code.sh), so local edits would silently not run. ATR_UNPINNED=1 runs the
+  working tree instead.
 
 Options given on the command line override the file's #SBATCH directives, as
 they do for sbatch itself.
@@ -160,6 +164,14 @@ def main(argv: List[str]) -> int:
             print(f"preflight: WARNING (allowed): {msg}", file=sys.stderr)
         else:
             problems.append(msg + "   (or set ALLOW_STALE_CHECKOUT=1)")
+
+    if dirty and os.environ.get("ATR_UNPINNED") != "1":
+        # The job runs a worktree of HEAD (pin_code.sh), which has none of these
+        # changes. Submitting anyway would run code that differs from the files
+        # the person submitting is looking at.
+        problems.append(f"the checkout at {repo} has uncommitted changes to tracked files; "
+                        "the job runs the committed HEAD without them. Commit or stash "
+                        "them   (or set ATR_UNPINNED=1 to run the working tree as it is)")
 
     for p in problems:
         print(f"preflight: REFUSED: {p}", file=sys.stderr)

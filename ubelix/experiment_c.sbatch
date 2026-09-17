@@ -38,6 +38,9 @@ set -euo pipefail
 
 S=/scratch/network/users/$USER
 REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
+# Run the commit this job was submitted with (#147): REPO becomes a worktree of it.
+# shellcheck source=pin_code.sh
+source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 # Overridable so the same job can run under the transformers 5.x image:
 #   sbatch --export=ALL,SIF=$HOME/ubelix/vlm-train-tf5.sif …
 SIF=${SIF:-$HOME/ubelix/vlm-train.sif}

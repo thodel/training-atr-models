@@ -15,8 +15,15 @@ from pathlib import Path
 import pytest
 
 UBELIX = Path(__file__).resolve().parents[1] / "ubelix"
-SCRIPTS = sorted([*UBELIX.glob("*.sbatch"), *UBELIX.glob("*.sh")])
-CODE = sorted([*SCRIPTS, *UBELIX.glob("*.py"), *UBELIX.glob("*.def")])
+#: Sourced by the job scripts, not run: it takes REPO from its caller and moves it.
+LIBRARIES = {"pin_code.sh"}
+SCRIPTS = sorted(p for p in [*UBELIX.glob("*.sbatch"), *UBELIX.glob("*.sh")]
+                 if p.name not in LIBRARIES)
+CODE = sorted([*SCRIPTS, *UBELIX.glob("*.py"), *UBELIX.glob("*.def"),
+               *(UBELIX / name for name in LIBRARIES)])
+#: The old checkout as a path. An issue reference (serving-atr-inference#147) is
+#: history, not a place any job could still read code from.
+OLD_REPO_PATH = re.compile(r"serving-atr-inference(?!#\d)")
 
 
 def _ids(paths):
@@ -32,7 +39,7 @@ def test_the_scripts_are_here():
 @pytest.mark.parametrize("path", CODE, ids=_ids(CODE))
 def test_no_sbatch_file_points_at_the_old_repo_path(path):
     text = path.read_text(encoding="utf-8")
-    assert "serving-atr-inference" not in text
+    assert OLD_REPO_PATH.findall(text) == []
     assert "atr_serving" not in text
 
 
