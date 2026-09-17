@@ -69,10 +69,54 @@ def test_a_submission_is_pinned_to_head(env):
     assert _out(done, "PIN") == _git(repo, "rev-parse", "HEAD")
 
 
-def test_an_explicit_pin_is_kept(env):
+def _second_commit(repo: Path) -> str:
+    """Add a commit and push it, so HEAD moves on and the first commit is older."""
+    first = _git(repo, "rev-parse", "HEAD")
+    (repo / "later.txt").write_text("later\n")
+    _git(repo, "add", "later.txt")
+    _git(repo, "commit", "-q", "-m", "later")
+    _git(repo, "push", "-q", "origin", "main")
+    return first
+
+
+def test_an_explicit_older_pin_is_kept_resolved_and_announced(env):
+    repo, e = env
+    first = _second_commit(repo)
+    e["ATR_CODE_COMMIT"] = first[:7]            # a short SHA is resolved here
+    done = _submit(repo, e)
+    assert done.returncode == 0, done.stderr
+    assert _out(done, "PIN") == first
+    assert "NOT this checkout's HEAD" in done.stdout
+
+
+def test_a_symbolic_pin_is_resolved_to_a_sha(env):
+    repo, e = env
+    e["ATR_CODE_COMMIT"] = "main"
+    assert _out(_submit(repo, e), "PIN") == _git(repo, "rev-parse", "HEAD")
+
+
+def test_a_pin_that_is_not_a_commit_never_reaches_sbatch(env):
     repo, e = env
     e["ATR_CODE_COMMIT"] = "a" * 40
-    assert _out(_submit(repo, e), "PIN") == "a" * 40
+    done = _submit(repo, e)
+    assert done.returncode == 2
+    assert "ARGS=" not in done.stdout
+    assert "is not a commit" in done.stderr
+
+
+@pytest.mark.parametrize("opt", ["--export=NONE", "--export=JOB_ID=x", "--export"])
+def test_an_export_without_all_is_refused(env, opt):
+    repo, e = env
+    done = _submit(repo, e, "--", opt)
+    assert done.returncode == 2
+    assert "ARGS=" not in done.stdout
+
+
+def test_an_export_with_all_passes(env):
+    repo, e = env
+    done = _submit(repo, e, "--", "--export=ALL,JOB_ID=x")
+    assert done.returncode == 0, done.stderr
+    assert "--export=ALL,JOB_ID=x" in _out(done, "ARGS")
 
 
 def test_unpinned_is_an_explicit_choice(env):

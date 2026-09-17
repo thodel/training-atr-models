@@ -104,9 +104,17 @@ been pulled since. The job record names the commit in `code`, per stage.
 - Run an older commit on purpose: `ATR_CODE_COMMIT=<sha> ubelix/submit.sh …`
 - Run the working tree as it is, uncommitted edits included: `ATR_UNPINNED=1 ubelix/submit.sh …`
 - Plain `sbatch` is unpinned too, and the job log says so in capitals.
-- Worktrees live in `~/.cache/training-atr-models/worktrees/<sha>` and are never
-  removed automatically (a requeued job may need one):
-  `git -C ~/training-atr-models worktree list`, then `worktree remove <dir>`.
+- `ATR_CODE_COMMIT` may be a short SHA or a branch name; `submit.sh` resolves it
+  to a full SHA before submitting and says loudly when it is not HEAD.
+- `sbatch` options after `--` may not carry an `--export` without `ALL` — it would
+  drop the pin. Chains and fan-outs are submitted through `submit.sh` too, so
+  every job they queue inherits the pin.
+- Worktrees live in `~/.cache/training-atr-models/worktrees/<sha>`, each ready once
+  `<sha>.ready` exists beside it; a half-made one (a killed job) is replaced on the
+  next start, and one with edited files is refused. They are never removed
+  automatically (a requeued job may need one):
+  `git -C ~/training-atr-models worktree list`, then `worktree remove <dir>` and
+  `rm <dir>.ready`.
 
 Stage 1 leaves the job in `training` — **the same state a preemption leaves it
 in** — so stage 2 takes the ordinary resume path and there is no second contract

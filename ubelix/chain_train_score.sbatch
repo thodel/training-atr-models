@@ -1,6 +1,8 @@
 #!/bin/bash
 # After a prepare: queue its training (gpu/job_gratis) and then the held-out scoring.
-#   sbatch --dependency=afterok:<P> --export=ALL,PREP_SLURM=<P>,TAG=<tag> chain_train_score.sbatch
+#   PREP_SLURM=<P> TAG=<tag> ubelix/submit.sh ubelix/chain_train_score.sbatch -- \
+#       --dependency=afterok:<P>
+#   (through submit.sh, so the chain and the jobs it queues run the pinned commit)
 #SBATCH --job-name=chain
 #SBATCH --account=gratis
 #SBATCH --partition=epyc2

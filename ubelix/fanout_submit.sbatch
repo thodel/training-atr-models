@@ -5,8 +5,9 @@
 # prepare -> N parallel trainings pipeline can be queued in one go and left
 # alone. It needs no GPU: fanout.py only writes job records and symlinks.
 #
-#   sbatch --dependency=afterok:<P> --export=ALL,PREP_SLURM=<P>,ARMS="id=base id=base" \
-#          ubelix/fanout_submit.sbatch
+#   PREP_SLURM=<P> ARMS="id=base id=base" ubelix/submit.sh ubelix/fanout_submit.sbatch -- \
+#       --dependency=afterok:<P>
+#   (through submit.sh, so every arm runs the pinned commit)
 #
 # The prepared job itself trains too, as the anchor arm, on its own base_model.
 #

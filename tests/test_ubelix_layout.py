@@ -79,3 +79,11 @@ def test_the_preflight_checks_this_repository(monkeypatch):
     pf = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pf)
     assert pf.REPO.endswith("/training-atr-models")
+
+
+@pytest.mark.parametrize("name", ["chain_train_score.sbatch", "fanout_submit.sbatch"])
+def test_the_documented_submission_goes_through_submit_sh(name):
+    # A plain `sbatch` would run the chain, and every job it queues, unpinned.
+    head = (UBELIX / name).read_text(encoding="utf-8").split("\nset ", 1)[0]
+    assert "ubelix/submit.sh ubelix/" + name in head
+    assert not re.search(r"^#\s+sbatch\b", head, re.M)

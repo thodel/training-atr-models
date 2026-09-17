@@ -42,9 +42,30 @@ if [ "${ATR_UNPINNED:-0}" = "1" ]; then
   unset ATR_CODE_COMMIT
   echo "code: UNPINNED — the job runs whatever $REPO holds when it starts"
 else
-  export ATR_CODE_COMMIT=${ATR_CODE_COMMIT:-$(git -C "$REPO" rev-parse HEAD)}
-  echo "code: pinned to $ATR_CODE_COMMIT"
+  # Resolved here, to a full SHA, so a typo or a short or symbolic name fails now
+  # and not on a compute node after the queue wait.
+  WANT=${ATR_CODE_COMMIT:-HEAD}
+  if ! ATR_CODE_COMMIT=$(git -C "$REPO" rev-parse --verify --quiet "$WANT^{commit}"); then
+    echo "ATR_CODE_COMMIT=$WANT is not a commit in $REPO" >&2; exit 2
+  fi
+  export ATR_CODE_COMMIT
+  if [ "$ATR_CODE_COMMIT" != "$(git -C "$REPO" rev-parse HEAD)" ]; then
+    echo "!! code: pinned to $ATR_CODE_COMMIT, which is NOT this checkout's HEAD ($WANT)"
+  else
+    echo "code: pinned to $ATR_CODE_COMMIT"
+  fi
 fi
+
+# An --export without ALL would drop ATR_CODE_COMMIT and SPEC from the job's
+# environment, and with them the pin and the validated spec.
+for opt in ${EXTRA[@]+"${EXTRA[@]}"}; do
+  case "$opt" in
+    --export=ALL|--export=ALL,*) ;;
+    --export|--export=*)
+      echo "refusing $opt: use --export=ALL,NAME=value so the job keeps ATR_CODE_COMMIT and SPEC" >&2
+      exit 2 ;;
+  esac
+done
 
 # Which spec: the one given, else the default the file names. A file whose SPEC is
 # mandatory (${SPEC:?}) needs one; a file that names no SPEC takes none.
