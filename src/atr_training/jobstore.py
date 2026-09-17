@@ -355,7 +355,11 @@ class JobStore:
         if paths.job_json.exists():
             raise JobStoreError(f"job {job_id} already exists")
         paths.mkdirs()
-        job = TrainJob(id=job_id, request=request, status="queued", host=host)
+        # Which code accepted the job (#147). Imported here, not at module level:
+        # codeversion imports contracts, and the store is imported by everything.
+        from atr_training.codeversion import current_code
+        job = TrainJob(id=job_id, request=request, status="queued", host=host,
+                       code=current_code())
         self.save(job)
         return job
 
