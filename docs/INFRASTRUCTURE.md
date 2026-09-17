@@ -566,9 +566,13 @@ translates the paths.
   `origin/main` and a request over `job_gratis`'s CPU-minute cap
   (serving-atr-inference#147).
 - **A Slurm job never writes the registry** (#17). Inside a Slurm job
-  (`SLURM_JOB_ID` set) the register stage writes the weights and `metadata.json`,
-  skips the registry, and records why and how to register by hand in the job's
-  `registration`; the job still ends `completed`. Without that, every UBELIX run
+  (`SLURM_JOB_ID` set) the register stage writes the weights and `metadata.json`
+  and only *reads* the registry (the curated-id check): it does not disable an
+  existing registration, write a new one, or run the promotion gate. It records
+  why, and how to register by hand, in the job's `registration`, and the job
+  still ends `completed` with `promoted: false`. A job owned by a service host
+  that finds `SLURM_JOB_ID` in its environment fails before training — that
+  can only be a leak. Without that, every UBELIX run
   failed at register: the registry's `/mnt` path does not exist there. asteraix
   registering finished Slurm jobs is still #17.
 

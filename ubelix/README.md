@@ -1,5 +1,10 @@
 # Running this trainer on UBELIX
 
+> **Names.** These files predate the renaming of 16.09.2026. Where they say
+> "asterAIx" about measurements, the in-repo trainer or GPU indices, they mean
+> **idhefix** (130.92.59.240), where training used to run. **asteraix**
+> (130.92.59.242) is the training box this repository now serves.
+
 The same VLM training subsystem as on asterAIx, driven by **Slurm** instead of the
 `atr-train` service. Nothing in `src/` or `engines/` changes — everything here is
 environment and job plumbing. Full context and cost estimates:
@@ -38,9 +43,10 @@ The `.sif` belongs in `$HOME` — 1 TB private quota, snapshotted. Not the share
 
 The register stage writes the weights and `metadata.json` to
 `ATR_TRAIN_TRAINED_ROOT` (on UBELIX: `/scratch/network/users/$USER/runs/trained`)
-and then **stops short of the shared registry** (#17): the registry's `/mnt/…` path
-does not exist on UBELIX, and idhefix could not open a scratch path anyway. The job
-still ends `completed`. Its record says so in `registration`, with the YAML to write
+and then **leaves the shared registry alone** (#17) — no disable of an existing
+registration, no new one, no promotion gate. The registry's `/mnt/…` path does not
+exist on UBELIX, and idhefix could not open a scratch path anyway. The job still
+ends `completed`, with `promoted: false`. Its record says so in `registration`, with the YAML to write
 by hand:
 
 ```bash
@@ -176,10 +182,10 @@ tail -f ~/ubelix/logs/vlm-smoke-<jobid>.out
 ./ubelix/status.sh -j 14108981 -n 60
 ```
 
-Read-only, and it goes through the `ubelix` ssh alias (ProxyJump via asterAIx), so it
+Read-only, and it goes through the `ubelix` ssh alias (ProxyJump via idhefix, alias `srv-train`), so it
 needs no VPN.
 
-If asterAIx is down, that route dies with it. On the UniBE VPN, `submit02` is reachable
+If idhefix is down, that route dies with it. On the UniBE VPN, `submit02` is reachable
 directly — use the `ubelix-direct` alias, or `UBELIX_HOST=ubelix-direct ./ubelix/status.sh`.
 
 ## Paying for GPUs — short version: don't, for H100s
