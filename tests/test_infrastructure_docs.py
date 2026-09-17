@@ -11,15 +11,19 @@ the old host names is serving-atr-inference#136, not this.
 
 from __future__ import annotations
 
+import io
 import re
+import sys
 from pathlib import Path
 from typing import get_args
 
 import pytest
 
+from atr_training import registration
 from atr_training.backends import BACKENDS
 from atr_training.contracts import JobStatus
 from atr_training.jobstore import TRANSITIONS
+from atr_training.settings import TrainerSettings
 
 REPO = Path(__file__).resolve().parents[1]
 INFRA = REPO / "docs" / "INFRASTRUCTURE.md"
@@ -28,6 +32,9 @@ README = REPO / "README.md"
 ENV_EXAMPLE = REPO / ".env.example"
 UNITS = sorted((REPO / "deploy" / "systemd").glob("*.service"))
 MAKE_VENVS = REPO / "scripts" / "make_venvs.sh"
+RUNNER_BASE = REPO / "src" / "atr_training" / "runner_base.py"
+KRAKEN_RUNNER = REPO / "engines" / "kraken_train_svc" / "runner.py"
+TRAINER_APP = REPO / "engines" / "kraken_train_svc" / "app.py"
 
 #: The leading document, in the serving repo, at its final path on main.
 SERVING_DOC = "https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md"
@@ -258,6 +265,26 @@ def test_the_diagram_draws_exactly_the_lifecycle():
     assert expected - drawn == set(), f"allowed but not drawn: {sorted(expected - drawn)}"
 
 
+def test_the_self_edge_names_every_way_back_into_training():
+    """``training --> training`` is taken by a preempted job and by one that
+    ``--stop-after`` left in ``training``; the label names both.
+
+    It once said "after a preemption" only, while the UBELIX section sent every
+    off-GPU compile through the same edge (runner_base calls that wording
+    misleading for exactly this reason).
+    """
+    choices = re.search(r'"--stop-after",\s*choices=\[([^\]]*)\]', read(RUNNER_BASE))
+    assert choices, "runner_base.py has no --stop-after choices"
+    stops = re.findall(r'"([^"]+)"', choices.group(1))
+    assert stops
+    labels = [line.split(":", 1)[1] for line in diagram(INFRA, "stateDiagram-v2")
+              if re.match(r"^\s*training\s*-->\s*training\s*:", line)]
+    assert len(labels) == 1, "no labelled training --> training edge"
+    assert "preemption" in labels[0], labels[0]
+    for stop in stops:
+        assert stop in labels[0], f"the self-edge does not name --stop-after {stop}"
+
+
 def test_the_status_table_explains_every_status():
     statuses = {row[0].strip("`") for row in table_rows(section(read(INFRA), "The life of a job"))
                 if row and row[0].startswith("`")}
@@ -283,6 +310,55 @@ def test_every_shared_value_is_linked():
     assert set(linked.values()) == {SERVING_SHARED_TABLE}, linked
     count = NUMBER_WORDS[len(entries)]
     assert f"{count.capitalize()} values in this host's `.env` must agree" in text.replace("\n", " ")
+
+
+def loudness() -> dict[str, str]:
+    """What a disagreement in each shared value looks like, derived from the code.
+
+    **loud**: the access guard refuses every call without it, and the launcher
+    names it (``remote_access_problems``). **quiet**: it is only an argument of
+    the promotion gate's HTTP call, and ``promote()`` turns every failure of
+    that call into ``promoted: false`` on a job that still completes.
+    **silent**: the rest.
+    """
+    shared = set(shared_entries(read(ENV_EXAMPLE)))
+    unguarded = TrainerSettings(require_auth=False, api_key="", allowed_clients="")
+    loud = set(re.findall(r"ATR_TRAIN_[A-Z0-9_]+",
+                          " ".join(unguarded.remote_access_problems())))
+    call = re.search(r"http_recognizer\(([^)]*)\)", read(KRAKEN_RUNNER))
+    assert call, "the kraken runner no longer calls http_recognizer"
+    quiet = {"ATR_TRAIN_" + field.upper()
+             for field in re.findall(r"self\.settings\.(\w+)", call.group(1))}
+    assert quiet, "the gate's call names no setting"
+    kinds = {name: "silent" for name in shared}
+    kinds.update({name: "loud" for name in loud & shared})
+    kinds.update({name: "quiet" for name in quiet & shared})
+    return kinds
+
+
+def test_each_shared_value_fails_as_loudly_as_the_documents_say():
+    """The table and the .env.example header call a value loud, quiet or silent
+    as the code behaves.
+
+    Both once called a wrong ATR_TRAIN_GATEWAY_API_KEY loud; the gate's 401 only
+    ever reached ``promotion_reason``, at the end of a run that may take days.
+    """
+    expected = loudness()
+    assert set(expected.values()) == {"loud", "quiet", "silent"}, expected
+
+    documented = {}
+    for row in table_rows(section(read(INFRA), "Values shared with idhefix")):
+        if match := re.fullmatch(r"\[`([A-Z0-9_]+)`\]\(.*\)", row[0]):
+            documented[match.group(1)] = row[-1].split(":", 1)[0]
+    assert documented == expected, "docs/INFRASTRUCTURE.md, the last column"
+
+    header = read(ENV_EXAMPLE).split("# ── ", 1)[0]
+    in_header = {}
+    for kind, names in re.findall(r"^#\s+(loud|quiet|silent)\s+([A-Z0-9_, ]+):", header, re.M):
+        for name in names.split(","):
+            assert name.strip() not in in_header, f".env.example: {name.strip()} is classed twice"
+            in_header[name.strip()] = kind
+    assert in_header == expected, ".env.example, the header"
 
 
 # ── host names ──────────────────────────────────────────────────────────────
@@ -400,6 +476,98 @@ def test_the_mermaid_checks_see_what_they_are_for():
 def test_the_readme_shows_the_machine_diagram_of_the_document():
     """The README's entry point is a copy; a copy that drifts is worse than none."""
     assert diagram(README, "flowchart") == diagram(INFRA, "flowchart")
+
+
+# ── operations ──────────────────────────────────────────────────────────────
+def bash_blocks(path: Path) -> list[list[str]]:
+    """Every ``bash`` block, with continued lines joined."""
+    blocks = []
+    for info, body, _ in fenced_blocks(read(path)):
+        if info == "bash":
+            joined = re.sub(r"\s*\\\n", " ", "\n".join(line.strip() for line in body))
+            blocks.append(joined.splitlines())
+    return blocks
+
+
+def test_a_refused_launcher_check_stops_the_restart():
+    """No block restarts atr-train after a check it does not wait for.
+
+    Pasted as separate lines, a refused check (exit 1) was followed by the
+    restart anyway: the launcher then exits 2, and RestartPreventExitStatus=2
+    leaves the service down.
+    """
+    checks = 0
+    for block in bash_blocks(OPERATIONS):
+        code = [line.split("#", 1)[0].strip() for line in block]
+        for number, line in enumerate(code):
+            if "install_user_unit.sh --no-start" not in line:
+                continue
+            checks += 1
+            assert re.search(r"install_user_unit\.sh --no-start\s*&&\s*systemctl --user "
+                             r"restart atr-train", line), line
+            assert not any(later.startswith("systemctl --user restart")
+                           for later in code[number + 1:]), block
+    assert checks, "OPERATIONS.md installs the unit nowhere; the check above passed on nothing"
+
+
+def test_promoting_by_hand_enables_exactly_one_registration(tmp_path, monkeypatch, capsys):
+    """The documented command, run as written against a registration the
+    trainer wrote, leaves that registration enabled and otherwise unchanged.
+
+    A trocr model, a vllm model and a kraken model whose gate failed all end
+    registered but disabled, and before this section no document said how one
+    reaches /models.
+    """
+    blocks = [block for block in bash_blocks(OPERATIONS)
+              if any("atr_training.registration" in line for line in block)
+              and any(line.startswith("sed ") for line in block)]
+    assert len(blocks) == 1, "expected one sed | registration block in OPERATIONS.md"
+    block = blocks[0]
+    reg = next(line.split("=", 1)[1] for line in block if line.startswith("REG="))
+    env_root = re.search(r"^ATR_TRAIN_REGISTRY_ROOT=(.*)$", read(ENV_EXAMPLE), re.M).group(1)
+    assert reg == env_root, "REG is not the registry root of .env.example"
+
+    command = next(line for line in block if line.startswith("sed "))
+    sed = re.match(r"sed '(.*?)' \"(.*?)\" \| (.*)$", command)
+    assert sed, command
+    expression, target, consumer = sed.groups()
+    assert target == f"$REG/{registration.TRAINED_DIRNAME}/<model_id>{registration.SUFFIX}"
+    assert re.search(r'-m atr_training\.registration --root "\$REG"$', consumer), consumer
+    _, pattern, replacement, _ = expression.split("/")
+
+    root = tmp_path / "registry"
+    root.mkdir()
+    spec = {"id": "promoted-by-hand", "engine": "trocr", "enabled": False,
+            "local_path": str(tmp_path / "weights"), "languages": ["de"], "vram_mb": 4000}
+    path = registration.write_registration(root, spec)
+    before = registration.read_registration(root, "promoted-by-hand").model_dump()
+
+    edited = re.sub(pattern, replacement, path.read_text(encoding="utf-8"), flags=re.M)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(edited))
+    assert registration.main(["--root", str(root)]) == 0
+    assert capsys.readouterr().out.strip() == str(path)
+
+    after = registration.read_registration(root, "promoted-by-hand").model_dump()
+    assert after == {**before, "enabled": True}
+    assert sorted(p.name for p in (root / registration.TRAINED_DIRNAME).iterdir()) == [path.name]
+
+
+def test_the_triage_quotes_what_the_trainer_writes():
+    """The journal line and the flag the triage sends a reader to exist, and the
+    end-to-end check sends a key: the gateway's /health reads a trainer that
+    refuses it as reachable."""
+    health = section(read(OPERATIONS), "Health")
+    quoted = re.findall(r'the journal has "([^"]+)"', health)
+    assert quoted, "the Health section quotes no journal line"
+    code = read(TRAINER_APP)
+    for line in quoted:
+        assert line in code, f"no log line {line!r} in {TRAINER_APP.name}"
+    for flag in re.findall(r"`(\w+): false`", health):
+        assert f'"{flag}"' in code, f"/gpu has no {flag}"
+    assert any(re.search(r'-H "X-API-Key: \$\w+" localhost:8200/train/', line)
+               for block in bash_blocks(OPERATIONS) for line in block), (
+        "no authenticated call through the gateway in OPERATIONS.md")
+    assert "[Health](#health)" in section(read(OPERATIONS), "Deploy")
 
 
 # ── links ───────────────────────────────────────────────────────────────────

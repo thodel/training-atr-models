@@ -10,7 +10,8 @@ serving-atr-inference's
 **[docs/INFRASTRUCTURE.md](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md)**.
 This document links to it and does not copy it.
 
-For procedures (deploy, cancel, `.env` edits, logs, registering by hand), see
+For procedures (deploy, triage, cancel, `.env` edits, logs, registering and
+promoting by hand), see
 [OPERATIONS.md](OPERATIONS.md).
 
 - [The machine at a glance](#the-machine-at-a-glance)
@@ -144,8 +145,10 @@ on for twelve more minutes.
 
 **Endpoints** (`engines/kraken_train_svc/app.py`). The gateway proxies the job
 routes and `/gpu` under `/train/*` (`POST /train/jobs`, `/train/jobs/{id}/cancel`,
-…). It does not proxy `/jobs/verify` or `/health`; the gateway's own `/health`
-reports whether the trainer is reachable.
+…). It does not proxy `/jobs/verify` or `/health`. The gateway's own `/health`
+calls the trainer reachable for any answer below 500. A wrong key or a missing
+allowlist entry therefore still reads as reachable there; only an authenticated
+`/train/*` call tests them ([OPERATIONS.md](OPERATIONS.md#health)).
 
 | Route | Does |
 |---|---|
@@ -155,7 +158,7 @@ reports whether the trainer is reachable.
 | `GET /jobs/{id}/log?stage=…&lines=…` | tail a stage log (default `train`, 200 lines, at most 5000) |
 | `GET /jobs/{id}/curve` | per-epoch metrics, read live from the checkpoints while training |
 | `POST /jobs/{id}/cancel` | SIGTERM to the process group, for this host's jobs only |
-| `DELETE /jobs/{id}` | drop a terminal job's artefacts; `job.json` and the registered model stay |
+| `DELETE /jobs/{id}` | drop the artefacts of a terminal job of any host; `job.json` and the registered model stay, and only this host's checkpoints are removed |
 | `GET /gpu` | this machine's cards, every process on them, and which job it belongs to |
 | `GET /health` | liveness, which engines have a venv, the cards, job counts over the whole store; the only route without a key |
 
@@ -228,7 +231,7 @@ stateDiagram-v2
   queued --> preparing: scheduler claims it, the card has room
   preparing --> compiling
   compiling --> training
-  training --> training: resumed after a preemption, UBELIX only
+  training --> training: resumed after a preemption or an off-GPU compile, UBELIX only
   training --> testing
   testing --> registering
   registering --> completed: trained/ID.yaml written and a CER parsed
@@ -296,6 +299,7 @@ block the queue: the job is accepted, and the answer says
 | the runner dies (OOM, crash) or the machine reboots | the next reconcile marks the job `failed`: "runner process N is gone while the job was …; see logs/ in the job directory". After a reboot the unit starts again by itself (linger) |
 | a stage raises | `failed`, with the stage and the exception in `error` and the tail of the stage log in `log_tail`. A failed VLM train stage also says which checkpoint or adapter survived |
 | a deploy during a run | the run continues, but it later reads code **from disk**: stage scripts start as new processes (`python -m vlm_train_svc.evaluate_qlora`), and imports inside functions (auto-publish) happen when they run. Compare those files against the commit the run started from **before** deploying ([OPERATIONS.md](OPERATIONS.md#deploy)) |
+| the gateway on idhefix restarts, or idhefix is down | the run continues: nothing here needs the gateway before the promotion gate. A kraken gate that falls in that window gets a connection error or a timeout, and the gate does not retry either (it retries only `404 unknown model`). The job still ends `completed`, with `promoted: false` and the error in `promotion_reason`, and the model stays registered but disabled until someone [promotes it by hand](OPERATIONS.md#promoting-by-hand) |
 
 **Ownership (#15).** The job store is on the share, and a pid only has a
 meaning on the machine that issued it. Before #15, two trainers on one store
@@ -309,8 +313,10 @@ failed. Therefore:
   from the old trainer on idhefix, and 3 stamped `asteraix`.
 - `host: ubelix` means Slurm supervises the job, and **no** trainer owns it
   (see [UBELIX](#ubelix)). A trainer may not call itself `ubelix`.
-- Reconcile, spawn, cancel, `DELETE` and the attribution in `/gpu` act on this
-  host's jobs only. For a live job of another host, cancel and `DELETE` answer
+- Reconcile, spawn, cancel and the attribution in `/gpu` act on this host's
+  jobs only. `DELETE` removes the artefacts of a terminal job of any host, but
+  only this host's checkpoints: another host's checkpoints are on that host's
+  local disk. For a live job of another host, cancel and `DELETE` answer
   **409**, naming the host and the command that closes the record by hand
   (`python -m atr_training.close_job`, [OPERATIONS.md](OPERATIONS.md#closing-another-hosts-stuck-record)).
 - Every host's jobs are listed and readable. A `model_id` clash counts across
@@ -358,9 +364,15 @@ the serving document.
 
    | Engine | Gate |
    |---|---|
-   | kraken | posts the first held-out validation page to `ATR_TRAIN_GATEWAY_URL/ocr` with `X-ATR-Promotion-Gate: 1`. That header lets the gateway serve this still-disabled registration to the gate only. Non-empty text rewrites **only** `enabled` to `true` in that one file. The gateway reads `trained/` at most every 5 s, and CIFS attribute caching adds a delay, so the first request always gets `404 unknown model`. The gate asks again every 10 s for up to 90 s (`ATR_TRAIN_GATEWAY_REGISTRY_RETRY_S`, `…_WAIT_S`). Without `ATR_TRAIN_GATEWAY_API_KEY` it does not run |
+   | kraken | posts the first held-out validation page to `ATR_TRAIN_GATEWAY_URL/ocr` with `X-ATR-Promotion-Gate: 1`. That header lets the gateway serve this still-disabled registration to the gate only. Non-empty text rewrites **only** `enabled` to `true` in that one file. The gateway reads `trained/` at most every 5 s, and CIFS attribute caching adds a delay, so the first request always gets `404 unknown model`. The gate asks again every 10 s for up to 90 s (`ATR_TRAIN_GATEWAY_REGISTRY_RETRY_S`, `…_WAIT_S`). Any other failure is not retried. Without `ATR_TRAIN_GATEWAY_API_KEY` it does not run |
    | vllm | never promotes here: vLLM 0.11 cannot serve an adapter that touches the vision tower, so it has to be merged first with `scripts/merge_loras.py` in the serving repo |
    | trocr | no gate in this repo; the model stays registered but disabled |
+
+   A model that the gate did not promote stays registered but disabled: every
+   trocr and vllm model, and a kraken model whose gate failed. It reaches
+   `/models` only when someone promotes it by hand
+   ([OPERATIONS.md](OPERATIONS.md#promoting-by-hand)), a vllm model only after
+   the merge.
 
 6. The gateway picks up the rewritten file without a restart, and the model
    appears in `GET /models`. `promoted` and `promotion_reason` on the job record
@@ -380,7 +392,7 @@ they start with `~`.
 
 | Path | Where | Holds | Written by here | Read by |
 |---|---|---|---|---|
-| `training_folder/jobs/JOB_ID/` | share | `job.json`, `logs/`, `data/`, `spawn.claim`; the one shared job store (`ATR_TRAIN_JOBS_ROOT`) | service and runners, for this host's jobs | every trainer, which lists all hosts' records; clients see it only through the gateway's `/train/*`, which asks this service |
+| `training_folder/jobs/JOB_ID/` | share | `job.json`, `logs/`, `data/`, `spawn.claim`; the one shared job store (`ATR_TRAIN_JOBS_ROOT`) | service and runners for this host's jobs; `DELETE` of any host's terminal job; `close_job` for another host's stuck record | every trainer, which lists all hosts' records; clients see it only through the gateway's `/train/*`, which asks this service |
 | `training_folder/trained/MODEL_ID/` | share | weights and `metadata.json` (`ATR_TRAIN_TRAINED_ROOT`) | the register stage | the engines on idhefix, via `local_path` |
 | `registry/models.yaml` | share | the curated registry, published by the gateway at startup | never | this host, for kraken base-model ids and the curated-id check |
 | `registry/trained/MODEL_ID.yaml` | share | one trained model per file | register stage and gate | the gateway, at most every 5 s |
@@ -393,8 +405,8 @@ they start with `~`.
 
 `~/.cache/huggingface/hub` is a **symlink** to `hf_hub/` on the share (set on
 16.09.2026), which the separate lassberg/vlm_training project uses too. **Do
-not set `HF_HOME`.** It would bypass the symlink and download the 6.6 TB
-dataset again.
+not set `HF_HOME`.** It would bypass the symlink and download everything the
+shared cache already holds again (1.8 T on 16.09.2026).
 
 **What must not go on the share**, each learned from an incident:
 
@@ -456,14 +468,21 @@ share, and two name idhefix itself. They are marked `>>> SHARED <<<` in
 the rule for each value, is in the serving document. Each name below links
 there.
 
+In the last column, **loud** means that the next `/train/*` call fails with a
+502 that names the setting. **Quiet** means that only the promotion gate
+fails: the job still completes, with `promoted: false` and the reason in
+`promotion_reason`, and the model stays disabled. That shows only at the end
+of a run, which can take days. **Silent** means that nothing fails at the
+time, neither the job nor a call.
+
 | Here (`ATR_TRAIN_` prefix) | On idhefix | Kind | If they disagree |
 |---|---|---|---|
 | [`ATR_TRAIN_API_KEY`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | `ATR_TRAIN_API_KEY` | same secret | loud: every `/train/*` call gets 401, which the gateway reports as a 502 |
-| [`ATR_TRAIN_GATEWAY_API_KEY`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | `ATR_API_KEY` | same secret | the gate gets a 401, and the model stays disabled |
-| [`ATR_TRAIN_REGISTRY_ROOT`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | `ATR_REGISTRY_ROOT` | same absolute path | silent: models are registered where the gateway never looks |
-| [`ATR_TRAIN_TRAINED_ROOT`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | none; idhefix's engines open `local_path` as written | absolute path, same mount on both hosts | silent until a request for the model fails |
+| [`ATR_TRAIN_GATEWAY_API_KEY`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | `ATR_API_KEY` | same secret | quiet: the gate gets a 401, which only `promotion_reason` records |
+| [`ATR_TRAIN_REGISTRY_ROOT`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | `ATR_REGISTRY_ROOT` | same absolute path | silent: models are registered where the gateway never looks. Only a kraken gate notices, and its `promotion_reason` names both settings |
+| [`ATR_TRAIN_TRAINED_ROOT`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | none; idhefix's engines open `local_path` as written | absolute path, same mount on both hosts | silent: nothing fails until a request for the model does |
 | [`ATR_TRAIN_ALLOWED_CLIENTS`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | none; idhefix's own IP | the address the gateway calls from | loud: 403 here, which the gateway reports as a 502 |
-| [`ATR_TRAIN_GATEWAY_URL`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | none; the gateway's bind, port 8200 | the gateway's address | the gate cannot connect, and the model stays disabled |
+| [`ATR_TRAIN_GATEWAY_URL`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md#shared-values) | none; the gateway's bind, port 8200 | the gateway's address | quiet: the gate cannot connect, which only `promotion_reason` records |
 
 The other direction is not in this `.env`: idhefix's `ATR_TRAIN_URL` must name
 this host and the port in the unit's `ExecStart`. If this machine's IP changes,
@@ -492,6 +511,16 @@ belongs in `/scratch/network/users/$USER`.
 same runner as a job here. What UBELIX lacks is the one thing the service does
 that a runner cannot do: turn a request into a job record.
 
+**Today, UBELIX runs keep their own job store, and asteraix sees none of
+them.** The batch files set `ATR_TRAIN_JOBS_ROOT` below
+`/scratch/network/users/$USER`, which no trainer reads. On 16.09.2026 the
+shared store held no `ubelix` record. The rules for `host: ubelix` in this
+section take effect once a UBELIX job writes its record into the shared store
+(on UBELIX:
+`/storage/research/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs`).
+#17 plans exactly that: the trainer submits the job, stamps it `ubelix` and
+translates the paths. #7 moves the batch files into this repo first.
+
 - [`ubelix/submit_job.py`](../ubelix/submit_job.py) writes that record. The
   batch job then starts the runner exactly as the service would:
   `python -m vlm_train_svc.runner --root $ATR_TRAIN_JOBS_ROOT --job-id ID`.
@@ -519,8 +548,6 @@ that a runner cannot do: turn a request into a job record.
 - The batch files, `submit.sh`, `status.sh` and the Apptainer `.def` files are
   still in the serving repo's `ubelix/`, and they still run code from a
   serving-atr-inference checkout on UBELIX. Moving them and their paths is #7.
-  Those batch files set `ATR_TRAIN_JOBS_ROOT` below
-  `/scratch/network/users/$USER`, not to the shared store.
 
 **Planned (#17): the trainer places each job.** Based on measured UBELIX usage,
 what asteraix has free, and what the job needs, the trainer decides per job
@@ -549,6 +576,7 @@ know first:
 | a deploy (`git pull`) during a run | the run, but its remaining stages read the new code from disk: compare the files first |
 | a reboot | the unit (it starts again with linger), the records, checkpoints and caches. **Not** the running job: it is marked `failed` at startup |
 | a `.env` edit | nothing changes until the restart. Running jobs keep the environment they were started with |
+| `atr-gateway` restarted on idhefix, or idhefix down | all runs, records and queued jobs. While the gateway is away, no `/train/*` call is answered (bot, MCP, clients), and a kraken promotion gate that falls in that window is not retried: the model stays disabled ([above](#the-life-of-a-job)) |
 
 Logs: `journalctl --user -u atr-train -f` for the service, and
 `training_folder/jobs/JOB_ID/logs/` for a job.

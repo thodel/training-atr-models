@@ -33,11 +33,39 @@ curl -s localhost:8204/health        # no key: engines, venvs, cards, job counts
 ```
 
 The job counts in `/health` cover the whole store, including other hosts'
-records. On idhefix, the gateway's `curl -s localhost:8200/health` reports
-whether it can reach this trainer. If the bot says the trainer is unreachable,
-check in this order: the unit is running here, `/health` answers here, then the
-gateway's view on idhefix. A 502 from the gateway names the setting that
-disagrees: `ATR_TRAIN_API_KEY` or `ATR_TRAIN_ALLOWED_CLIENTS`.
+records.
+
+**The gateway's `/health` does not test the key or the allowlist.** On
+idhefix, `curl -s localhost:8200/health` lists the trainer as `reachable` for
+any answer below 500. `/health` here needs no key, and a caller outside the
+allowlist gets a 403, which is below 500. A trainer that refuses every
+`/train/*` call can therefore still read as reachable. Only an authenticated
+call through the gateway tests the whole path. Run it on idhefix:
+
+```bash
+GW=$(grep '^ATR_API_KEY=' ~/Repo/serving-atr-inference/.env | cut -d= -f2-)
+curl -sS -w '\nHTTP %{http_code}\n' -H "X-API-Key: $GW" localhost:8200/train/gpu
+```
+
+**The bot says the trainer is unreachable.** It has two messages, and they
+mean different things:
+
+| The bot says | What it means | Check |
+|---|---|---|
+| `/atr_gpu`: "Trainer nicht erreichbar — nichts ist einem Job zugeordnet" | the trainer **did** answer, but it could not read the job store, so no process on the cards is attributed to a job (`job_attribution_available: false`) | here: `ls "$JOBS"`; the journal has "job store unreadable for /gpu" |
+| the watcher: "Der Trainingsserver antwortet seit … nicht" | its calls to `/train/jobs` and `/train/gpu` through the gateway have failed for 30 min. The gateway may be the part that is down | on idhefix: `systemctl --user status atr-gateway`, then the authenticated call above |
+
+What the authenticated call answers:
+
+| Answer | Cause | Look at |
+|---|---|---|
+| JSON with `cards`, `HTTP 200` | the path works | |
+| no connection to `localhost:8200` | the gateway is down | `journalctl --user -u atr-gateway` on idhefix |
+| 502 "training service unreachable at URL" | the connection was refused: `atr-train` is down, or idhefix's `ATR_TRAIN_URL` names the wrong port | `systemctl --user status atr-train` here; `ATR_TRAIN_URL` in idhefix's `.env` |
+| 502 naming `ATR_TRAIN_API_KEY` or `ATR_TRAIN_ALLOWED_CLIENTS` | the two `.env` files disagree | here, `journalctl --user -u atr-train` has "refused … with 401" or "with 403"; compare the keys as in [Editing .env](#editing-env) |
+| 504 "could not connect within 5s" | nothing answered the connection: asteraix is down or off the network, or `ATR_TRAIN_URL` names the wrong host | whether asteraix is up (`ssh asteraix` from the laptop) |
+| 504 "did not answer within 20s" | the trainer is slower than the gateway waits, for example on a slow share | the journal here; `ls "$JOBS"` |
+| a text that starts "training service at URL:", any status | the trainer's own error, passed on with its status. A 503 means its settings are incomplete, and the text names what is missing | the text |
 
 ## Deploy
 
@@ -68,21 +96,26 @@ disagrees: `ATR_TRAIN_API_KEY` or `ATR_TRAIN_ALLOWED_CLIENTS`.
 
    ```bash
    git pull --ff-only
-   bash scripts/install_user_unit.sh --no-start   # runs the launcher's check first
-   systemctl --user restart atr-train
+   bash scripts/install_user_unit.sh --no-start && systemctl --user restart atr-train
    ```
 
    `install_user_unit.sh` refuses to install if the checkout is not at
    `~/Repo/training-atr-models`, if `.env` or the kraken-train venv is
-   missing, or if the launcher would refuse the unit's bind.
+   missing, or if the launcher would refuse the unit's bind. Keep the `&&`.
+   Without it, a refused check is followed by a restart with settings the
+   launcher refuses: the unit exits 2, `RestartPreventExitStatus=2` keeps it
+   down, and nothing new is scheduled (running jobs go on). If the check
+   fails, fix `.env` (or restore the backup) before restarting.
 
 4. **If a `requirements.txt` changed:** `bash scripts/make_venvs.sh <venv>`,
    then `bash scripts/check_venvs.sh`. The script installs into the existing
    venv in place, so do not rebuild the venv of a job that is running.
 
 5. **Check:** `systemctl --user status atr-train` and
-   `curl -s localhost:8204/health`. Then, on idhefix,
-   `curl -s localhost:8200/health` should report the trainer as reachable.
+   `curl -s localhost:8204/health`. Then, on idhefix, run the authenticated
+   call from [Health](#health). It must answer `HTTP 200`. The gateway's
+   `/health` is not enough: it reads a trainer that refuses the gateway as
+   reachable.
 
 What a restart, a reboot or a `.env` edit does to running jobs is listed in
 [INFRASTRUCTURE.md](INFRASTRUCTURE.md#deploying-and-restarting).
@@ -105,9 +138,10 @@ curl -s -X POST -H "X-API-Key: $KEY" localhost:8204/jobs/<job_id>/cancel
 - If the job belongs to another host, the answer is 409 naming that host. See
   [below](#closing-another-hosts-stuck-record).
 
-`DELETE /jobs/<job_id>` works on terminal jobs only. It keeps `job.json`,
-removes this host's checkpoints for the job, never touches the registered
-model, and removes orphaned weights under the conditions in
+`DELETE /jobs/<job_id>` works on terminal jobs only, of any host. It keeps
+`job.json`, removes the job's checkpoints only if the job ran on this host
+(another host's are on that host's disk), never touches the registered model,
+and removes orphaned weights under the conditions in
 [INFRASTRUCTURE.md](INFRASTRUCTURE.md#the-life-of-a-job).
 
 **Resubmit.** A `failed` or `cancelled` job never runs again. Submit its
@@ -149,9 +183,13 @@ cd ~/Repo/training-atr-models
 install -m 600 .env ~/atr-cache/env-backups/training-atr-models.env.$(date +%Y%m%dT%H%M%S)
 ${EDITOR:-nano} .env
 stat -c %a .env                                   # must print 600
-bash scripts/install_user_unit.sh --no-start      # the launcher judges the new settings
-systemctl --user restart atr-train
+# The launcher judges the new settings; restart only if it accepts them.
+bash scripts/install_user_unit.sh --no-start && systemctl --user restart atr-train
 ```
+
+If the check fails, fix `.env` or restore the backup before restarting. A
+restart with refused settings leaves the service down ([Deploy](#deploy),
+step 3).
 
 - Keep backups in `~/atr-cache/env-backups/`, never in the checkout. On idhefix
   on 16.09.2026, a backup `.env.bak-<date>` sat in the checkout of a public repo,
@@ -217,8 +255,9 @@ EOF
 2. **Paste the command.** It validates the entry like the runner does and
    writes `registry/trained/<model_id>.yaml` atomically. It prints the path.
 3. **The model is now registered but disabled.** The promotion gate did not
-   run. For a kraken model, test it the way the gate does, with the header
-   that lets the gateway serve a disabled registration to this request only:
+   run. Test the model the way the gate does, with the header that lets the
+   gateway serve a disabled registration to this request only. A vllm adapter
+   must be merged first ([Promoting by hand](#promoting-by-hand), step 1).
 
    ```bash
    GKEY=$(grep '^ATR_TRAIN_GATEWAY_API_KEY=' .env | cut -d= -f2-)
@@ -229,9 +268,7 @@ EOF
 
    The gateway reads `trained/` at most every 5 s, so a first `404 unknown
    model` is normal: ask again after 10 s. If the answer has non-empty `text`,
-   run the registration command again with `enabled: true`. A vllm adapter
-   must first be merged on idhefix (`scripts/merge_loras.py` in the serving
-   repo). This repo has no gate for trocr.
+   enable the model as in [Promoting by hand](#promoting-by-hand).
 
 A job refused because its `model_id` is a **curated id** registered nothing.
 Its text names where the trained weights still are (until the job is deleted)
@@ -239,6 +276,36 @@ and says to copy them to a directory named after a new id under the trained
 root, then register that id with
 `python -m atr_training.registration --root <registry root>`, with the entry as
 YAML on stdin.
+
+## Promoting by hand
+
+A registered model that is still `enabled: false` is not in `/models`. That is
+where every trocr and vllm model ends, and a kraken model whose gate failed
+(`promoted: false`; `promotion_reason` on the record says why). A completed job
+has no registration command in its text, and none is needed: the file on the
+share is the complete entry, and only `enabled` changes.
+
+1. **vllm only:** merge the adapter first, on idhefix, with
+   `scripts/merge_loras.py` from the serving repo. vLLM 0.11 cannot serve the
+   adapter before that.
+2. **Test it** through the gateway with the gate's header, as in
+   [Registering by hand](#registering-by-hand), step 3. The page comes from
+   `$JOBS/<job_id>/data/pages_val.lst`. Go on only if `text` is not empty.
+3. **Enable it.** This reads the registration as it is, changes only the
+   `enabled` line, and writes it back through the same validation and atomic
+   write as the trainer. It prints the path:
+
+   ```bash
+   REG=/mnt/wbkolleg_dh_1/Textrecognition_Training/registry
+   sed 's/^enabled: false$/enabled: true/' "$REG/trained/<model_id>.yaml" \
+     | PYTHONPATH=src .venvs/kraken-train/bin/python -m atr_training.registration --root "$REG"
+   ```
+
+   The gateway notices the change at its next look at `trained/`. A request
+   starts that look, at most every 5 s, so the first `GET /models` may not list
+   the model yet; ask again a few seconds later. The comment lines at the top
+   of the file are written anew. Do not edit the file in place with an editor:
+   the gateway may read it half-written.
 
 ## Closing another host's stuck record
 
@@ -248,6 +315,11 @@ live one, cancel and `DELETE` answer 409, and so does a resubmit of the same
 record: a legacy idhefix record (idhefix's trainer is retired), or a UBELIX
 record whose Slurm job is gone. A scancelled preemptable job also stays live,
 because its runner took the SIGTERM for a preemption.
+
+The UBELIX case applies only to a record in the shared store. Today, UBELIX
+runs keep their records under `/scratch` on UBELIX, which asteraix does not
+mount, and on 16.09.2026 the shared store held no `ubelix` record
+([INFRASTRUCTURE.md](INFRASTRUCTURE.md#ubelix)).
 
 ```bash
 cd ~/Repo/training-atr-models     # the host id comes from this .env
