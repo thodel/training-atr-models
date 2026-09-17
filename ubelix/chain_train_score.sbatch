@@ -1,6 +1,8 @@
 #!/bin/bash
 # After a prepare: queue its training (gpu/job_gratis) and then the held-out scoring.
-#   sbatch --dependency=afterok:<P> --export=ALL,PREP_SLURM=<P>,TAG=<tag> chain_train_score.sbatch
+#   PREP_SLURM=<P> TAG=<tag> ubelix/submit.sh ubelix/chain_train_score.sbatch -- \
+#       --dependency=afterok:<P>
+#   (through submit.sh, so the chain and the jobs it queues run the pinned commit)
 #SBATCH --job-name=chain
 #SBATCH --account=gratis
 #SBATCH --partition=epyc2
@@ -13,6 +15,9 @@
 set -euo pipefail
 S=/scratch/network/users/$USER
 REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
+# Run the commit this job was submitted with (#147): REPO becomes a worktree of it.
+# shellcheck source=pin_code.sh
+source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 : "${PREP_SLURM:?}" "${TAG:?}"
 JOB_ID=$(cat "$S/runs/prep-$PREP_SLURM.jobid")
 echo "== prepared: $JOB_ID"

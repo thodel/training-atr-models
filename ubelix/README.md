@@ -91,10 +91,30 @@ JOB_ID=<id from stage 1> ubelix/submit.sh ubelix/train.sbatch -- \
     --partition=gpu --qos=job_gratis --cpus-per-task=12 --time=15:00:00
 ```
 
-`submit.sh` refuses a checkout behind `origin/main` (`ALLOW_STALE_CHECKOUT=1` to
-override) and a request above `job_gratis`'s 11,520 CPU-minutes — both have
-already cost a run (serving-atr-inference#147, [`UBELIX_PLAN.md`](https://github.com/thodel/serving-atr-inference/blob/main/docs/UBELIX_PLAN.md) §20–§21b). Every job and every
-stage records the commit it ran with (`code` in `job.json`).
+`submit.sh` refuses a checkout behind `origin/main` or with uncommitted changes,
+and a request above `job_gratis`'s 11,520 CPU-minutes — each has already cost a run
+(serving-atr-inference#147).
+
+**The code is pinned.** `submit.sh` exports `ATR_CODE_COMMIT` (HEAD at submission),
+and every batch file runs a git worktree of exactly that commit
+(`ubelix/pin_code.sh`). A job that queues for two days, is preempted and
+requeued, or is chained from another job runs what was submitted, whatever has
+been pulled since. The job record names the commit in `code`, per stage.
+
+- Run an older commit on purpose: `ATR_CODE_COMMIT=<sha> ubelix/submit.sh …`
+- Run the working tree as it is, uncommitted edits included: `ATR_UNPINNED=1 ubelix/submit.sh …`
+- Plain `sbatch` is unpinned too, and the job log says so in capitals.
+- `ATR_CODE_COMMIT` may be a short SHA or a branch name; `submit.sh` resolves it
+  to a full SHA before submitting and says loudly when it is not HEAD.
+- `sbatch` options after `--` may not carry an `--export` without `ALL` — it would
+  drop the pin. Chains and fan-outs are submitted through `submit.sh` too, so
+  every job they queue inherits the pin.
+- Worktrees live in `~/.cache/training-atr-models/worktrees/<sha>`, each ready once
+  `<sha>.ready` exists beside it; a half-made one (a killed job) is replaced on the
+  next start, and one with edited files is refused. They are never removed
+  automatically (a requeued job may need one):
+  `git -C ~/training-atr-models worktree list`, then `worktree remove <dir>` and
+  `rm <dir>.ready`.
 
 Stage 1 leaves the job in `training` — **the same state a preemption leaves it
 in** — so stage 2 takes the ordinary resume path and there is no second contract

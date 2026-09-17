@@ -563,8 +563,10 @@ translates the paths.
   `~/training-atr-models` checkout on UBELIX (`ATR_TRAIN_REPO` overrides), and
   their Python helpers from that checkout, not from copies in `~/ubelix`, which
   holds only images, logs and specs. `submit.sh` refuses a checkout behind
-  `origin/main` and a request over `job_gratis`'s CPU-minute cap
-  (serving-atr-inference#147).
+  `origin/main` or with uncommitted changes, and a request over `job_gratis`'s
+  CPU-minute cap; it then **pins** the job to HEAD, and every batch file runs a
+  git worktree of that commit (`ubelix/pin_code.sh`), so a queued, requeued or
+  chained job runs what was submitted (serving-atr-inference#147).
 - **A Slurm job never writes the registry** (#17). Inside a Slurm job
   (`SLURM_JOB_ID` set) the register stage writes the weights and `metadata.json`
   and only *reads* the registry (the curated-id check): it does not disable an

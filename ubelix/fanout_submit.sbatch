@@ -5,8 +5,9 @@
 # prepare -> N parallel trainings pipeline can be queued in one go and left
 # alone. It needs no GPU: fanout.py only writes job records and symlinks.
 #
-#   sbatch --dependency=afterok:<P> --export=ALL,PREP_SLURM=<P>,ARMS="id=base id=base" \
-#          ubelix/fanout_submit.sbatch
+#   PREP_SLURM=<P> ARMS="id=base id=base" ubelix/submit.sh ubelix/fanout_submit.sbatch -- \
+#       --dependency=afterok:<P>
+#   (through submit.sh, so every arm runs the pinned commit)
 #
 # The prepared job itself trains too, as the anchor arm, on its own base_model.
 #
@@ -23,6 +24,9 @@
 set -euo pipefail
 S=/scratch/network/users/$USER
 REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
+# Run the commit this job was submitted with (#147): REPO becomes a worktree of it.
+# shellcheck source=pin_code.sh
+source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 TF5=$HOME/ubelix/vlm-train-tf5.sif
 : "${PREP_SLURM:?set PREP_SLURM=<slurm id of the prepare job>}"
 : "${ARMS:?set ARMS=\"model_id=base_model ...\"}"
