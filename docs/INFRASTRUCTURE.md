@@ -532,7 +532,7 @@ section take effect once a UBELIX job writes its record into the shared store
 (on UBELIX:
 `/storage/research/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs`).
 #17 plans exactly that: the trainer submits the job, stamps it `ubelix` and
-translates the paths. #7 moves the batch files into this repo first.
+translates the paths.
 
 - [`ubelix/submit_job.py`](../ubelix/submit_job.py) writes that record. The
   batch job then starts the runner exactly as the service would:
@@ -558,9 +558,19 @@ translates the paths. #7 moves the batch files into this repo first.
   whose Slurm job is gone stays live until someone closes it with `close_job`.
   This includes a scancelled preemptable job, whose runner took the SIGTERM for
   a preemption.
-- The batch files, `submit.sh`, `status.sh` and the Apptainer `.def` files are
-  still in the serving repo's `ubelix/`, and they still run code from a
-  serving-atr-inference checkout on UBELIX. Moving them and their paths is #7.
+- The batch files, `submit.sh`, `status.sh` and the Apptainer `.def` files live
+  in [`ubelix/`](../ubelix/README.md) (#7). They run the code of a
+  `~/training-atr-models` checkout on UBELIX (`ATR_TRAIN_REPO` overrides), and
+  their Python helpers from that checkout, not from copies in `~/ubelix`, which
+  holds only images, logs and specs. `submit.sh` refuses a checkout behind
+  `origin/main` and a request over `job_gratis`'s CPU-minute cap
+  (serving-atr-inference#147).
+- **A Slurm job never writes the registry** (#17). Inside a Slurm job
+  (`SLURM_JOB_ID` set) the register stage writes the weights and `metadata.json`,
+  skips the registry, and records why and how to register by hand in the job's
+  `registration`; the job still ends `completed`. Without that, every UBELIX run
+  failed at register: the registry's `/mnt` path does not exist there. asteraix
+  registering finished Slurm jobs is still #17.
 
 **Planned (#17): the trainer places each job.** Based on measured UBELIX usage,
 what asteraix has free, and what the job needs, the trainer decides per job

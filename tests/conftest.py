@@ -39,6 +39,10 @@ import pytest
 # it with a real, empty directory per test.
 os.environ["ATR_TRAIN_REGISTRY_ROOT"] = "/nonexistent/atr-training-test-registry"
 os.environ["ATR_TRAIN_MODELS_CONFIG"] = ""
+# Inside a Slurm job the register stage leaves the registry alone (#17). The suite
+# run on a UBELIX node must still exercise the ordinary path; the tests for the
+# Slurm path set the variable themselves.
+os.environ.pop("SLURM_JOB_ID", None)
 
 #: Long enough for the launcher's 32-character floor, and recognisable in output.
 TEST_API_KEY = "test-trainer-key-0123456789abcdef-not-a-secret"

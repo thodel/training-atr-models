@@ -151,6 +151,16 @@ def _filesystem_of(path: Path) -> int | None:
         return None
 
 
+def slurm_job_id() -> str | None:
+    """The Slurm job this process runs in, or None outside Slurm.
+
+    ``SLURM_JOB_ID`` is set by Slurm for every batch step and inherited by the
+    runner and its children, and nothing else sets it — it is the one signal that
+    needs no configuration on UBELIX and cannot be true on asteraix or idhefix.
+    """
+    return os.environ.get("SLURM_JOB_ID") or None
+
+
 def _not_beside_the_registry(weights_dir: Path, registry_root: Path) -> str | None:
     """Why weights at ``weights_dir`` cannot be registered in ``registry_root``, or None.
 
@@ -780,7 +790,7 @@ class BasePipeline(ABC):
                 f"remove {exc.path}, then resubmit.") from exc
 
     def _write_registration(self, job: TrainJob, spec: dict[str, Any],
-                            weights_dir: Path) -> Path:
+                            weights_dir: Path) -> Path | None:
         """Write ``trained/<id>.yaml``; a failure fails the job, and says so usefully.
 
         Called last in ``_register``, after the weights and ``metadata.json``
@@ -796,6 +806,21 @@ class BasePipeline(ABC):
         root = self.settings.registry_root
         # Before the write, so a failed job's record points at the weights too.
         job.model_path = spec.get("local_path") or str(weights_dir)
+        slurm_job = slurm_job_id()
+        if slurm_job:
+            # A Slurm job never writes the registry (#17). Its weights sit on
+            # UBELIX scratch, a path idhefix cannot open, and the registry's
+            # /mnt path does not exist there — so trying would fail a run whose
+            # training and test both succeeded. asteraix registers after the job
+            # ends; until that exists, the record says how to do it by hand.
+            job.registration = (
+                f"not registered: this ran as Slurm job {slurm_job}, and a Slurm job "
+                "never writes the registry (#17). The weights and metadata.json are at "
+                f"{weights_dir}. To serve them: copy that directory to the share, then "
+                "register it there with local_path naming the copy:\n"
+                + manual_registration(root, spec))
+            logger.warning("register: skipped the registry — Slurm job {} (#17)", slurm_job)
+            return None
         where = (f"Its weights are already at {weights_dir} (with metadata.json) — nothing "
                  "needs retraining.")
         elsewhere = _not_beside_the_registry(weights_dir, root)
@@ -811,7 +836,7 @@ class BasePipeline(ABC):
                 "register by hand with local_path naming the new place:\n"
                 + manual_registration(root, spec))
         try:
-            return write_registration(root, spec)
+            written = write_registration(root, spec)
         except RegistrationError as exc:
             previous = _previous_registration(root, spec.get("id", ""))
             raise StageFailed(
@@ -819,6 +844,8 @@ class BasePipeline(ABC):
                 "registry is writable, register it by hand:\n"
                 + manual_registration(root, spec)
             ) from exc
+        job.registration = f"registered: {written}"
+        return written
 
     def _maybe_publish(self, job: TrainJob, model_path: Path) -> str:
         """Publish to the Hub when the score clears the threshold (#88).

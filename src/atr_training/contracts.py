@@ -756,6 +756,11 @@ class TrainJob(BaseModel):
     #: What auto-publish did, in words — including why it did nothing (#88). The
     #: job record is where anyone looks for why a model is or is not on the hub.
     published: str | None = None
+    #: What the register stage did with the shared registry, in words: where it
+    #: wrote, or why it did not. A Slurm job on UBELIX never writes the registry
+    #: (#17) — asteraix registers after the job ends — and this says so, with the
+    #: steps to register by hand until that exists.
+    registration: str | None = None
     promotion_reason: str | None = None
     #: Set when the step-count guard refused the configuration and ``force`` ran it
     #: anyway (#72) — so a CER from a run that was known not to converge is never
