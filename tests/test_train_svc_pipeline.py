@@ -1000,3 +1000,49 @@ def test_the_run_that_fills_the_cache_moves_its_arrows_there(store, caching):
     listed = data.joinpath("train_bin.lst").read_text().strip()
     assert Path(listed).is_relative_to(caching.artefact_cache_root)
     assert "built by this job" in job.progress.artefact
+
+
+# ── a Slurm job leaves an existing registration alone (#17) ─────────────────
+def test_a_slurm_job_leaves_an_enabled_registration_byte_identical(store, settings, monkeypatch):
+    """Retraining a promoted id on UBELIX: no disable before the copy, no
+    registration, no enable by the gate — the file on the share is untouched."""
+    settings = _promoted_once(store, settings, monkeypatch)
+    path = registration_path(settings.registry_root, "kraken-thun-missiven-v1")
+    before = path.read_bytes()
+
+    # Disable-then-enable leaves the same bytes behind, so count the writes too.
+    import atr_training.registration as registration
+    import atr_training.runner_base as runner_base
+    import kraken_train_svc.runner as kraken_runner
+    writes: list[tuple] = []
+
+    def recording(root, model_id, enabled=True):
+        writes.append((model_id, enabled))
+        return registration.set_enabled(root, model_id, enabled)
+
+    monkeypatch.setattr(runner_base, "set_enabled", recording)
+    monkeypatch.setattr(kraken_runner, "set_enabled", recording)
+    monkeypatch.setenv("SLURM_JOB_ID", "15480898")
+    job = store.create(request_with(), host="ubelix")
+    job = Pipeline(store, settings, runner=FakeRunner(),
+                   source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+
+    assert job.status == "completed", job.error
+    assert writes == []
+    assert path.read_bytes() == before
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled
+    assert job.promoted is False
+    assert "Slurm job 15480898" in job.promotion_reason
+    assert job.registration.startswith("not registered: this ran as Slurm job 15480898")
+
+
+def test_a_slurm_job_still_refuses_a_curated_id(store, settings, monkeypatch):
+    # Reading the registry is allowed on UBELIX; the curated check is a read.
+    import atr_training.runner_base as runner_base
+    monkeypatch.setenv("SLURM_JOB_ID", "15480898")
+    monkeypatch.setattr(runner_base.BasePipeline, "_curated_clash",
+                        lambda self, model_id: f"{model_id} is curated")
+    job = store.create(request_with(), host="ubelix")
+    job = Pipeline(store, settings, runner=FakeRunner(),
+                   source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+    assert job.status == "failed" and "is curated" in job.error
