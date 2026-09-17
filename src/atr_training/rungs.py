@@ -12,13 +12,21 @@ the final ordering — 0.8226 against 0.7809 — was already decided there, at a
 4% of the compute eventually spent.
 
 **And it shows why one small budget is not enough.** kraken+ and run 2 differ by
-0.03 at epoch 18 and by ~0.02 at epoch 25. A gap that size is not resolvable in
-three epochs, and a single fixed budget would rank them by noise. Rungs exist so
-that large gaps are settled cheaply and small ones are paid for.
+only 0.03 at epoch 18 and by ~0.02 at epoch 25. A gap that size is not resolvable
+in three epochs, and a single fixed budget would rank them by noise. Rungs exist
+so that large gaps are settled cheaply and small ones are paid for.
+
+**The 16.09.2026 restart confirmed a second confound.** At seed 42, h256/Lbx200
+scored 0.7515 — competitive with h192. At seed 43 the same configuration scored
+**0.5591**, below h64. One seed, the same architecture, a completely different
+ordering. High configurations on this material are unstable: they sometimes
+partially collapse, and a collapse is not a noisy low score, it is a different
+training outcome that happened to fail. ``promote()`` now detects this (IQR guard)
+and flags it (anomaly flag), so a collapse never becomes a promotion decision.
 
 Everything here is pure: no I/O, no job store, no scheduler. A rung plan is
-arithmetic over a config count, and a promotion is a sort. The caller submits
-jobs and records scores; this module only decides who continues.
+arithmetic over a config count, and a promotion is a sort with guards. The caller
+submits jobs and records scores; this module only decides who continues.
 """
 
 from __future__ import annotations
@@ -30,9 +38,12 @@ __all__ = [
     "RungError",
     "Rung",
     "Promotion",
+    "AnomalyFlag",
     "DEFAULT_ETA",
     "plan_rungs",
     "promote",
+    "iqr_anomaly_cutoff",
+    "detect_anomaly",
 ]
 
 #: Keep the top third at each rung. Hyperband's usual default, and it turns 45
@@ -42,6 +53,27 @@ DEFAULT_ETA = 3
 
 class RungError(ValueError):
     """Raised when a rung plan or promotion cannot be formed coherently."""
+
+
+@dataclass(frozen=True)
+class AnomalyFlag:
+    """A configuration that trained differently than its score suggests.
+
+    Produced by :func:`detect_anomaly` when its score falls outside the Tukey
+    lower fence built from the rung's scores — more than ``factor`` × IQR below
+    Q1. This catches partial training collapses (h256 at seed 43: 0.5591) without
+    needing a seed repetition to detect them.
+
+    An anomaly is **eliminated but never promoted**, regardless of its raw rank.
+    It is also separated from ordinary poor scores so that a post-run audit can
+    distinguish "a config that needs more data" from "a config that sometimes
+    silently collapses".
+    """
+
+    config_id: str
+    score: float
+    lower_fence: float
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -75,9 +107,17 @@ class Promotion:
     #: a sweep that quietly loses a third of its candidates to a bug would look
     #: exactly like a sweep that worked.
     unscored: list[str] = field(default_factory=list)
+    #: Anomalies: configurations whose scores are below the Tukey lower fence
+    #: (more than ``factor`` × IQR below Q1). Eliminated, but flagged distinctly
+    #: so a post-run audit can separate "bad luck" from "collapsed training" —
+    #: the two failure modes have different remedies.
+    anomalies: list[AnomalyFlag] = field(default_factory=list)
 
     def __str__(self) -> str:
         tail = f", {len(self.unscored)} unscored" if self.unscored else ""
+        if self.anomalies:
+            ids = ", ".join(a.config_id for a in self.anomalies)
+            tail += f", {len(self.anomalies)} anomaly [{ids}]"
         return (f"rung {self.rung}: {len(self.promoted)} promoted, "
                 f"{len(self.eliminated)} eliminated{tail}")
 
@@ -120,16 +160,84 @@ def plan_rungs(
     return rungs
 
 
+def iqr_anomaly_cutoff(scores: Mapping[str, float], factor: float = 1.5
+                       ) -> tuple[float, float, float]:
+    """Tukey lower-fence, Q1, IQR for a set of (config_id, score) pairs.
+
+    Returns ``(lower_fence, q1, iqr)``. The lower fence is
+    ``Q1 - factor * IQR``. Any config whose score is below the lower fence is
+    flagged as a likely training collapse (not merely a poor configuration).
+
+    Returns ``(float('-inf'), nan, nan)`` when fewer than 4 configs are present —
+    IQR needs at least a Q1 and Q3, which requires 4+ values to define non-
+    trivially. Returns ``(float('inf'), nan, nan)`` when all scores are identical
+    (zero IQR means the fence is above every score).
+    """
+    values = sorted(v for v in scores.values())
+    n = len(values)
+    if n < 4:
+        import math
+        return (float("-inf"), math.nan, math.nan)
+
+    # Q1 = value at index floor(n/4), Q3 = value at index floor(3n/4)
+    # (Python's default quantiles=4 uses linear interpolation; this index-based
+    # form is deterministic and matches Tukey's original definition.)
+    q1 = values[n // 4]
+    q3 = values[3 * n // 4]
+    iqr = q3 - q1
+
+    if iqr == 0:
+        import math
+        return (float("-inf"), q1, 0.0)
+
+    lower_fence = q1 - factor * iqr
+    return (lower_fence, q1, iqr)
+
+
+def detect_anomaly(
+    config_id: str,
+    score: float,
+    lower_fence: float,
+) -> AnomalyFlag | None:
+    """Flag a configuration as a training anomaly if its score is below the Tukey lower fence.
+
+    A partial collapse (h256 at seed 43: 0.5591, where Q1≈0.735, IQR≈0.014, fence≈0.714)
+    is not a noisy low score — it is a different training that failed. Treating it as
+    ordinary noise and promoting it on its best seed would spend the next rung's budget
+    on a configuration that sometimes trains to garbage. The anomaly flag keeps it out
+    of promotion and marks it for the post-run audit.
+
+    This uses Tukey fences (IQR-based) rather than a σ-based z-test because the
+    z-test includes the outlier in its own standard deviation, which inflates the
+    denominator and makes high outliers harder to flag. IQR is robust: the outlier
+    only affects Q3 (and IQR, if it shifts Q1), not Q1 itself, so the lower fence
+    stays tight even when one score has collapsed.
+    """
+    if score < lower_fence:
+        return AnomalyFlag(
+            config_id=config_id,
+            score=score,
+            lower_fence=lower_fence,
+            reason=(
+                f"score {score:.4f} is below the Tukey lower fence {lower_fence:.4f} "
+                f"(Q1 - 1.5×IQR) — too far below the cluster to be ordinary noise on "
+                f"this material; likely a training collapse rather than a poor configuration"
+            ),
+        )
+    return None
+
+
 def promote(
     scores: Mapping[str, float | None],
     *,
     eta: int = DEFAULT_ETA,
     keep: int | None = None,
     rung: int = 0,
+    iqr_factor: float = 1.5,
 ) -> Promotion:
-    """Advance the best ``1/eta`` of a rung.
+    """Advance the best ``1/eta`` of a rung, guarding against collapse.
 
-    Higher scores win (kraken reports validation *accuracy*, not error). Two
+    Higher scores win (kraken reports validation *accuracy*, not error). Three
     rules make a rerun reproduce the same ladder:
 
     * **ties break by configuration id**, so equal scores do not depend on dict
@@ -137,7 +245,17 @@ def promote(
     * **a configuration without a score never promotes.** ``None`` means the run
       produced no number — it crashed, it was cancelled, or its metrics could not
       be parsed — and promoting it would spend the next rung's budget on a
-      configuration nobody has evidence for.
+      configuration nobody has evidence for;
+    * **an anomaly is eliminated but not promoted, regardless of its raw rank.**
+      A partial training collapse (h256 at seed 43 scoring 0.5591 when the
+      configuration's typical range is ~0.73) is not a noisy low value; it is a
+      different training outcome that happens to be bad. Promoting it on its
+      best seed would spend the next rung's budget on a configuration that
+      sometimes fails entirely.
+
+    An anomaly is flagged in ``Promotion.anomalies`` rather than buried in
+    ``eliminated`` so that a post-run audit can distinguish "needs more data"
+    from "collapsed at high height".
     """
     if eta < 2:
         raise RungError(f"eta must be at least 2, got {eta}")
@@ -147,6 +265,17 @@ def promote(
     unscored = sorted(cid for cid, value in scores.items() if value is None)
     scored = {cid: float(value) for cid, value in scores.items() if value is not None}
 
+    # Detect anomalies first (before any ranking) so the anomaly set is stable
+    # regardless of which configs happen to be in the top-1/eta by raw score.
+    lower_fence, q1, iqr = iqr_anomaly_cutoff(scored, factor=iqr_factor)
+    anomalies: list[AnomalyFlag] = []
+    if lower_fence != float("-inf"):  # need ≥4 configs for IQR
+        for cid, value in scored.items():
+            flag = detect_anomaly(cid, value, lower_fence)
+            if flag is not None:
+                anomalies.append(flag)
+    anomaly_ids = {a.config_id for a in anomalies}
+
     if keep is None:
         # Fraction of everything that entered the rung, not of what survived it:
         # a rung where half the configs crashed should still narrow the field,
@@ -155,7 +284,14 @@ def promote(
     if keep < 1:
         raise RungError(f"keep must be at least 1, got {keep}")
 
-    ranked = sorted(scored.items(), key=lambda kv: (-kv[1], kv[0]))
+    # Rank by score descending, tie-break by config_id. Anomalies are excluded
+    # from promotion but remain in the eliminated list so the record is complete.
+    ranked = sorted(
+        ((cid, v) for cid, v in scored.items() if cid not in anomaly_ids),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
     promoted = [cid for cid, _ in ranked[:keep]]
-    eliminated = [cid for cid, _ in ranked[keep:]]
-    return Promotion(rung=rung, promoted=promoted, eliminated=eliminated, unscored=unscored)
+    eliminated = [cid for cid, _ in ranked[keep:]] + sorted(anomaly_ids)
+
+    return Promotion(rung=rung, promoted=promoted, eliminated=eliminated,
+                     unscored=unscored, anomalies=anomalies)
