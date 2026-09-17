@@ -4,6 +4,50 @@ Training für ATR-Modelle — kraken, TrOCR und VLM-Feinabstimmung. Herausgelös
 [`serving-atr-inference`](https://github.com/thodel/serving-atr-inference) am
 16.09.2026, läuft auf **asteraix** (130.92.59.242).
 
+## Die Maschine
+
+```mermaid
+flowchart TB
+  gw["gateway on idhefix :8200"]
+  subgraph asteraix["asteraix · dhserver03 · 130.92.59.242"]
+    unit["atr-train · systemd user unit<br/>launcher, 0.0.0.0:8204"]
+    subgraph venvs[".venvs · one per engine"]
+      k["kraken-train<br/>service and ketos"]
+      v["vlm-train<br/>QLoRA"]
+      t["trocr-train"]
+    end
+    subgraph gpus["2x A40 · 46 GB each · NVLink"]
+      g0["card 0<br/>free, no job uses it yet"]
+      g1["card 1<br/>ATR_TRAIN_GPU=1"]
+    end
+    local["local disk ~/atr-cache<br/>checkpoints · tmp · artefacts"]
+  end
+  share[("research share /mnt/wbkolleg_dh_1<br/>jobs · trained · registry · hf_hub")]
+  gw -- "/jobs and /gpu · X-API-Key" --> unit
+  unit -- "spawns a runner, detached" --> k
+  unit -- "spawns a runner, detached" --> v
+  unit -- "spawns a runner, detached" --> t
+  unit -- "job records" --> share
+  venvs -- "one job at a time" --> g1
+  venvs -- "checkpoints · TMPDIR · corpus cache" --> local
+  venvs -- "weights · trained/ID.yaml" --> share
+  k -- "promotion gate /ocr" --> gw
+```
+
+Beschrieben in zwei Dokumenten (englisch):
+
+- [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — asteraix im Detail: der
+  Dienst und sein Launcher, die drei venvs, der Lebenslauf eines Jobs, was
+  lokal und was auf dem Share liegt, die Karten, UBELIX.
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — Deploy, Abbrechen und neu
+  Einreichen, `.env` ändern, Logs, Registrierung von Hand, fremde Job-Einträge
+  schliessen.
+
+Das **Gesamtbild** beider Maschinen — idhefix, die Clients, alle Kanten, das
+Share und die Werte, die auf beiden Maschinen übereinstimmen müssen — steht im
+Serving-Repo:
+[`docs/INFRASTRUCTURE.md`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md).
+
 ## Warum getrennt
 
 Bis zum Split liefen Serving und Training auf **einer** Maschine und teilten sich
@@ -29,7 +73,7 @@ Drei HTTP-Kanten, keine geteilte Python-Abhängigkeit:
 |---|---|
 | `/train/*`-Proxy | idhefix → asteraix:8204 |
 | Promotion-Gate | asteraix → idhefix:8200/ocr |
-| `eval/` | asteraix → idhefix:8200/recognize |
+| `eval/` (kommt mit #11) | asteraix → idhefix:8200/recognize |
 
 Die **Gewichte** queren gar kein Netz: beide Maschinen mounten
 `/mnt/wbkolleg_dh_1`.
@@ -54,6 +98,8 @@ einzige Sperre, und sie sperrt im Zweifel:
 
 ## Stand
 
-Im Aufbau. Plan und Reihenfolge:
+Der Trainer läuft seit dem 16.09.2026 auf asteraix; was dort läuft, steht in
+[`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md). Plan und Reihenfolge des
+Umzugs:
 [`docs/SPLIT_PLAN.md`](https://github.com/thodel/serving-atr-inference/blob/main/docs/SPLIT_PLAN.md)
 im Serving-Repo, Epics ab #1.

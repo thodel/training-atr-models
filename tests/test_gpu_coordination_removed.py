@@ -30,8 +30,8 @@ from test_train_svc_pipeline import FakeRunner, FakeSource, request_with
 REPO = Path(__file__).resolve().parents[1]
 
 #: Everything that is not a test and could carry the names: the code, the
-#: launchers and units, and the documents an operator reads.
-ROOTS = ("src", "engines", "scripts", "deploy", "config", "ubelix", ".github")
+#: launchers and units, and the documents an operator reads (docs/ since #16).
+ROOTS = ("src", "engines", "scripts", "deploy", "config", "ubelix", ".github", "docs")
 FILES = (".env.example", "README.md", "pyproject.toml")
 TEXT_SUFFIXES = {".py", ".md", ".sh", ".service", ".yaml", ".yml", ".toml",
                  ".txt", ".json", ".cfg", ".ini", ".example"}
