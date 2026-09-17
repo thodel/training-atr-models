@@ -52,8 +52,8 @@ mean different things:
 
 | The bot says | What it means | Check |
 |---|---|---|
-| `/atr_gpu`: "Trainer nicht erreichbar — nichts ist einem Job zugeordnet" | the trainer **did** answer, but it could not read the job store, so no process on the cards is attributed to a job (`job_attribution_available: false`) | here: `ls "$JOBS"`; the journal has "job store unreadable for /gpu" |
-| the watcher: "Der Trainingsserver antwortet seit … nicht" | its calls to `/train/jobs` and `/train/gpu` through the gateway have failed for 30 min. The gateway may be the part that is down | on idhefix: `systemctl --user status atr-gateway`, then the authenticated call above |
+| `/atr_gpu`: "Trainer nicht erreichbar — nichts ist einem Job zugeordnet" (the bot's German for "trainer unreachable — nothing is attributed to a job") | the trainer **did** answer, but it could not read the job store, so no process on the cards is attributed to a job (`job_attribution_available: false`) | here: `ls "$JOBS"`; the journal has "job store unreadable for /gpu" |
+| the watcher: "Der Trainingsserver antwortet seit … nicht" (German for "the training server has not answered since …") | its calls to `/train/jobs` and `/train/gpu` through the gateway have failed for 30 min. The gateway may be the part that is down | on idhefix: `systemctl --user status atr-gateway`, then the authenticated call above |
 
 What the authenticated call answers:
 
