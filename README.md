@@ -23,6 +23,7 @@ flowchart TB
     local["local disk ~/atr-cache<br/>checkpoints · tmp · artefacts"]
   end
   share[("research share /mnt/wbkolleg_dh_1<br/>jobs · trained · registry · hf_hub")]
+  hf["🤗 Hugging Face Hub<br/>huggingface.co · dh-unibe"]
   gw -- "/jobs and /gpu · X-API-Key" --> unit
   unit -- "spawns a runner, detached" --> k
   unit -- "spawns a runner, detached" --> v
@@ -32,6 +33,8 @@ flowchart TB
   venvs -- "checkpoints · TMPDIR · corpus cache" --> local
   venvs -- "weights · trained/ID.yaml" --> share
   k -- "promotion gate /ocr" --> gw
+  hf -- "datasets and base models<br/>downloaded in prepare into hf_hub" --> share
+  venvs -- "uploads: trained models, page datasets<br/>private · by hand or auto-publish" --> hf
 ```
 
 Beschrieben in zwei Dokumenten (englisch):

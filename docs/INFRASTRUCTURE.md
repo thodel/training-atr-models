@@ -46,6 +46,7 @@ flowchart TB
     local["local disk ~/atr-cache<br/>checkpoints · tmp · artefacts"]
   end
   share[("research share /mnt/wbkolleg_dh_1<br/>jobs · trained · registry · hf_hub")]
+  hf["🤗 Hugging Face Hub<br/>huggingface.co · dh-unibe"]
   gw -- "/jobs and /gpu · X-API-Key" --> unit
   unit -- "spawns a runner, detached" --> k
   unit -- "spawns a runner, detached" --> v
@@ -55,6 +56,8 @@ flowchart TB
   venvs -- "checkpoints · TMPDIR · corpus cache" --> local
   venvs -- "weights · trained/ID.yaml" --> share
   k -- "promotion gate /ocr" --> gw
+  hf -- "datasets and base models<br/>downloaded in prepare into hf_hub" --> share
+  venvs -- "uploads: trained models, page datasets<br/>private · by hand or auto-publish" --> hf
 ```
 
 - The service **supervises and does not train**. Each job runs as a detached
@@ -64,6 +67,16 @@ flowchart TB
   kraken only (see [below](#from-a-trained-model-to-models)).
 - The handover to serving is **two files on the share**: the weights directory
   and `registry/trained/ID.yaml`. No network call hands a model over.
+- **Hugging Face is the only outside source and sink of data.** `prepare`
+  downloads the `dh-unibe/image-text_*` datasets and the base models into the
+  shared cache `hf_hub/` (the symlink behind `~/.cache/huggingface/hub`), so a
+  second job, the other machine and UBELIX reuse them. Uploads go the other way
+  and are always private repos under `dh-unibe`: trained models through the
+  runner's auto-publish (off unless `ATR_TRAIN_AUTO_PUBLISH_MIN_ACCURACY` is set)
+  or by hand with `scripts/publish_to_hub.py`, page datasets built from TEI
+  editions with `scripts/tei_edition_to_hf.py`. Both scripts still live in
+  serving-atr-inference and move here with #6; they run in the `kraken-train`
+  venv, which has `huggingface_hub`.
 
 ## The host
 
