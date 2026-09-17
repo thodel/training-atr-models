@@ -28,6 +28,8 @@ engine gets its own.
 
 from __future__ import annotations
 
+import difflib
+
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,14 +94,29 @@ class ResolvedBase:
         return self.ref if not self.source_id else f"{self.source_id} → {self.ref}"
 
 
-def _kraken_base_ids(registry: RegistryLike | None) -> list[str]:
-    """Registry ids that can actually serve as a kraken fine-tuning base."""
+def _kraken_base_ids(
+    registry: RegistryLike | None,
+    for_ref: str | None = None,
+) -> list[str]:
+    """Registry ids that can actually serve as a kraken fine-tuning base.
+
+    When ``for_ref`` is given the ids are ranked by :func:`difflib.get_close_matches`
+    proximity to ``for_ref`` (the typed value that failed to resolve), capped at 10.
+    Alphabetical order is the fallback when no ``for_ref`` is given — the sort the
+    tests assert on.
+    """
     if registry is None:
         return []
-    return sorted(
+    candidates = [
         spec.id for spec in registry.by_engine("kraken")
         if spec.zenodo_id or spec.local_path
-    )
+    ]
+    if not for_ref:
+        return sorted(candidates)
+    ranked = difflib.get_close_matches(for_ref, candidates, n=10, cutoff=0.0)
+    # get_close_matches always returns at most n; alphabetical tail for any that
+    # difflib could not place (cutoff=0.0 keeps everything, sorted by best ratio)
+    return ranked
 
 
 def resolve_base_model(
@@ -164,8 +181,8 @@ def _resolve_kraken(ref: str, registry: RegistryLike | None,
             "(10.xxxx/zenodo.NNNN) or a path would not need one."
         )
 
-    known = _kraken_base_ids(registry)
-    hint = f" Known registry ids: {known}." if known else ""
+    known = _kraken_base_ids(registry, for_ref=ref)
+    hint = f" Closest registry ids: {known}." if known else ""
     raise BaseModelError(
         f"base_model {ref!r} is not a file, a registry id, or a Zenodo reference "
         f"(10.xxxx/zenodo.NNNN, or a bare record id).{hint}"
