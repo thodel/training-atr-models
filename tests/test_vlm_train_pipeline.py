@@ -764,3 +764,72 @@ def test_the_published_metadata_names_the_evaluator_commit(store, settings, monk
     assert meta["code"]["test"]["commit"] == "b" * 40
     # register writes metadata.json while its own stage is still running
     assert "register" in meta["code"]
+
+# ── a Slurm job never writes the registry (#17) ─────────────────────────────
+def run_on_slurm(store, settings, source, runner, host="ubelix"):
+    """A job as ubelix/submit_job.py writes it, run as the batch job runs it."""
+    job = store.create(request_with(), host=host)
+    return Pipeline(store, settings, runner=runner, source=source).execute(job.id)
+
+
+def test_the_slurm_job_never_writes_the_registry(store, settings, monkeypatch):
+    # On UBELIX the registry's /mnt path does not exist and the weights sit on
+    # scratch; writing would fail a run whose training and test both passed.
+    monkeypatch.setenv("SLURM_JOB_ID", "15450030")
+    job = run_on_slurm(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert not any(settings.registry_root.rglob("*.yaml"))
+    weights = settings.trained_root / job.request.model_id
+    assert (weights / "metadata.json").is_file()
+    assert job.model_path == str(weights)
+
+
+def test_the_record_says_why_and_how_to_register_by_hand(store, settings, monkeypatch):
+    monkeypatch.setenv("SLURM_JOB_ID", "15450030")
+    job = run_on_slurm(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.registration.startswith("not registered: this ran as Slurm job 15450030")
+    assert "#17" in job.registration
+    assert str(settings.trained_root / job.request.model_id) in job.registration
+    assert "qwen3vl-thun-v1" in job.registration        # the hand-registration spec
+    assert store.load(job.id).registration == job.registration
+
+
+def test_outside_slurm_the_registration_is_written_and_recorded(store, settings):
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert job.registration.startswith("registered: ")
+    assert job.registration.endswith("qwen3vl-thun-v1.yaml")
+
+
+def test_the_promotion_gate_does_not_run_on_slurm(store, settings, monkeypatch):
+    monkeypatch.setenv("SLURM_JOB_ID", "15450030")
+    job = run_on_slurm(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+    assert job.promoted is False
+    assert job.promotion_reason.startswith("not registered: Slurm job 15450030 (#17)")
+
+
+def test_a_legacy_record_without_host_still_runs_on_slurm(store, settings, monkeypatch):
+    # Every UBELIX record from before #15 has no host; they are still resumed there.
+    monkeypatch.setenv("SLURM_JOB_ID", "15450030")
+    job = store.create(request_with(), host="ubelix")
+    job.host = None
+    store.save(job)
+    done = Pipeline(store, settings, runner=FakeRunner(),
+                    source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+    assert done.status == "completed", done.error
+    assert done.registration.startswith("not registered")
+
+
+def test_a_service_job_with_a_leaked_slurm_job_id_fails_before_training(
+        store, settings, monkeypatch):
+    monkeypatch.setenv("SLURM_JOB_ID", "15450030")
+    runner = FakeRunner()
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), runner)
+
+    assert job.status == "failed"
+    assert "SLURM_JOB_ID=15450030" in job.error and "'test-trainer'" in job.error
+    assert [s.name for s in job.stages] == []          # nothing ran, not even prepare
+    assert not settings.trained_root.exists() or not any(settings.trained_root.iterdir())

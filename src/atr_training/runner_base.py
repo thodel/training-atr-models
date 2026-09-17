@@ -48,7 +48,7 @@ from atr_training.convergence import check_convergence
 from atr_training.heldout import load_heldout
 from atr_training.hf_source import (data_files_for, granularity_files,
                                             keep_projects_for, only_projects)
-from atr_training.jobstore import JobStore
+from atr_training.jobstore import SLURM_HOST, JobStore
 from atr_training.manifests import split_pages, write_manifest
 from atr_training.prepare import (
     HFPageSource,
@@ -149,6 +149,16 @@ def _filesystem_of(path: Path) -> int | None:
         return os.stat(path).st_dev
     except OSError:
         return None
+
+
+def slurm_job_id() -> str | None:
+    """The Slurm job this process runs in, or None outside Slurm.
+
+    ``SLURM_JOB_ID`` is set by Slurm for every batch step and inherited by the
+    runner and its children, and nothing else sets it — it is the one signal that
+    needs no configuration on UBELIX and cannot be true on asteraix or idhefix.
+    """
+    return os.environ.get("SLURM_JOB_ID") or None
 
 
 def _not_beside_the_registry(weights_dir: Path, registry_root: Path) -> str | None:
@@ -759,14 +769,7 @@ class BasePipeline(ABC):
         """
         model_id = job.request.model_id
         root = self.settings.registry_root
-        untouched = (f"Nothing was copied or registered. The trained weights are still at "
-                     f"{model_artifact} (until DELETE /jobs/{job.id}).")
-        clash = self._curated_clash(model_id)
-        if clash is not None:
-            raise StageFailed(
-                f"{clash}. {untouched} To keep them, copy them to a directory named after "
-                f"a new model_id under {self.settings.trained_root} and register that id by "
-                f"hand (python -m atr_training.registration --root {root}).")
+        untouched = self._refuse_curated(job, model_artifact)
         try:
             current = read_registration(root, model_id)
             if current is not None and current.enabled:
@@ -779,8 +782,42 @@ class BasePipeline(ABC):
                 f"or disabled before its weights are replaced: {exc}\n{untouched} Fix or "
                 f"remove {exc.path}, then resubmit.") from exc
 
+    def _refuse_curated(self, job: TrainJob, model_artifact: Path) -> str:
+        """Fail on a curated id; return the "nothing changed" sentence otherwise.
+
+        Read-only, so it is also the whole of :meth:`_before_register` on a Slurm
+        job, which may look at the registry but never write it (#17).
+        """
+        root = self.settings.registry_root
+        untouched = (f"Nothing was copied or registered. The trained weights are still at "
+                     f"{model_artifact} (until DELETE /jobs/{job.id}).")
+        clash = self._curated_clash(job.request.model_id)
+        if clash is not None:
+            raise StageFailed(
+                f"{clash}. {untouched} To keep them, copy them to a directory named after "
+                f"a new model_id under {self.settings.trained_root} and register that id by "
+                f"hand (python -m atr_training.registration --root {root}).")
+        return untouched
+
+    def _guard_slurm_host(self, job: TrainJob) -> None:
+        """Refuse a service host's job that finds itself inside a Slurm job.
+
+        ``SLURM_JOB_ID`` is what switches the register stage to leave the registry
+        alone (#17). On a job that belongs to asteraix or idhefix it can only be a
+        leak — a trainer started from inside an allocation — and following it
+        would train for hours and then never register. Legacy records without a
+        host are UBELIX jobs from before #15 and pass.
+        """
+        slurm = slurm_job_id()
+        if slurm and job.host and job.host != SLURM_HOST:
+            raise StageFailed(
+                f"SLURM_JOB_ID={slurm} is set, but job {job.id} belongs to host {job.host!r}, "
+                f"not {SLURM_HOST!r}. A Slurm job never registers its model (#17), so this "
+                "run would train and then leave the registry alone. Unset SLURM_JOB_ID in "
+                "the trainer's environment, or submit the job to UBELIX.")
+
     def _write_registration(self, job: TrainJob, spec: dict[str, Any],
-                            weights_dir: Path) -> Path:
+                            weights_dir: Path) -> Path | None:
         """Write ``trained/<id>.yaml``; a failure fails the job, and says so usefully.
 
         Called last in ``_register``, after the weights and ``metadata.json``
@@ -796,6 +833,21 @@ class BasePipeline(ABC):
         root = self.settings.registry_root
         # Before the write, so a failed job's record points at the weights too.
         job.model_path = spec.get("local_path") or str(weights_dir)
+        slurm_job = slurm_job_id()
+        if slurm_job:
+            # A Slurm job never writes the registry (#17). Its weights sit on
+            # UBELIX scratch, a path idhefix cannot open, and the registry's
+            # /mnt path does not exist there — so trying would fail a run whose
+            # training and test both succeeded. asteraix registers after the job
+            # ends; until that exists, the record says how to do it by hand.
+            job.registration = (
+                f"not registered: this ran as Slurm job {slurm_job}, and a Slurm job "
+                "never writes the registry (#17). The weights and metadata.json are at "
+                f"{weights_dir}. To serve them: copy that directory to the share, then "
+                "register it there with local_path naming the copy:\n"
+                + manual_registration(root, spec))
+            logger.warning("register: skipped the registry — Slurm job {} (#17)", slurm_job)
+            return None
         where = (f"Its weights are already at {weights_dir} (with metadata.json) — nothing "
                  "needs retraining.")
         elsewhere = _not_beside_the_registry(weights_dir, root)
@@ -811,7 +863,7 @@ class BasePipeline(ABC):
                 "register by hand with local_path naming the new place:\n"
                 + manual_registration(root, spec))
         try:
-            return write_registration(root, spec)
+            written = write_registration(root, spec)
         except RegistrationError as exc:
             previous = _previous_registration(root, spec.get("id", ""))
             raise StageFailed(
@@ -819,6 +871,8 @@ class BasePipeline(ABC):
                 "registry is writable, register it by hand:\n"
                 + manual_registration(root, spec)
             ) from exc
+        job.registration = f"registered: {written}"
+        return written
 
     def _maybe_publish(self, job: TrainJob, model_path: Path) -> str:
         """Publish to the Hub when the score clears the threshold (#88).
@@ -1055,6 +1109,7 @@ class BasePipeline(ABC):
         resuming = job.status == "training"
 
         try:
+            self._guard_slurm_host(job)
             if resuming:
                 # Two routes lead here and both are ordinary: a preemption or
                 # walltime requeue, or a job built off the GPU by
@@ -1153,17 +1208,29 @@ class BasePipeline(ABC):
             job.metrics = self._test(job, model, val_artifact, rec)
         self.store.save(job)
 
+        # Decided once, for both halves below: a Slurm job reads the registry but
+        # never writes it (#17) — not the disable before replacing weights, not
+        # the registration, not the gate's enable.
+        slurm = slurm_job_id()
         self.store.advance(job, "registering")
         with self._stage(job, "register"):
-            self._before_register(job, model)
+            if slurm:
+                self._refuse_curated(job, model)
+            else:
+                self._before_register(job, model)
             model_path = self._register(job, model, job.metrics)
 
-        # Outside the stage: a model that will not serve is not a failed run,
-        # so this may not take the job down with it (see training/promote.py).
-        try:
-            verdict = self._promote(job, model_path)
-        except BaseException as exc:  # noqa: BLE001 - never let the gate fail a run
-            verdict = PromotionResult(False, f"{type(exc).__name__}: {exc}")
+        if slurm:
+            verdict = PromotionResult(
+                False, f"not registered: Slurm job {slurm} (#17); the gate runs once "
+                       "asteraix has registered it")
+        else:
+            # Outside the stage: a model that will not serve is not a failed run,
+            # so this may not take the job down with it (see training/promote.py).
+            try:
+                verdict = self._promote(job, model_path)
+            except BaseException as exc:  # noqa: BLE001 - never let the gate fail a run
+                verdict = PromotionResult(False, f"{type(exc).__name__}: {exc}")
         job.promoted = verdict.promoted
         job.promotion_reason = verdict.reason
         logger.info("promotion gate: {} — {}",

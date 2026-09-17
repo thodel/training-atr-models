@@ -411,7 +411,7 @@ class Pipeline(BasePipeline):
         )
         tmp_meta.rename(dest_dir / "metadata.json")
 
-        self._write_registration(job, {
+        if self._write_registration(job, {
             "id": model_id,
             "engine": "kraken",
             # Opened by the kraken engine beside the gateway, on the other
@@ -420,8 +420,9 @@ class Pipeline(BasePipeline):
             "enabled": False,  # promotion gate: #36
             "task": "htr",
             "level": "page",
-        }, dest_dir)
-        logger.info("registered {} -> {} (disabled until promoted)", model_id, dest)
+        }, dest_dir) is not None:
+            logger.info(
+                "registered {} -> {} (disabled until promoted)", model_id, dest)
         return dest
 
     def _promote(self, job: TrainJob, model_path: Path) -> PromotionResult:

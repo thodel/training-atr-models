@@ -197,7 +197,7 @@ class Pipeline(BasePipeline):
             encoding="utf-8",
         )
 
-        self._write_registration(job, {
+        if self._write_registration(job, {
             "id": model_id,
             "engine": "trocr",
             "local_path": str(dest_dir),
@@ -205,9 +205,9 @@ class Pipeline(BasePipeline):
             "enabled": False,  # promotion gate: #36
             "task": "htr",
             "level": "line",
-        }, dest_dir)
-        logger.info("registered {} -> {} (disabled until promoted)",
-                    model_id, dest_dir)
+        }, dest_dir) is not None:
+            logger.info(
+                "registered {} -> {} (disabled until promoted)", model_id, dest_dir)
         return dest_dir
 
 
