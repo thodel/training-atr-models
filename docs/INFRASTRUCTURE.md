@@ -594,6 +594,30 @@ UBELIX job no longer stays live. The three decisions taken on 16.09.2026:
    Jobs that need more go to `job_gpu_preemptable`, and only if they can
    resume.
 
+## Base-model selection — §9c rule
+
+When choosing a kraken fine-tuning base, **script class outranks century**:
+
+```
+base                    script          century  CER
+kraken-late_medieval_german  Textura       14–16   0.3921
+kraken-early_modern_german   Kurrent       16–17   0.2350  ← better
+```
+
+Measured 2026-09-17: same data and hyperparameters, only the base changed.
+A CTC network transfers letterforms. Textura shares few with cursive however
+close the dates. A base trained on the *same script class* generalises better
+than one closer in date alone.
+
+**The rule:** prefer a base whose ``scripts`` field overlaps the material's
+script class. Century proximity is a secondary bonus, not a primary signal.
+
+The trainer exposes this through ``GET /bases?script=&century=&language=``
+(and the gateway proxies it as ``GET /train/bases`` after the trainer route
+exists in a follow-up PR — serving-atr-inference#78). The ``config/models.yaml``
+carries ``scripts``, ``languages`` and ``centuries`` per entry for exactly
+this purpose.
+
 ## Deploying and restarting
 
 The commands are in [OPERATIONS.md](OPERATIONS.md). What a newcomer needs to
