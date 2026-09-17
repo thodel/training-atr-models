@@ -68,6 +68,15 @@ def test_listing_is_newest_first(store: JobStore):
     assert [j.id for j in store.list()] == sorted(ids, reverse=True)
 
 
+def test_list_limit_keeps_only_the_newest(store: JobStore):
+    ids = [store.create(make_request(), job_id=f"2026080{i}T120000Z-m").id for i in (1, 3, 2)]
+    newest_first = sorted(ids, reverse=True)
+    assert [j.id for j in store.list(limit=2)] == newest_first[:2]
+    assert [j.id for j in store.list(limit=1)] == newest_first[:1]
+    # limit beyond the store size returns everything, order intact
+    assert [j.id for j in store.list(limit=10)] == newest_first
+
+
 def test_a_corrupt_record_does_not_break_the_listing(store: JobStore):
     good = store.create(make_request(), job_id="20260806T120000Z-good")
     bad = store.paths("20260806T110000Z-bad")
