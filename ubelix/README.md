@@ -109,10 +109,12 @@ been pulled since. The job record names the commit in `code`, per stage.
 - `sbatch` options after `--` may not carry an `--export` without `ALL` — it would
   drop the pin. Chains and fan-outs are submitted through `submit.sh` too, so
   every job they queue inherits the pin.
-- Worktrees live in `~/.cache/training-atr-models/worktrees/<sha>`, each ready once
-  `<sha>.ready` exists beside it; a half-made one (a killed job) is replaced on the
-  next start, and one with edited files is refused. They are never removed
-  automatically (a requeued job may need one):
+- Worktrees live in `~/.cache/training-atr-models/worktrees/<sha>.<node>` — **one per
+  commit and node**, because `$HOME` is shared and `flock` on it does not serialise
+  between nodes (three arms on two nodes shared one path and two of them died). Each
+  is ready once `<sha>.<node>.ready` exists beside it; a half-made one (a killed job)
+  is replaced on the next start, and one with edited files is refused. They are never
+  removed automatically (a requeued job may need one):
   `git -C ~/training-atr-models worktree list`, then `worktree remove <dir>` and
   `rm <dir>.ready`.
 

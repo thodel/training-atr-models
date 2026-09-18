@@ -26,8 +26,9 @@
 # runs the checkout as it is, and says so — with a warning if it is behind main.
 #
 # Worktrees live under ${ATR_CODE_ROOT:-$HOME/.cache/training-atr-models/worktrees}
-# ($HOME: backed up, not purged like scratch) and are never removed
-# automatically, because a requeued job may still need one:
+# ($HOME: backed up, not purged like scratch), one per commit AND NODE
+# (<sha>.<node>), and are never removed automatically, because a requeued job may
+# still need one:
 #   git -C ~/training-atr-models worktree list
 #   git -C ~/training-atr-models worktree remove <dir> && rm <dir>.ready
 
@@ -51,11 +52,19 @@ pin_code() {
     return 1
   fi
 
+  # One tree per node. $HOME is shared across the cluster, and flock on it does
+  # NOT serialise between nodes: three arms starting together (15560727/28/29 on
+  # gnode25 and gnode26) each saw an unmarked tree, and two removed the one the
+  # third was checking out — "Could not write new index file", both dead in a
+  # second. A path per node makes the lock a node-local question, which is the
+  # only kind flock can answer. A tree is ~1 MB of small files; the alternative,
+  # a lock that works across GPFS, is the thing jobstore.claim needed O_EXCL for.
   local root=${ATR_CODE_ROOT:-$HOME/.cache/training-atr-models/worktrees}
-  local dir=$root/$commit
+  local node=${SLURMD_NODENAME:-$(hostname -s)}
+  local dir=$root/$commit.$node
   mkdir -p "$root" || return 1
   if ! [ -f "$dir.ready" ] || ! [ -e "$dir/.git" ]; then
-    _pin_code_locked "$root/.lock" bash "$_PIN_CODE_SELF" --create "$commit" "$dir" "$REPO" || return 1
+    _pin_code_locked "$root/.lock.$node" bash "$_PIN_CODE_SELF" --create "$commit" "$dir" "$REPO" || return 1
   fi
 
   local head changes
