@@ -34,11 +34,15 @@ def checkout(tmp_path: Path):
     return repo, old, _git(repo, "rev-parse", "HEAD")
 
 
-def _pin(repo: Path, root: Path, commit: str | None,
-         lock: str | None = None) -> subprocess.CompletedProcess:
+def _pin(repo: Path, root: Path, commit: str | None, lock: str | None = None,
+         node: str | None = None) -> subprocess.CompletedProcess:
     """Source pin_code.sh as a batch file would, and report where REPO ended up."""
     env = {k: v for k, v in os.environ.items() if k not in ("ATR_CODE_COMMIT", "ATR_PIN_LOCK")}
     env.update(ATR_CODE_ROOT=str(root))
+    if node:
+        env["SLURMD_NODENAME"] = node
+    else:
+        env.pop("SLURMD_NODENAME", None)
     if lock:
         env["ATR_PIN_LOCK"] = lock
     if commit is not None:
@@ -128,13 +132,13 @@ def test_a_half_made_tree_is_replaced_not_used(checkout, tmp_path):
     repo, old, _ = checkout
     root = tmp_path / "wt"
     root.mkdir()
-    _git(repo, "worktree", "add", "--no-checkout", "--detach", str(root / old), old)
-    assert not (root / old / "code.py").exists()
+    _git(repo, "worktree", "add", "--no-checkout", "--detach", str(root / f"{old}.testnode"), old)
+    assert not (root / f"{old}.testnode" / "code.py").exists()
 
-    done = _pin(repo, root, old)
+    done = _pin(repo, root, old, node="testnode")
     assert done.returncode == 0, done.stderr
     assert (_repo_of(done) / "code.py").read_text() == "VERSION = 'old'\n"
-    assert (root / f"{old}.ready").exists()
+    assert list(root.glob(f"{old}.*.ready"))
     assert "replacing an unfinished worktree" in done.stderr
 
 
@@ -142,10 +146,10 @@ def test_a_tree_left_locked_by_a_killed_job_is_replaced(checkout, tmp_path):
     repo, old, _ = checkout
     root = tmp_path / "wt"
     root.mkdir()
-    _git(repo, "worktree", "add", "--no-checkout", "--detach", str(root / old), old)
-    _git(repo, "worktree", "lock", "--reason", "initializing", str(root / old))
+    _git(repo, "worktree", "add", "--no-checkout", "--detach", str(root / f"{old}.testnode"), old)
+    _git(repo, "worktree", "lock", "--reason", "initializing", str(root / f"{old}.testnode"))
 
-    done = _pin(repo, root, old)
+    done = _pin(repo, root, old, node="testnode")
     assert done.returncode == 0, done.stderr
     assert (_repo_of(done) / "code.py").exists()
 
@@ -176,3 +180,40 @@ def test_every_batch_file_that_sets_repo_pins_it_immediately():
             continue
         following = [line for line in lines[sets[0] + 1:] if not line.startswith("#")]
         assert following[0] == 'source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1', path.name
+
+
+# ── one tree per node: $HOME is shared, flock across nodes is not ───────────
+def test_two_nodes_get_their_own_tree(checkout, tmp_path):
+    # 15560727/28/29: three arms on two nodes shared one path, and two removed
+    # the tree the third was checking out. Both died in a second.
+    repo, old, _ = checkout
+    root = tmp_path / "wt"
+    a = _repo_of(_pin(repo, root, old, node="gnode25"))
+    b = _repo_of(_pin(repo, root, old, node="gnode26"))
+    assert a != b
+    assert a.name.endswith(".gnode25") and b.name.endswith(".gnode26")
+    for tree in (a, b):
+        assert (tree / "code.py").read_text() == "VERSION = 'old'\n"
+        assert Path(str(tree) + ".ready").exists()
+
+
+def test_a_second_node_does_not_touch_the_first_nodes_tree(checkout, tmp_path):
+    repo, old, _ = checkout
+    root = tmp_path / "wt"
+    first = _repo_of(_pin(repo, root, old, node="gnode25"))
+    (first / "marker").write_text("in use by the job on gnode25")
+    _pin(repo, root, old, node="gnode26")
+    assert (first / "marker").exists()
+    assert (first / "code.py").exists()
+
+
+def test_arms_on_two_nodes_starting_together_all_survive(checkout, tmp_path):
+    repo, old, _ = checkout
+    root = tmp_path / "wt"
+    nodes = ["gnode25", "gnode25", "gnode26", "gnode26", "gnode27", "gnode27"]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        runs = list(pool.map(lambda n: _pin(repo, root, old, node=n), nodes))
+    assert all(r.returncode == 0 for r in runs), [r.stderr for r in runs]
+    trees = {_repo_of(r) for r in runs}
+    assert len(trees) == 3                       # one per node, not one per job
+    assert all((t / "code.py").read_text() == "VERSION = 'old'\n" for t in trees)
