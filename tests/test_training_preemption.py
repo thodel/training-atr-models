@@ -346,3 +346,43 @@ def test_fanout_refuses_a_job_that_is_not_a_finished_corpus(store, settings):
     job = store.create(request_with(model_id="qwen3vl-not-prepared"))
     with pytest.raises(SystemExit):
         _fanout().fan_out(str(settings.jobs_root), job.id, [("x", "Qwen/Qwen3.5-2B")])
+
+
+def test_a_completed_run_can_be_fanned_out_too(store, settings):
+    """Its corpus is the same corpus, and arms cloned from it share that run's split.
+
+    Retraining a campaign's other base models after the first one finished was
+    done twice with a copy of fanout.py, because `completed` was refused. A fresh
+    prepare is the alternative: hours, and a different seeded split.
+    """
+    finished = store.create(request_with(model_id="qwen3vl-finished"))
+    done = Pipeline(store, settings, runner=FakeRunner(),
+                    source=FakeSource({"train": 4, "eval": 2})).execute(finished.id)
+    assert done.status == "completed"
+
+    (arm,) = _fanout().fan_out(str(settings.jobs_root), finished.id,
+                               [("qwen35-2b-after", "Qwen/Qwen3.5-2B")])
+
+    job = store.load(arm)
+    assert job.status == "training"
+    assert job.request.base_model == "Qwen/Qwen3.5-2B"
+    assert (store.paths(arm).data / "train.jsonl").is_symlink()
+
+    source, runner = FakeSource({"train": 4, "eval": 2}), FakeRunner()
+    trained = Pipeline(store, settings, runner=runner, source=source).execute(arm)
+    assert trained.status == "completed", trained.error
+    assert source.calls == [], "the arm re-streamed the corpus"
+
+    # the source keeps its own report: the arm's data/ is its own directory
+    (store.paths(arm).data / "eval_report.json").write_text("{}", encoding="utf-8")
+    assert (store.paths(finished.id).data / "eval_report.json").read_text() != "{}"
+
+
+def test_fanout_still_refuses_a_failed_run(store, settings):
+    # A failed run's corpus may be half-built; that is why the check exists.
+    job = store.create(request_with(model_id="qwen3vl-failed"))
+    store.advance(job, "preparing")
+    store.fail(job, "boom")
+    with pytest.raises(SystemExit) as refused:
+        _fanout().fan_out(str(settings.jobs_root), job.id, [("x", "Qwen/Qwen3.5-2B")])
+    assert "failed" in str(refused.value)

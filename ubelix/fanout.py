@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Clone one prepared job into several, one per base model, sharing one corpus.
 
-    fanout.py <jobs_root> <prepared_job_id> <model_id>=<base_model> ...
+    fanout.py <jobs_root> <source_job_id> <model_id>=<base_model> ...
 
 prints one job id per line, each ready for ``train.sbatch``.
 
@@ -12,7 +12,10 @@ full prepares of the same corpus. On the German corpus that is 2 h of prepare an
 28 GB / 325,651 crop files each. Worse than the cost: each prepare re-derives the
 seeded split, and a comparison across four splits is four experiments, not one.
 
-HOW. Each clone gets a job record identical to the prepared one except for
+The source is a job whose corpus is finished: a stage-1 prepare (``training``) or
+a run that trained on it too (``completed``).
+
+HOW. Each clone gets a job record identical to the source except for
 ``base_model`` and ``model_id``, advanced to ``training`` so ``train.sbatch``
 takes the ordinary resume path. Its ``data/`` is a REAL directory holding
 symlinks to the prepared job's inputs — never a symlink to the whole ``data/``:
@@ -29,6 +32,15 @@ import sys
 
 from atr_training.jobstore import SLURM_HOST, JobStore
 
+#: A source whose corpus is built. ``training`` is what ``--stop-after compile``
+#: leaves behind. ``completed`` is the same corpus with a trained model beside it:
+#: arms cloned from it compare against that run on its own split, which is the
+#: point of sharing a corpus at all — and the alternative, a fresh prepare, costs
+#: hours and re-derives the split (the 19th-century corpus: 16 h, of which 14 were
+#: the artefact cache). Both were done by hand with a copy of this file before it
+#: allowed them; the copy is what this removes.
+SOURCE_STATUSES = frozenset({"training", "completed"})
+
 #: What the clones read and never write. eval_report.json is deliberately absent.
 SHARED_INPUTS = ("crops", "pages", "train.jsonl", "val.jsonl",
                  "pages_train.lst", "pages_val.lst")
@@ -37,9 +49,11 @@ SHARED_INPUTS = ("crops", "pages", "train.jsonl", "val.jsonl",
 def fan_out(jobs_root: str, prepared_id: str, arms: list[tuple[str, str]]) -> list[str]:
     store = JobStore(jobs_root)
     source = store.load(prepared_id)
-    if source.status != "training":
-        raise SystemExit(f"{prepared_id} is {source.status!r}, not 'training' — "
-                         "fan out only a job that stage 1 finished (--stop-after compile)")
+    if source.status not in SOURCE_STATUSES:
+        raise SystemExit(
+            f"{prepared_id} is {source.status!r}; fan out a job whose corpus is finished — "
+            f"one of {sorted(SOURCE_STATUSES)}. `training` is a stage-1 prepare "
+            "(--stop-after compile); `completed` is a run that also trained on it.")
     src_data = store.paths(prepared_id).data
     missing = [n for n in SHARED_INPUTS if not (src_data / n).exists()]
     if missing:
