@@ -47,12 +47,13 @@ import time
 from pathlib import Path
 from typing import Literal, get_args
 
-from fastapi import FastAPI, HTTPException, Query, Response
+import httpx
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 
 from atr_training import gpu as gpu_probe
-from atr_training.access import AccessGuard
+from atr_training.access import AccessGuard, key_refusal
 from atr_training.shared_registry import RegistryUnavailable, load_shared_registry
 from atr_training.base_models import BaseModelError, resolve_base_model
 from atr_training.backends import BACKENDS, UnknownBackend, backend_for
@@ -481,8 +482,22 @@ def _cleanup_orphaned_weights(trained_root: Path | str, store: JobStore,
     return removed
 
 
+def _warn_without_gateway_key(settings: TrainerSettings) -> None:
+    """Say at startup what an empty ``ATR_TRAIN_GATEWAY_API_KEY`` costs (#48).
+
+    Nothing else does until a kraken run reaches ``register``: the trainer
+    starts, ``/health`` is green, jobs are accepted, and the promotion gate then
+    leaves the model disabled. On asteraix it was empty from the cutover on
+    16.09 until 21.09 without anyone noticing."""
+    if not settings.gateway_api_key:
+        logger.warning("ATR_TRAIN_GATEWAY_API_KEY is not set: no promotion gate and no "
+                       "evaluation through the gateway, so a trained kraken model registers "
+                       "disabled (training-atr-models#48)")
+
+
 async def lifespan(_app: FastAPI):  # pragma: no cover - process lifecycle
     settings = _settings()
+    _warn_without_gateway_key(settings)
     settings.jobs_root.mkdir(parents=True, exist_ok=True)
     settings.trained_root.mkdir(parents=True, exist_ok=True)
     # A restart must not leave a killed job looking like it is still training.
@@ -511,14 +526,15 @@ app.add_middleware(AccessGuard, settings=_settings)
 
 
 # ── endpoints ───────────────────────────────────────────────────────────────
-def _health_body() -> dict:
+def _health_body(*, deep: bool = False) -> dict:
     settings = _settings()
     jobs = _store().list()
     try:
         gpus = [g.__dict__ for g in query_gpus()]
     except PreflightError as exc:
         gpus = [{"error": str(exc)}]
-    return {
+
+    body = {
         "status": "ok",
         # Which machine answered. The gateway on idhefix reads this across the
         # network now, and "ok" alone does not say from where.
@@ -545,17 +561,42 @@ def _health_body() -> dict:
         "jobs": {"total": len(jobs),
                  "running": len([j for j in jobs if j.status in RUNNING_STATUSES]),
                  "queued": len([j for j in jobs if j.status == "queued"])},
+        "gateway_auth_configured": bool(settings.gateway_api_key),
     }
+
+    if deep and settings.gateway_api_key:
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.get(
+                    f"{settings.gateway_url.rstrip('/')}/models",
+                    headers={"X-API-Key": settings.gateway_api_key},
+                )
+            body["gateway_reachable"] = True
+            body["gateway_models_status"] = resp.status_code
+        except Exception as exc:
+            body["gateway_reachable"] = False
+            body["gateway_models_error"] = str(exc)
+
+    return body
 
 
 @app.get("/health")
-async def health() -> JSONResponse:
+async def health(request: Request, deep: bool = False) -> JSONResponse:
     """Liveness, and what this host can train. Open: the one route without a key.
 
     Off the event loop: it lists the job store on the share and shells out to
     nvidia-smi, and the gateway now asks it with a 5 s timeout (serving#137).
+
+    ``?deep=1`` also checks that the gateway is reachable with the configured
+    API key and reports the ``/models`` status code. Intended for operators who
+    want to verify the promotion gate without running a full kraken job. It
+    calls the gateway *with the gateway's key*, so unlike plain ``/health`` it
+    needs the trainer's key (:func:`~atr_training.access.key_refusal`).
     """
-    return JSONResponse(await asyncio.to_thread(_health_body))
+    if deep and (refused := key_refusal(request.scope, _settings())) is not None:
+        status, detail = refused
+        return JSONResponse({"detail": detail}, status_code=status)
+    return JSONResponse(await asyncio.to_thread(_health_body, deep=deep))
 
 
 # HEAD is what `curl -I` and many probes send. Same answer, same exemption

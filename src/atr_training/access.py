@@ -119,6 +119,14 @@ def refusal(scope: dict, settings: Any) -> tuple[int, str] | None:
 
     if scope.get("path") == OPEN_PATH and scope.get("method") in OPEN_METHODS:
         return None
+    return key_refusal(scope, settings)
+
+
+def key_refusal(scope: dict, settings: Any) -> tuple[int, str] | None:
+    """The key half of :func:`refusal`, for a route that is open by path but has
+    a mode that is not: ``/health?deep=1`` calls the gateway with the gateway's
+    key, so it asks for the trainer's key like every other route (#48)."""
+    loopback = bool((address := client_address(scope)) and address.is_loopback)
     if settings.require_auth and not settings.api_key:
         return 503, UNCONFIGURED
     if not loopback:
