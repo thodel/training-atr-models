@@ -814,19 +814,19 @@ def test_the_trainer_has_no_gpu_claim_route(client):
 
 # ── gateway key health (#48) ─────────────────────────────────────────────────
 
-def test_health_reports_gateway_key_configured_false(client, settings):
-    """gateway_key_configured is False when the key is empty."""
+def test_health_reports_gateway_auth_configured_false(client, settings):
+    """gateway_auth_configured is False when the key is empty."""
     # settings fixture has no gateway_api_key by default
     body = client.get("/health").json()
-    assert body["gateway_key_configured"] is False
+    assert body["gateway_auth_configured"] is False
 
 
-def test_health_reports_gateway_key_configured_true(client, settings, monkeypatch):
-    """gateway_key_configured is True when a key is set."""
+def test_health_reports_gateway_auth_configured_true(client, settings, monkeypatch):
+    """gateway_auth_configured is True when a key is set."""
     monkeypatch.setattr(settings, "gateway_api_key", "a" * 32)
     monkeypatch.setattr(settings, "gateway_url", "http://127.0.0.1:8200")
     body = client.get("/health").json()
-    assert body["gateway_key_configured"] is True
+    assert body["gateway_auth_configured"] is True
 
 
 def test_health_deep_check_reports_gateway_reachable(client, settings, monkeypatch):
@@ -838,7 +838,7 @@ def test_health_deep_check_reports_gateway_reachable(client, settings, monkeypat
     with unittest.mock.patch("httpx.Client") as mck:
         mck.return_value.__enter__.return_value.get.return_value.status_code = 200
         body = client.get("/health", params={"deep": "1"}).json()
-    assert body["gateway_key_configured"] is True
+    assert body["gateway_auth_configured"] is True
     assert body["gateway_reachable"] is True
     assert body["gateway_models_status"] == 200
 
@@ -847,6 +847,63 @@ def test_health_deep_omit_when_key_missing(client, settings):
     """/health?deep=1 omits gateway_reachable when key is not configured."""
     # No key set — deep check must not be attempted
     body = client.get("/health", params={"deep": "1"}).json()
-    assert body["gateway_key_configured"] is False
+    assert body["gateway_auth_configured"] is False
     assert "gateway_reachable" not in body
 
+
+
+def test_the_deep_check_needs_the_trainer_key(client):
+    """Plain /health stays open; ?deep=1 calls the gateway with the gateway's key,
+    so a caller without the trainer's key gets the same 401 as on any other route."""
+    keyless = TestClient(app_module.app, client=LOOPBACK)
+    assert keyless.get("/health").status_code == 200
+    refused = keyless.get("/health", params={"deep": "1"})
+    assert refused.status_code == 401
+    assert "gateway_reachable" not in refused.text
+
+
+def test_the_gateway_key_is_in_no_health_answer_and_no_log(client, settings, monkeypatch):
+    """Neither the deep check's answer nor its failure path carries the key."""
+    import httpx
+    import unittest.mock
+    from loguru import logger
+
+    secret = "gateway-key-" + "x" * 32
+    monkeypatch.setattr(settings, "gateway_api_key", secret)
+    monkeypatch.setattr(settings, "gateway_url", "http://127.0.0.1:8200")
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="DEBUG",
+                      format="{level} {message} {extra} {exception}")
+    try:
+        with unittest.mock.patch("httpx.Client") as mck:
+            mck.return_value.__enter__.return_value.get.return_value.status_code = 200
+            ok = client.get("/health", params={"deep": "1"})
+            mck.return_value.__enter__.return_value.get.side_effect = httpx.ConnectError(
+                "connection refused")
+            down = client.get("/health", params={"deep": "1"})
+    finally:
+        logger.remove(sink)
+    assert ok.json()["gateway_models_status"] == 200
+    assert down.json()["gateway_reachable"] is False
+    for text in (ok.text, down.text, *lines):
+        assert secret not in text
+
+
+def test_startup_says_when_the_gateway_key_is_missing(settings, monkeypatch):
+    from loguru import logger
+
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="DEBUG",
+                      format="{level} {message}")
+    try:
+        monkeypatch.setattr(settings, "gateway_api_key", "")
+        app_module._warn_without_gateway_key(settings)
+        missing = list(lines)
+        lines.clear()
+        monkeypatch.setattr(settings, "gateway_api_key", "set-" + "y" * 32)
+        app_module._warn_without_gateway_key(settings)
+    finally:
+        logger.remove(sink)
+    assert len(missing) == 1 and missing[0].startswith("WARNING")
+    assert "ATR_TRAIN_GATEWAY_API_KEY" in missing[0]
+    assert lines == []
