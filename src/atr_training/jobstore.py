@@ -394,9 +394,17 @@ class JobStore:
                if p.is_dir() and _JOB_ID_RE.match(p.name) and (p / "job.json").exists()]
         return sorted(ids, reverse=True)  # newest first (ids are timestamp-prefixed)
 
-    def list(self) -> list[TrainJob]:
+    def list(self, limit: int | None = None) -> list[TrainJob]:
+        """Every job record, newest first; ``limit`` keeps only the N newest.
+
+        The slice happens on ``list_ids()`` — **before** any ``job.json`` is
+        loaded — because the ids are sorted, so the newest N are simply the
+        first N of that list. Loading the rest of a store that has hundreds of
+        jobs to answer a "what is the queue?" question is the cost this exists
+        to remove (#38, serving-atr-inference#107).
+        """
         jobs = []
-        for job_id in self.list_ids():
+        for job_id in self.list_ids()[:limit]:
             try:
                 jobs.append(self.load(job_id))
             except JobStoreError:

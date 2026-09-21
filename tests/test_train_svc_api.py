@@ -253,6 +253,48 @@ def test_list_is_newest_first(client):
     assert [j["id"] for j in client.get("/jobs").json()["jobs"]] == sorted([a, b], reverse=True)
 
 
+def test_list_limit_keeps_newest_first(client):
+    a = client.post("/jobs", json=BODY).json()["job_id"]
+    store = store_of(client)
+    store.advance(store.load(a), "preparing")
+    b = client.post("/jobs", json={**BODY, "model_id": "second-model"}).json()["job_id"]
+    newest_first = sorted([a, b], reverse=True)
+    body = client.get("/jobs", params={"limit": 1}).json()
+    assert [j["id"] for j in body["jobs"]] == newest_first[:1]
+    body = client.get("/jobs", params={"limit": 5}).json()
+    assert [j["id"] for j in body["jobs"]] == newest_first
+
+
+def test_list_fields_summary_returns_only_the_summary_keys(client):
+    client.post("/jobs", json=BODY)
+    jobs = client.get("/jobs", params={"fields": "summary"}).json()["jobs"]
+    assert len(jobs) == 1
+    assert set(jobs[0]) == {"id", "status", "stage", "created_at", "queued_reason", "error"}
+
+
+def test_list_fields_summary_and_limit_combine(client):
+    a = client.post("/jobs", json=BODY).json()["job_id"]
+    b = client.post("/jobs", json={**BODY, "model_id": "second-model"}).json()["job_id"]
+    jobs = client.get("/jobs", params={"limit": 1, "fields": "summary"}).json()["jobs"]
+    assert len(jobs) == 1
+    assert jobs[0]["id"] == sorted([a, b], reverse=True)[0]
+    assert set(jobs[0]) == {"id", "status", "stage", "created_at", "queued_reason", "error"}
+
+
+def test_list_without_params_returns_the_full_shape(client):
+    job_id = client.post("/jobs", json=BODY).json()["job_id"]
+    default = client.get("/jobs").json()["jobs"][0]
+    full = client.get("/jobs", params={"fields": "full"}).json()["jobs"][0]
+    assert default == full
+    assert default["id"] == job_id
+    assert "request" in default and "stages" in default and "metrics" in default
+
+
+def test_list_limit_below_one_is_rejected(client):
+    assert client.get("/jobs", params={"limit": 0}).status_code == 422
+    assert client.get("/jobs", params={"fields": "nope"}).status_code == 422
+
+
 def test_log_tail(client):
     job_id = client.post("/jobs", json=BODY).json()["job_id"]
     log = store_of(client).paths(job_id).log("train")

@@ -45,7 +45,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import get_args
+from typing import Literal, get_args
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
@@ -793,9 +793,31 @@ async def verify(request: TrainRequest) -> dict:
     return _verify(request)
 
 
+#: What ``fields=summary`` returns per job (#38, serving-atr-inference#107):
+#: enough to see what is running and why a queued job has not started, without
+#: the full record — the body of GET /jobs ran to ~1 MB on a busy trainer.
+_SUMMARY_FIELDS = ("id", "status", "stage", "created_at", "queued_reason", "error")
+
+
 @app.get("/jobs")
-async def list_jobs() -> dict:
-    return {"jobs": [j.model_dump(mode="json") for j in _store().list()]}
+async def list_jobs(
+    limit: int | None = Query(None, ge=1,
+                              description="keep only the N newest jobs"),
+    fields: Literal["full", "summary"] = Query("full"),
+) -> dict:
+    """List jobs, newest first.
+
+    Both parameters are opt-in and the default response is byte-identical to
+    before: no query string still returns every job in full. ``limit`` slices
+    the id list before anything is loaded, and ``fields=summary`` returns
+    only :data:`_SUMMARY_FIELDS` per job — the shape the gateway's
+    ``atr_status`` consumer needs, not the whole record.
+    """
+    jobs = _store().list(limit=limit)
+    if fields == "summary":
+        full = [j.model_dump(mode="json") for j in jobs]
+        return {"jobs": [{k: j[k] for k in _SUMMARY_FIELDS} for j in full]}
+    return {"jobs": [j.model_dump(mode="json") for j in jobs]}
 
 
 def _load(job_id: str) -> TrainJob:
