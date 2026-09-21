@@ -10,6 +10,8 @@ registry id works. It did not, and the failure landed in the *train* stage — a
 prepare and compile had already run.
 """
 
+import re
+
 import pytest
 
 from atr_training.base_models import (
@@ -79,6 +81,55 @@ def test_an_unknown_reference_lists_the_ids_that_would_work(registry):
     assert "kraken-medieval_generic_b" in message      # what they probably meant
     assert "10.xxxx/zenodo.NNNN" in message            # and the other accepted form
 
+
+
+def _listed(message: str, label: str) -> list[str]:
+    match = re.search(label + r": \[(.*?)\]", message)
+    assert match, message
+    return re.findall(r"'([^']+)'", match.group(1))
+
+
+@pytest.fixture
+def crowded_registry() -> SharedRegistry:
+    """Thirteen kraken bases, five of them one letter from the typo below —
+    the shape of the published registry (43 ids) at a size a test can read."""
+    near = [f"kraken-medieval_generic_{c}" for c in "abcde"]
+    far = ["kraken-early_modern_german", "kraken-late_medieval_german",
+           "kraken-hebrew_square", "kraken-greek_minuscule", "kraken-arabic_naskh",
+           "kraken-cyrillic_poluustav", "kraken-latin_caroline", "kraken-norse_runic"]
+    return SharedRegistry([
+        BaseEntry(id=cid, engine="kraken", zenodo_id=f"10.5281/zenodo.{n}")
+        for n, cid in enumerate(sorted(far + near), start=1000)
+    ] + [BaseEntry(id="qwen3vl-8b-hebrew", engine="vllm")])
+
+
+def test_the_refusal_lists_the_closest_ids_first_and_at_most_ten(crowded_registry):
+    """#39: the typo's neighbours lead, the list stops at ten, the rest is counted."""
+    with pytest.raises(BaseModelError) as exc:
+        resolve_base_model("kraken-medieval_generic_z", "kraken", crowded_registry,
+                           path_exists=never_exists)
+    listed = _listed(str(exc.value), "Closest registry ids")
+    assert listed[:5] == [f"kraken-medieval_generic_{c}" for c in "abcde"]
+    assert len(listed) == 10
+    assert "and 3 more" in str(exc.value)
+
+
+def test_a_short_registry_is_listed_whole(registry):
+    with pytest.raises(BaseModelError) as exc:
+        resolve_base_model("kraken-medieval_generic_z", "kraken", registry,
+                           path_exists=never_exists)
+    listed = _listed(str(exc.value), "Closest registry ids")
+    assert listed[0] == "kraken-medieval_generic_b"
+    assert sorted(listed) == ["kraken-late_medieval_german", "kraken-locally-trained",
+                              "kraken-medieval_generic_b"]
+    assert "more" not in str(exc.value)
+
+
+def test_the_wrong_engine_refusal_is_capped_too(crowded_registry):
+    with pytest.raises(BaseModelError, match="is a vllm model") as exc:
+        resolve_base_model("qwen3vl-8b-hebrew", "kraken", crowded_registry,
+                           path_exists=never_exists)
+    assert len(_listed(str(exc.value), "Closest kraken bases")) == 10
 
 def test_a_vllm_model_is_refused_as_a_kraken_base(registry):
     """Both are registry ids; only one is kraken weights."""

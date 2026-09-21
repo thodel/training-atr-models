@@ -28,6 +28,7 @@ engine gets its own.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,6 +103,27 @@ def _kraken_base_ids(registry: RegistryLike | None) -> list[str]:
     )
 
 
+#: How many ids a refusal lists. The published registry has 43 kraken bases,
+#: and a message carrying all of them buried the one that was meant (#39).
+SUGGESTION_LIMIT = 10
+
+
+def _closest_kraken_base_ids(registry: RegistryLike | None, ref: str) -> str:
+    """The kraken bases closest to ``ref``, formatted for a refusal message.
+
+    Ranked by :class:`difflib.SequenceMatcher` ratio against what was typed,
+    ties alphabetically so the message is the same on every run, and capped at
+    :data:`SUGGESTION_LIMIT` with a count of the rest. A near-miss is how this
+    error usually happens, so the id that was meant should come first.
+    """
+    known = _kraken_base_ids(registry)
+    ranked = sorted(known, key=lambda cid: (
+        -difflib.SequenceMatcher(None, ref, cid).ratio(), cid))
+    shown = ranked[:SUGGESTION_LIMIT]
+    rest = len(known) - len(shown)
+    return f"{shown}" + (f" and {rest} more" if rest else "")
+
+
 def resolve_base_model(
     base_model: str,
     engine: str = "kraken",
@@ -141,7 +163,7 @@ def _resolve_kraken(ref: str, registry: RegistryLike | None,
         if spec.engine != "kraken":
             raise BaseModelError(
                 f"{ref!r} is a {spec.engine} model; a kraken run needs kraken weights. "
-                f"Available kraken bases: {_kraken_base_ids(registry)}"
+                f"Closest kraken bases: {_closest_kraken_base_ids(registry, ref)}"
             )
         target = spec.zenodo_id or spec.local_path
         if not target:
@@ -164,8 +186,8 @@ def _resolve_kraken(ref: str, registry: RegistryLike | None,
             "(10.xxxx/zenodo.NNNN) or a path would not need one."
         )
 
-    known = _kraken_base_ids(registry)
-    hint = f" Known registry ids: {known}." if known else ""
+    hint = (f" Closest registry ids: {_closest_kraken_base_ids(registry, ref)}."
+            if _kraken_base_ids(registry) else "")
     raise BaseModelError(
         f"base_model {ref!r} is not a file, a registry id, or a Zenodo reference "
         f"(10.xxxx/zenodo.NNNN, or a bare record id).{hint}"
