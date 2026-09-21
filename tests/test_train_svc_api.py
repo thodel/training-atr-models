@@ -811,3 +811,42 @@ def test_the_trainer_has_no_gpu_claim_route(client):
     assert "/gpu" in client.get("/openapi.json").json()["paths"]
     for name in ("compute_gpu_claim", "refresh_gpu_claim", "GPU_STAGES"):
         assert not hasattr(app_module, name), name
+
+# ── gateway key health (#48) ─────────────────────────────────────────────────
+
+def test_health_reports_gateway_key_configured_false(client, settings):
+    """gateway_key_configured is False when the key is empty."""
+    # settings fixture has no gateway_api_key by default
+    body = client.get("/health").json()
+    assert body["gateway_key_configured"] is False
+
+
+def test_health_reports_gateway_key_configured_true(client, settings, monkeypatch):
+    """gateway_key_configured is True when a key is set."""
+    monkeypatch.setattr(settings, "gateway_api_key", "a" * 32)
+    monkeypatch.setattr(settings, "gateway_url", "http://127.0.0.1:8200")
+    body = client.get("/health").json()
+    assert body["gateway_key_configured"] is True
+
+
+def test_health_deep_check_reports_gateway_reachable(client, settings, monkeypatch):
+    """/health?deep=1 includes gateway_reachable when key is set and gateway up."""
+    import unittest.mock
+    monkeypatch.setattr(settings, "gateway_api_key", "a" * 32)
+    monkeypatch.setattr(settings, "gateway_url", "http://127.0.0.1:8200")
+    # Pretend gateway is reachable
+    with unittest.mock.patch("httpx.Client") as mck:
+        mck.return_value.__enter__.return_value.get.return_value.status_code = 200
+        body = client.get("/health", params={"deep": "1"}).json()
+    assert body["gateway_key_configured"] is True
+    assert body["gateway_reachable"] is True
+    assert body["gateway_models_status"] == 200
+
+
+def test_health_deep_omit_when_key_missing(client, settings):
+    """/health?deep=1 omits gateway_reachable when key is not configured."""
+    # No key set — deep check must not be attempted
+    body = client.get("/health", params={"deep": "1"}).json()
+    assert body["gateway_key_configured"] is False
+    assert "gateway_reachable" not in body
+

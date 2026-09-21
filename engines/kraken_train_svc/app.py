@@ -50,6 +50,7 @@ from typing import Literal, get_args
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
+import httpx
 
 from atr_training import gpu as gpu_probe
 from atr_training.access import AccessGuard
@@ -483,6 +484,9 @@ def _cleanup_orphaned_weights(trained_root: Path | str, store: JobStore,
 
 async def lifespan(_app: FastAPI):  # pragma: no cover - process lifecycle
     settings = _settings()
+    if not settings.gateway_api_key:
+        logger.warning("gateway_api_key is not set — kraken promotion gate is disabled; "
+                       "models will register as disabled (atr-training#48)")
     settings.jobs_root.mkdir(parents=True, exist_ok=True)
     settings.trained_root.mkdir(parents=True, exist_ok=True)
     # A restart must not leave a killed job looking like it is still training.
@@ -511,14 +515,15 @@ app.add_middleware(AccessGuard, settings=_settings)
 
 
 # ── endpoints ───────────────────────────────────────────────────────────────
-def _health_body() -> dict:
+def _health_body(*, _deep: bool = False) -> dict:
     settings = _settings()
     jobs = _store().list()
     try:
         gpus = [g.__dict__ for g in query_gpus()]
     except PreflightError as exc:
         gpus = [{"error": str(exc)}]
-    return {
+
+    body = {
         "status": "ok",
         # Which machine answered. The gateway on idhefix reads this across the
         # network now, and "ok" alone does not say from where.
@@ -545,17 +550,37 @@ def _health_body() -> dict:
         "jobs": {"total": len(jobs),
                  "running": len([j for j in jobs if j.status in RUNNING_STATUSES]),
                  "queued": len([j for j in jobs if j.status == "queued"])},
+        "gateway_key_configured": bool(settings.gateway_api_key),
     }
+
+    if _deep and settings.gateway_api_key:
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.get(
+                    f"{settings.gateway_url.rstrip('/')}/models",
+                    headers={"X-API-Key": settings.gateway_api_key},
+                )
+            body["gateway_reachable"] = True
+            body["gateway_models_status"] = resp.status_code
+        except Exception as exc:
+            body["gateway_reachable"] = False
+            body["gateway_models_error"] = str(exc)
+
+    return body
 
 
 @app.get("/health")
-async def health() -> JSONResponse:
+async def health(deep: bool = False) -> JSONResponse:
     """Liveness, and what this host can train. Open: the one route without a key.
 
     Off the event loop: it lists the job store on the share and shells out to
     nvidia-smi, and the gateway now asks it with a 5 s timeout (serving#137).
+
+    ``?deep=1`` also checks that the gateway is reachable with the configured
+    API key and reports the ``/models`` status code. Intended for operators who
+    want to verify the promotion gate without running a full kraken job.
     """
-    return JSONResponse(await asyncio.to_thread(_health_body))
+    return JSONResponse(await asyncio.to_thread(_health_body, _deep=deep))
 
 
 # HEAD is what `curl -I` and many probes send. Same answer, same exemption
