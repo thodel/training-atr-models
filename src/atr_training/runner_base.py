@@ -789,14 +789,46 @@ class BasePipeline(ABC):
         job, which may look at the registry but never write it (#17).
         """
         root = self.settings.registry_root
+        model_id = job.request.model_id
         untouched = (f"Nothing was copied or registered. The trained weights are still at "
                      f"{model_artifact} (until DELETE /jobs/{job.id}).")
-        clash = self._curated_clash(job.request.model_id)
+        clash = self._curated_clash(model_id)
         if clash is not None:
             raise StageFailed(
                 f"{clash}. {untouched} To keep them, copy them to a directory named after "
                 f"a new model_id under {self.settings.trained_root} and register that id by "
                 f"hand (python -m atr_training.registration --root {root}).")
+
+        # On Slurm: check that no enabled registration's local_path points to the
+        # trained_root (the weights this job wrote). If it does, the registration's
+        # gate never saw these weights — they were written without going through the
+        # disable-before-replace step that the service path requires (#41).
+        slurm = slurm_job_id()
+        if slurm:
+            try:
+                current = read_registration(root, model_id)
+            except RegistrationError as exc:
+                raise StageFailed(
+                    f"{model_id} is already registered, and that registration could not be "
+                    f"read: {exc}\n{untouched} Fix or remove {exc.path}, then resubmit."
+                ) from exc
+            if current is not None and current.enabled:
+                # Does local_path point into the directory this Slurm job writes to?
+                # local_path is a file (e.g. .../trained/<id>/model.mlmodel);
+                # weight_path is the directory .../trained/<id>.  The registration
+                # is unsafe when local_path lives under that directory — the gate
+                # never evaluated these weights because on the service path the
+                # registration would have been disabled before its weights were replaced.
+                weight_path = self.settings.trained_root / model_id
+                is_under = str(current.local_path).rstrip("/").startswith(str(weight_path).rstrip("/") + "/")
+                if is_under:
+                    raise StageFailed(
+                        f"{model_id} is already registered and enabled, with local_path "
+                        f"{current.local_path} — which is the directory this Slurm job "
+                        f"writes to ({weight_path}). The gate never evaluated these weights. "
+                        f"\n{untouched} Move the weights to a different directory and resubmit, "
+                        f"or remove the registration and resubmit.")
+
         return untouched
 
     def _guard_slurm_host(self, job: TrainJob) -> None:

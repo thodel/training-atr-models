@@ -1002,38 +1002,31 @@ def test_the_run_that_fills_the_cache_moves_its_arrows_there(store, caching):
     assert "built by this job" in job.progress.artefact
 
 
-# ── a Slurm job leaves an existing registration alone (#17) ─────────────────
+# ── a Slurm job rejects a retrain that would leave a stale gate advertisement (#17, #41) ─
 def test_a_slurm_job_leaves_an_enabled_registration_byte_identical(store, settings, monkeypatch):
-    """Retraining a promoted id on UBELIX: no disable before the copy, no
-    registration, no enable by the gate — the file on the share is untouched."""
+    """Retraining a promoted id on UBELIX that points at the trained_root:
+    the guard in _refuse_curated raises StageFailed before anything is written
+    or registered.  The file on the share and its `enabled: true` are untouched.
+
+    The old behaviour (let it run, touch nothing) is wrong: the registration's
+    gate never evaluated the new weights because the service path's
+    disable-before-replace step was skipped (#41)."""
     settings = _promoted_once(store, settings, monkeypatch)
     path = registration_path(settings.registry_root, "kraken-thun-missiven-v1")
     before = path.read_bytes()
 
-    # Disable-then-enable leaves the same bytes behind, so count the writes too.
-    import atr_training.registration as registration
-    import atr_training.runner_base as runner_base
-    import kraken_train_svc.runner as kraken_runner
-    writes: list[tuple] = []
-
-    def recording(root, model_id, enabled=True):
-        writes.append((model_id, enabled))
-        return registration.set_enabled(root, model_id, enabled)
-
-    monkeypatch.setattr(runner_base, "set_enabled", recording)
-    monkeypatch.setattr(kraken_runner, "set_enabled", recording)
     monkeypatch.setenv("SLURM_JOB_ID", "15480898")
     job = store.create(request_with(), host="ubelix")
     job = Pipeline(store, settings, runner=FakeRunner(),
                    source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
 
-    assert job.status == "completed", job.error
-    assert writes == []
+    # Guarded: job fails instead of silently completing
+    assert job.status == "failed", f"expected failed, got {job.status}: {job.error}"
+    assert "already registered and enabled" in job.error
+    assert "gate never evaluated these weights" in job.error
+    # Nothing on the share changed
     assert path.read_bytes() == before
     assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled
-    assert job.promoted is False
-    assert "Slurm job 15480898" in job.promotion_reason
-    assert job.registration.startswith("not registered: this ran as Slurm job 15480898")
 
 
 def test_a_slurm_job_still_refuses_a_curated_id(store, settings, monkeypatch):
@@ -1046,3 +1039,44 @@ def test_a_slurm_job_still_refuses_a_curated_id(store, settings, monkeypatch):
     job = Pipeline(store, settings, runner=FakeRunner(),
                    source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
     assert job.status == "failed" and "is curated" in job.error
+
+
+def test_a_slurm_job_refuses_to_overwrite_weights_that_an_enabled_registration_points_at(
+        store, settings, monkeypatch):
+    """A Slurm job that trains into trained_root/<id> must not proceed if that
+    id is already registered and enabled with local_path pointing at exactly that
+    directory — the gate never evaluated those weights because the service path
+    would have disabled the registration before replacing them (#41)."""
+    import atr_training.registration as registration
+    import atr_training.runner_base as runner_base
+
+    # _promoted_once: id is registered and enabled, local_path points at trained_root/<id>
+    settings = _promoted_once(store, settings, monkeypatch)
+
+    # Confirm the state the promotion left behind: enabled, local_path in trained_root
+    spec = read_registration(settings.registry_root, "kraken-thun-missiven-v1")
+    assert spec.enabled is True
+    assert spec.local_path is not None
+    weight_path = str(settings.trained_root / "kraken-thun-missiven-v1")
+    assert spec.local_path.rstrip("/").startswith(weight_path), \
+        f"expected local_path to start with {weight_path}, got {spec.local_path}"
+
+    # Snapshot the registration bytes — nothing must change on the share
+    path = registration_path(settings.registry_root, "kraken-thun-missiven-v1")
+    before = path.read_bytes()
+
+    # Run as Slurm — the new code in _refuse_curated should raise StageFailed
+    monkeypatch.setenv("SLURM_JOB_ID", "20123456")
+    job = store.create(request_with(), host="ubelix")
+    job = Pipeline(store, settings, runner=FakeRunner(),
+                   source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+
+    assert job.status == "failed", f"expected failed, got {job.status}: {job.error}"
+    assert "already registered and enabled" in job.error
+    assert "gate never evaluated these weights" in job.error
+    assert "local_path" in job.error
+    # Nothing on the share was modified
+    assert path.read_bytes() == before
+    # The old registration is still there, still enabled
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled
+
