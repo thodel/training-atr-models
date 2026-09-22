@@ -33,6 +33,7 @@ from atr_training.pagexml import (
     MAX_LINE_ASPECT,
     is_plausible_line,
     line_boxes,
+    line_regions,
     line_texts,
 )
 
@@ -49,6 +50,8 @@ __all__ = [
     "MIN_TEXT_LEN",
     "page_sample",
     "line_samples",
+    "block_samples",
+    "DEFAULT_BLOCK_LINES",
     "samples_for",
     "write_jsonl",
     "read_jsonl",
@@ -69,6 +72,11 @@ MIN_CROP_PX = 8
 #: Shorter transcriptions are usually a stray mark or an editorial dash. Kept low
 #: because single-character lines (a folio number, an ``&``) are real.
 MIN_TEXT_LEN = 1
+#: Lines per sample at ``granularity: block`` (#57). Six keeps a block of 19th-c.
+#: protocol lines (~2000 x 120 px each) inside the block pixel budget at about
+#: the height a line crop has, and is short enough that a block is what a caller
+#: means by "a paragraph" when the page's own regions are whole pages.
+DEFAULT_BLOCK_LINES = 6
 
 
 @dataclass(frozen=True)
@@ -189,12 +197,74 @@ def line_samples(
     return out
 
 
+def block_samples(
+    xml_path: str | Path,
+    root: str | Path | None = None,
+    pad: int = DEFAULT_LINE_PAD,
+    page_size: tuple[int, int] | None = None,
+    block_lines: int = DEFAULT_BLOCK_LINES,
+) -> list[Sample]:
+    """Runs of up to ``block_lines`` consecutive lines, cropped as one image (#57).
+
+    The unit between a line and a page. Transkribus exported the 19th-century
+    corpora with one ``TextRegion`` per page (21-40 lines), so a region is not a
+    paragraph there and the paragraph has to be built: consecutive transcribed
+    lines in document order, never across a region boundary.
+
+    The crop is the union of the lines' padded boxes, so it contains exactly the
+    lines whose text is the target — which is why a block also ends wherever
+    ``line_samples`` would drop a line (untranscribed, degenerate, implausibly
+    wide): that line is still on the image, and a target without it would teach
+    the model to skip visible text. Blocks are cut back to back from each run; the
+    last one of a run may be shorter, down to a single line.
+    """
+    if block_lines < 1:
+        raise VlmDatasetError(f"block_lines must be at least 1, got {block_lines}")
+    xml_path = Path(xml_path)
+    image = _image_for(xml_path)
+    xml_text = xml_path.read_text(encoding="utf-8")
+    width, height = page_size if page_size else (None, None)
+    regions = line_regions(xml_text)
+
+    runs: list[list] = []
+    previous = None
+    for box in line_boxes(xml_text):
+        padded = box.padded(pad, width, height)
+        usable = (padded.width >= MIN_CROP_PX and padded.height >= MIN_CROP_PX
+                  and is_plausible_line(padded) and len(box.text) >= MIN_TEXT_LEN)
+        if not usable:
+            previous = None                      # the line is on the image: break
+            continue
+        region = regions[box.index] if box.index < len(regions) else None
+        joins = (previous is not None and box.index == previous[0].index + 1
+                 and region == previous[1])
+        if not joins:
+            runs.append([])
+        runs[-1].append(padded)
+        previous = (box, region)
+
+    out: list[Sample] = []
+    for run in runs:
+        for start in range(0, len(run), block_lines):
+            block = run[start:start + block_lines]
+            out.append(Sample(
+                image=_relative(image, root),
+                text="\n".join(b.text for b in block),
+                source_type="block",
+                bbox=[min(b.left for b in block), min(b.top for b in block),
+                      max(b.right for b in block), max(b.bottom for b in block)],
+                page=_relative(xml_path, root),
+            ))
+    return out
+
+
 def samples_for(
     xml_paths: Iterable[str | Path],
     granularity: str,
     root: str | Path | None = None,
     pad: int = DEFAULT_LINE_PAD,
     page_sizes: dict[str, tuple[int, int]] | None = None,
+    block_lines: int = DEFAULT_BLOCK_LINES,
 ) -> list[Sample]:
     """Build every sample for a set of pages at the requested granularity.
 
@@ -215,7 +285,10 @@ def samples_for(
             size = None
             if page_sizes:
                 size = page_sizes.get(_relative(Path(xml_path).with_suffix(".jpg"), root))
-            out.extend(line_samples(xml_path, root, pad, size))
+            if granularity == "block":
+                out.extend(block_samples(xml_path, root, pad, size, block_lines))
+            else:
+                out.extend(line_samples(xml_path, root, pad, size))
     return out
 
 

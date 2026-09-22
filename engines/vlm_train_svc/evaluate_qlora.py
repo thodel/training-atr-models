@@ -56,7 +56,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "churro-xml: CHURRO's own system message, an image-only user "
                         "turn, HistoricalDocument XML flattened by CHURRO's rule before "
                         "scoring (docs/CHURRO_PLAN.md §1.1)")
-    p.add_argument("--granularity", default="line", choices=["line", "page"])
+    p.add_argument("--granularity", default="line", choices=["line", "block", "page"])
     p.add_argument("--max-pixels", type=int, required=True,
                    help="visual budget in pixels; 0 keeps the processor's own default, "
                         "which is what CHURRO's inference uses and so the only fair "
