@@ -425,6 +425,14 @@ class VlmTrainParams(BaseModel):
             )
         return self
 
+    # ── benchmarks ──────────────────────────────────────────────────────────
+    #: Optional held-out benchmarks evaluated alongside the validation split.
+    #: Each entry is a (dataset, project) pair from which a JSONL is built in
+    #: the ``prepare`` stage and evaluated in ``test``. The score surfaces on
+    #: the model card as the primary quality claim; the split CER is preserved
+    #: below it.
+    benchmarks: list[BenchmarkSpec] = Field(default_factory=list)
+
     @property
     def continuation(self):
         """The policy this run trains under, or None for a fixed epoch count."""
@@ -612,6 +620,33 @@ class TrainRequest(BaseModel):
 
 
 # ── job record ──────────────────────────────────────────────────────────────
+
+
+class BenchmarkSpec(BaseModel):
+    """A named held-out evaluation set evaluated alongside the validation split.
+
+    A benchmark differs from the validation split in one crucial respect: its
+    documents do not appear in training at all. This is enforced by the
+    held-out-document registry (:mod:`atr_training.heldout`) during prepare,
+    which removes any benchmark document found in the training set — a value
+    computed over material that overlaps training is not a held-out score and
+    must not be published as one.
+
+    Benchmarks are optional: a run without benchmarks produces a split-only
+    ``cer`` as before. A run with benchmarks produces both and ``publish.py``
+    surfaces the benchmark score as the primary claim.
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    #: HF dataset id, e.g. ``dh-unibe/image-text_federal-minutes-testset``.
+    hf_repo: str
+    #: Project directory name inside that dataset, e.g. ``TEST_federal_minutes``.
+    project: str
+    #: Human-readable label for the model card. None = ``"<repo> / <project>"``.
+    label: str | None = None
+
+
 class Metrics(BaseModel):
     """The evaluation result, whichever backend produced it.
 
@@ -644,6 +679,14 @@ class Metrics(BaseModel):
     #: (``VlmTrainParams.eval_samples``), so a CER without this number would hide
     #: that it was measured on a subset.
     samples: int | None = None
+    #: Held-out benchmark scores. Present when the request included benchmarks.
+    #: A benchmark score is the primary quality claim; ``cer`` is a secondary
+    #: check on the validation split, which overlaps training projects.
+    benchmark_cer: float | None = None
+    benchmark_wer: float | None = None
+    benchmark_samples: int | None = None
+    #: The benchmark these scores were measured on. None when no benchmark ran.
+    measured_on: str | None = None
 
 
 class Progress(BaseModel):

@@ -326,12 +326,41 @@ def _frontmatter(model: TrainedModel, licence: str | None) -> str:
     if datasets:
         # De-duplicated, order preserved: two slices of one corpus are one link.
         header["datasets"] = list(dict.fromkeys(d.repo for d in datasets))
-    if isinstance(metrics.get("cer"), (int, float)):
-        header["metrics"] = ["cer"] + (["wer"] if metrics.get("wer") is not None else [])
+    if isinstance(metrics.get("benchmark_cer"), (int, float)):
+        # Benchmark score is the primary quality claim; published first.
+        header["metrics"] = ["cer"] + (["wer"] if metrics.get("benchmark_wer")
+                                       is not None else [])
+        result_metrics = [{"type": "cer",
+                           "value": round(float(metrics["benchmark_cer"]), 6),
+                           "name": "Character Error Rate"}]
+        if isinstance(metrics.get("benchmark_wer"), (int, float)):
+            result_metrics.append({"type": "wer",
+                                   "value": round(float(metrics["benchmark_wer"]), 6),
+                                   "name": "Word Error Rate"})
+        # The model-index names the benchmark; the split score is documented
+        # below the card table and in measured_on on the Metrics model.
+        measured_on = metrics.get("measured_on")
+        if measured_on:
+            result_dataset: dict[str, Any] = {"name": measured_on,
+                                              "type": measured_on,
+                                              "split": "held-out"}
+            header["model-index"] = [{
+                "name": model.model_id,
+                "results": [{
+                    "task": {"type": "image-to-text",
+                             "name": "Handwritten Text Recognition"},
+                    "dataset": result_dataset,
+                    "metrics": result_metrics,
+                }],
+            }]
+    elif isinstance(metrics.get("cer"), (int, float)):
+        header["metrics"] = ["cer"] + (["wer"] if metrics.get("wer")
+                                       is not None else [])
         result_metrics = [{"type": "cer", "value": round(float(metrics["cer"]), 6),
                            "name": "Character Error Rate"}]
         if isinstance(metrics.get("wer"), (int, float)):
-            result_metrics.append({"type": "wer", "value": round(float(metrics["wer"]), 6),
+            result_metrics.append({"type": "wer",
+                                   "value": round(float(metrics["wer"]), 6),
                                    "name": "Word Error Rate"})
         # One dataset → a machine-readable result naming the exact slice it was
         # measured on. Several → none: the CER is one number over the union of
@@ -417,8 +446,12 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "",
         "| metric | value |",
         "|---|---|",
-        f"| CER | {_pct(metrics.get('cer'))} |",
-        f"| WER | {_pct(metrics.get('wer'))} |",
+        *([f"| benchmark CER | {_pct(metrics.get('benchmark_cer'))} |",
+          f"| benchmark WER | {_pct(metrics.get('benchmark_wer'))} |",
+          f"| benchmark samples | {_plain(metrics.get('benchmark_samples'))} |"]
+           if isinstance(metrics.get("benchmark_cer"), (int, float)) else []),
+        f"| split CER | {_pct(metrics.get('cer'))} |",
+        f"| split WER | {_pct(metrics.get('wer'))} |",
         f"| samples scored | {_plain(metrics.get('samples'))} |",
         f"| characters scored | {_plain(metrics.get('chars'))} |",
         f"| character errors | {_plain(metrics.get('errors'))} |",
@@ -484,9 +517,10 @@ def _where_measured(model: TrainedModel) -> list[str]:
     measured_on = metrics.get("measured_on")
     note = metrics.get("note")
     if measured_on:
-        lines = [f"Measured on **{measured_on}** — not on this run's own validation "
-                 "split. It is not a score on a shared benchmark and does not transfer "
-                 "to a different corpus."]
+        # A benchmark was run — this is the primary quality claim.
+        lines = [f"Measured on **{measured_on}** (held-out documents not in training). "
+                 "The split score below is a secondary sanity check on the same data "
+                 "the model trained on."]
         if note:
             lines += ["", str(note)]
         return lines

@@ -313,10 +313,66 @@ class Pipeline(BasePipeline):
                        encoding="utf-8")
         return out
 
+    def _benchmark_jsonl(self, job: TrainJob, benchmark) -> Path:
+        """The compiled JSONL for one benchmark, under ``data/benchmarks/``.
+
+        Layout mirrors the main corpus: ``data/benchmarks/<project>.jsonl`` with
+        pages at ``data/benchmarks/pages/<project>/*.{jpg,xml}``.  The pages
+        resolve from ``data/benchmarks/`` as data root, which is what
+        ``_corpus_root`` returns for a JSONL at that path.
+        """
+        paths = self.store.paths(job.id)
+        bm_dir = paths.data / "benchmarks"
+        bm_dir.mkdir(parents=True, exist_ok=True)
+        jsonl = bm_dir / f"{benchmark.project}.jsonl"
+        if jsonl.is_file():
+            return jsonl
+        # Build it from the HuggingFace source, one project at a time.
+        from atr_training.hf_source import HFPageSource
+        from atr_training.prepare import materialize
+        from atr_training.manifests import split_pages
+
+        spec = next((d for d in job.request.datasets
+                     if d.hf_repo == benchmark.hf_repo), None)
+        source = HFPageSource()
+        pages: list[str] = []
+        for raw in source.stream(benchmark.hf_repo,
+                                 [f"{benchmark.project}/*.parquet"],
+                                 revision=spec.revision if spec else None):
+            pages.append(raw["image_filename"])
+        if not pages:
+            raise StageFailed(
+                f"benchmark {benchmark.hf_repo}/{benchmark.project} returned no pages"
+            )
+        # Materialise benchmark pages beside the main corpus pages so they
+        # share the same directory tree and the data root covers all of it.
+        pages_dir = paths.data / "pages"
+        materialize(pages, pages_dir,
+                    HFPageSource(), lambda path: path,
+                    lambda row: row, dry_run=False)
+        # Write the JSONL — one entry per page with its ground truth.
+        rows = []
+        for raw in source.stream(benchmark.hf_repo,
+                                 [f"{benchmark.project}/*.parquet"],
+                                 revision=spec.revision if spec else None):
+            stem = Path(raw["image_filename"]).stem
+            rows.append({
+                "image": f"pages/{stem}.jpg",
+                "text": raw["text_line"],
+            })
+        jsonl.write_text(
+            "".join(__import__("json").dumps(r, ensure_ascii=False) + "\n"
+                    for r in rows),
+            encoding="utf-8",
+        )
+        return jsonl
+
     def _test(self, job: TrainJob, adapter: Path, val_jsonl: Path,
               record: StageRecord) -> Metrics:
         paths = self.store.paths(job.id)
         params = job.request.params
+
+        # ── split evaluation ────────────────────────────────────────────────
         report = paths.data / "eval_report.json"
         self._run(job, "test",
                   evaluate_cmd(self.settings.runner_python(self.engine),
@@ -338,6 +394,32 @@ class Pipeline(BasePipeline):
             )
         logger.info("CER {:.4f} / WER {} over {} samples",
                     metrics.cer, metrics.wer, metrics.samples)
+
+        # ── benchmark evaluation ────────────────────────────────────────────
+        if params.benchmarks:
+            first = params.benchmarks[0]
+            label = first.label or f"{first.hf_repo} / {first.project}"
+            bm_jsonl = self._benchmark_jsonl(job, first)
+            bm_report = paths.data / "eval_report_benchmark.json"
+            self._run(job, "test (benchmark)",
+                      evaluate_cmd(self.settings.runner_python(self.engine),
+                                   params=params, base_model=job.request.base_model,
+                                   adapter_dir=adapter, val_jsonl=bm_jsonl,
+                                   data_root=self._corpus_root(bm_jsonl),
+                                   report=bm_report),
+                      record)
+            if bm_report.exists():
+                bm = parse_eval_report(
+                    bm_report.read_text(encoding="utf-8", errors="replace"))
+                if bm.cer is not None:
+                    metrics = metrics.model_copy(deep=True)
+                    metrics.benchmark_cer = bm.cer
+                    metrics.benchmark_wer = bm.wer
+                    metrics.benchmark_samples = bm.samples
+                    metrics.measured_on = label
+                    logger.info("benchmark CER {:.4f} / WER {} over {} samples"
+                                " (measured on {})",
+                                bm.cer, bm.wer, bm.samples, label)
         return metrics
 
     # ── register ────────────────────────────────────────────────────────────
