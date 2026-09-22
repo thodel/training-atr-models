@@ -720,6 +720,27 @@ def test_the_sample_length_cap_is_part_of_the_key(store, settings):
     assert pipeline._cache_key(page).digest != line.digest
 
 
+def test_block_lines_is_part_of_the_key_at_block_granularity_only(store, settings):
+    """Two block sizes cut two different corpora; a line or page key must not move
+    because the field exists (every cache entry already built would be orphaned)."""
+    from atr_training.contracts import VlmTrainParams
+    from vlm_train_svc.runner import Pipeline
+
+    pipeline = Pipeline(store, settings, runner=FakeRunner(),
+                        source=FakeSource({"train": 4, "eval": 2}))
+    four = pipeline._cache_key(store.create(request_with(
+        params=VlmTrainParams(granularity="block", block_lines=4))))
+    six = pipeline._cache_key(store.create(request_with(
+        params=VlmTrainParams(granularity="block", block_lines=6))))
+    assert four.digest != six.digest and four.describes["extra"]["block_lines"] == 4
+
+    line = pipeline._cache_key(store.create(request_with()))
+    assert "block_lines" not in line.describes["extra"]
+    line_other = pipeline._cache_key(store.create(request_with(
+        params=VlmTrainParams(block_lines=3))))
+    assert line_other.digest == line.digest
+
+
 # ── which code ran (#147) ───────────────────────────────────────────────────
 def _pin_code(monkeypatch, created: str, running: str) -> None:
     from atr_training import codeversion, runner_base

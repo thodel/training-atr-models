@@ -295,6 +295,40 @@ def line_boxes(xml_text: str) -> list[TextLineBox]:
     return boxes
 
 
+def line_regions(xml_text: str) -> list[str | None]:
+    """The id of the innermost ``TextRegion`` around each ``TextLine``, in document order.
+
+    Aligned with ``TextLineBox.index``: entry *i* belongs to the *i*-th ``TextLine``
+    of the page, transcribed or not, because that is the order ``line_boxes``
+    enumerates in. A line outside any region gets ``None``. A region without an id
+    is told apart by its position, so two anonymous regions never merge.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise PageXMLError(f"unparsable PageXML: {exc}") from exc
+
+    out: list[str | None] = []
+    anonymous = 0
+
+    def walk(el: ET.Element, region: str | None) -> None:
+        nonlocal anonymous
+        name = _localname(el.tag)
+        if name == "TextRegion":
+            if el.get("id"):
+                region = el.get("id")
+            else:
+                anonymous += 1
+                region = f"#region{anonymous}"
+        elif name == "TextLine":
+            out.append(region)
+        for child in el:
+            walk(child, region)
+
+    walk(root, None)
+    return out
+
+
 def is_plausible_line(box: "TextLineBox", max_aspect: float = MAX_LINE_ASPECT) -> bool:
     """Does this box look like one line of text rather than a segmentation error?"""
     if box.height <= 0 or box.width <= 0:

@@ -9,14 +9,18 @@ import json
 import pytest
 
 from atr_training.contracts import (
+    VLM_MAX_NEW_TOKENS,
     VLM_MAX_SAMPLE_CHARS,
+    VLM_MAX_SEQ_LEN,
     VLM_PIXEL_BUDGET,
+    VlmTrainParams,
 )
-from atr_training.pagexml import line_boxes, parse_points
+from atr_training.pagexml import line_boxes, line_regions, parse_points
 from atr_training.textmetrics import cer, score_pairs, wer
 from atr_training.vlm_dataset import (
     Sample,
     VlmDatasetError,
+    block_samples,
     chat_example,
     drop_long_samples,
     drop_short_samples,
@@ -138,7 +142,112 @@ def test_samples_for_rejects_an_unknown_granularity(page):
 def test_samples_for_dispatches_on_granularity(page, tmp_path):
     assert len(samples_for([page], "page", root=tmp_path)) == 1
     assert len(samples_for([page], "line", root=tmp_path)) == 2
-    assert set(VLM_PIXEL_BUDGET) == {"line", "page"}
+    assert len(samples_for([page], "block", root=tmp_path)) == 1
+    assert set(VLM_PIXEL_BUDGET) == {"line", "block", "page"}
+
+
+# ── granularity: block (#57) ────────────────────────────────────────────────
+def _line(lid: str, top: int, text: str | None, left: int = 10, right: int = 800) -> str:
+    equiv = f"<TextEquiv><Unicode>{text}</Unicode></TextEquiv>" if text is not None else ""
+    return (f'<TextLine id="{lid}"><Coords points="{left},{top} {right},{top} '
+            f'{right},{top + 60} {left},{top + 60}"/>{equiv}</TextLine>')
+
+
+BLOCK_XML = f"""<?xml version="1.0" encoding="UTF-8"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15">
+  <Page imageFilename="000003_p.jpg" imageWidth="1600" imageHeight="2000">
+    <TextRegion id="r1">
+      {_line("a1", 100, "eins")}{_line("a2", 170, "zwei")}{_line("a3", 240, "drei")}
+      {_line("a4", 310, "vier")}{_line("a5", 380, None)}{_line("a6", 450, "sechs")}
+      {_line("a7", 520, "sieben")}{_line("a8", 590, "acht")}
+    </TextRegion>
+    <TextRegion id="r2">
+      {_line("b1", 900, "neun")}{_line("b2", 970, "zehn")}
+    </TextRegion>
+    {_line("c1", 1500, "draussen")}
+  </Page>
+</PcGts>
+"""
+
+
+@pytest.fixture
+def block_page(tmp_path):
+    xml = tmp_path / "pages" / "000003_p.xml"
+    xml.parent.mkdir(parents=True)
+    xml.write_text(BLOCK_XML, encoding="utf-8")
+    xml.with_suffix(".jpg").write_bytes(b"\xff\xd8notreallyajpeg")
+    return xml
+
+
+def test_line_regions_are_aligned_with_every_textline():
+    """Untranscribed lines count too — the list is indexed by TextLineBox.index."""
+    assert line_regions(BLOCK_XML) == ["r1"] * 8 + ["r2", "r2", None]
+    assert [b.index for b in line_boxes(BLOCK_XML)] == [0, 1, 2, 3, 5, 6, 7, 8, 9, 10]
+
+
+def test_anonymous_regions_do_not_merge():
+    xml = BLOCK_XML.replace('<TextRegion id="r1">', "<TextRegion>").replace(
+        '<TextRegion id="r2">', "<TextRegion>")
+    regions = line_regions(xml)
+    assert regions[0] != regions[8] and regions[0] is not None
+
+
+def test_blocks_stay_in_their_region_and_break_at_an_untranscribed_line(block_page, tmp_path):
+    """a5 has no transcription but is on the image, so no block may span it."""
+    got = block_samples(block_page, root=tmp_path, pad=0, block_lines=3)
+    assert [s.text for s in got] == [
+        "eins\nzwei\ndrei", "vier",            # run a1-a4, cut at 3
+        "sechs\nsieben\nacht",                 # run a6-a8
+        "neun\nzehn",                           # region r2
+        "draussen",                            # outside any region
+    ]
+    assert all(s.source_type == "block" and s.page == "pages/000003_p.xml" for s in got)
+
+
+def test_a_block_box_is_the_union_of_its_lines(block_page):
+    first = block_samples(block_page, pad=0, block_lines=3)[0]
+    assert first.bbox == [10, 100, 800, 300]            # a1 top .. a3 bottom
+
+
+def test_an_implausible_line_breaks_the_block_too(tmp_path):
+    xml = tmp_path / "wide.xml"
+    xml.write_text(BLOCK_XML.replace(_line("a2", 170, "zwei"),
+                                     _line("a2", 170, "zwei", right=9000)), encoding="utf-8")
+    xml.with_suffix(".jpg").write_bytes(b"\xff\xd8")
+    texts = [s.text for s in block_samples(xml, pad=0, block_lines=6)]
+    assert "zwei" not in "\n".join(texts)
+    assert texts[0] == "eins" and texts[1] == "drei\nvier"
+
+
+def test_one_line_blocks_are_the_line_samples(block_page, tmp_path):
+    blocks = block_samples(block_page, root=tmp_path, block_lines=1)
+    lines = line_samples(block_page, root=tmp_path)
+    assert [(b.text, b.bbox) for b in blocks] == [(s.text, s.bbox) for s in lines]
+
+
+def test_block_lines_below_one_is_refused(block_page):
+    with pytest.raises(VlmDatasetError, match="block_lines"):
+        block_samples(block_page, block_lines=0)
+
+
+def test_samples_for_passes_block_lines_on(block_page, tmp_path):
+    assert len(samples_for([block_page], "block", root=tmp_path, block_lines=2)) == 6   # 2+2+1+1
+    assert len(samples_for([block_page], "block", root=tmp_path, block_lines=16)) == 4
+
+
+def test_block_has_a_budget_in_every_table():
+    for table in (VLM_PIXEL_BUDGET, VLM_MAX_SEQ_LEN, VLM_MAX_NEW_TOKENS, VLM_MAX_SAMPLE_CHARS):
+        assert table["line"] < table["block"] < table["page"]
+
+
+def test_block_params():
+    params = VlmTrainParams(granularity="block", block_lines=4)
+    assert params.pixel_budget() == VLM_PIXEL_BUDGET["block"]
+    assert params.generation_budget() == VLM_MAX_NEW_TOKENS["block"]
+    with pytest.raises(ValueError):
+        VlmTrainParams(granularity="block", block_lines=0)
+    with pytest.raises(ValueError):
+        VlmTrainParams(granularity="block", block_lines=17)
 
 
 # ── jsonl round trip ────────────────────────────────────────────────────────

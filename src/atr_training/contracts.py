@@ -58,9 +58,15 @@ VLM_PROMPT = "Transcribe the handwritten text in this image exactly as written."
 #: re-derives the cap from the processor's own patch_size/merge_size and reports it
 #: (``vlm_dataset.apply_visual_budget``), so a base with a different grid cannot
 #: quietly train at another budget than the one written here (#86).
-VLM_PIXEL_BUDGET: dict[str, int] = {"line": 256 * 32 * 32, "page": 2048 * 32 * 32}
+#: ``block`` (#57) — up to ``DEFAULT_BLOCK_LINES`` consecutive lines — sits between
+#: the two. Measured on the 19th-c. corpus on 2026-09-22: a line crop is ~119 px
+#: tall at its native size (crops are never upscaled, so they rarely fill their
+#: 256 tokens); six such lines of ~2000 px fit 1024 tokens at ~0.85 of that
+#: height, and a whole page fits 2048 at ~0.75.
+VLM_PIXEL_BUDGET: dict[str, int] = {"line": 256 * 32 * 32, "block": 1024 * 32 * 32,
+                                    "page": 2048 * 32 * 32}
 #: Token budget per sample kind (prompt + image + transcription).
-VLM_MAX_SEQ_LEN: dict[str, int] = {"line": 512, "page": 4096}
+VLM_MAX_SEQ_LEN: dict[str, int] = {"line": 512, "block": 2048, "page": 4096}
 #: Tokens the model may *generate* at evaluation, per sample kind. This has to
 #: scale with granularity for the same reason the input budget does, and it did
 #: not: a flat 256 was right for a line and cut a page in half (#92).
@@ -73,7 +79,10 @@ VLM_MAX_SEQ_LEN: dict[str, int] = {"line": 512, "page": 4096}
 #: A St. Gallen missive page averages 967 reference characters at roughly 2
 #: characters per token in this orthography, so ~500 tokens; 1536 leaves room for
 #: the long ones without inviting a runaway generation.
-VLM_MAX_NEW_TOKENS: dict[str, int] = {"line": 256, "page": 1536}
+#:
+#: A block of six lines is ~90 tokens at the 19th-c. corpus's ~3 characters per
+#: token (p90 of a page is ~560); 768 leaves the long ones room.
+VLM_MAX_NEW_TOKENS: dict[str, int] = {"line": 256, "block": 768, "page": 1536}
 #: Transcription length past which a sample is dropped at compile rather than
 #: trained on (#110). **This is not `VLM_MAX_SEQ_LEN` in other units** — the two
 #: answer different questions, and conflating them is what cost eleven hours.
@@ -95,7 +104,7 @@ VLM_MAX_NEW_TOKENS: dict[str, int] = {"line": 256, "page": 1536}
 #:
 #: A "line" longer than 1,000 characters is not a line — it is a mis-segmented
 #: block, and it was never going to train usefully.
-VLM_MAX_SAMPLE_CHARS: dict[str, int] = {"line": 1000, "page": 8000}
+VLM_MAX_SAMPLE_CHARS: dict[str, int] = {"line": 1000, "block": 3000, "page": 8000}
 
 # A model id doubles as a directory name and a registry id — keep it boring.
 MODEL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -310,10 +319,17 @@ class VlmTrainParams(BaseModel):
 
     #: ``line`` crops every transcribed ``TextLine`` out of the page by its
     #: PageXML ``Coords``; ``page`` trains on whole pages with the lines joined by
-    #: newlines. Line is the default because it is what the CER is measured
-    #: against on the serving side for these models, and because a page sample
-    #: costs 8× the visual tokens for one training signal.
-    granularity: Literal["line", "page"] = "line"
+    #: newlines; ``block`` (#57) on runs of ``block_lines`` consecutive lines of
+    #: one region, cropped as one image. Line is the default because it is what the
+    #: CER is measured against on the serving side for these models, and because a
+    #: page sample costs 8× the visual tokens for one training signal.
+    #:
+    #: A model trained at ``line`` reads lines only: whole pages came back at CER
+    #: 0.98-1.00 (serving-atr-inference#165). Train at ``block`` or ``page`` for a
+    #: model that reads more than one line per call.
+    granularity: Literal["line", "block", "page"] = "line"
+    #: Lines per sample at ``granularity: block``; ignored otherwise.
+    block_lines: int = Field(default=6, ge=1, le=16)
     prompt: str = VLM_PROMPT
 
     # ── QLoRA ────────────────────────────────────────────────────────────────

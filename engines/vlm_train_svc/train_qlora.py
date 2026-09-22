@@ -41,7 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--data-root", required=True,
                    help="what the relative image paths in the JSONL resolve against")
     p.add_argument("--prompt", required=True)
-    p.add_argument("--granularity", default="line", choices=["line", "page"])
+    p.add_argument("--granularity", default="line", choices=["line", "block", "page"])
     p.add_argument("--max-pixels", type=int, required=True)
     p.add_argument("--max-seq-len", type=int, required=True)
     p.add_argument("--seed", type=int, default=42)

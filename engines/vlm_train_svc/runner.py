@@ -118,11 +118,16 @@ class Pipeline(BasePipeline):
         compile reads the params'.
         """
         params = job.request.params
-        return key_for_specs(job.request.datasets, self.engine, extra={
+        extra = {
             "granularity": params.granularity,
             "max_sample_chars": VLM_MAX_SAMPLE_CHARS[params.granularity],
             "min_train_chars": params.min_train_chars,
-        })
+        }
+        # Only at block granularity, so every existing line and page key -- and
+        # the cache entries behind them -- stays exactly what it was.
+        if params.granularity == "block":
+            extra["block_lines"] = params.block_lines
+        return key_for_specs(job.request.datasets, self.engine, extra=extra)
 
     def _adopt_cached(self, job: TrainJob, entry) -> tuple[Path, Path]:
         """Train against the corpus where it lies, in the cache.
@@ -186,7 +191,8 @@ class Pipeline(BasePipeline):
         dropped_total = longest = short_total = 0
 
         for name, manifest in (("train", pages_train), ("val", pages_val)):
-            samples = samples_for(read_manifest(manifest), params.granularity, root=paths.root)
+            samples = samples_for(read_manifest(manifest), params.granularity, root=paths.root,
+                                  block_lines=params.block_lines)
             # Before cropping: a sample too long to afford is dropped whether or
             # not its image would have cropped cleanly, and cropping it first
             # would be work thrown away. The *validation* side matters as much as
@@ -215,7 +221,7 @@ class Pipeline(BasePipeline):
                         "floor is longer than the longest line in the corpus."
                     )
 
-            if params.granularity == "line":
+            if params.granularity != "page":        # line and block are cut out
                 samples = write_crops(samples, paths.root, paths.data / "crops" / name)
             jsonl = paths.data / f"{name}.jsonl"
             written = write_jsonl(jsonl, samples)
@@ -396,7 +402,10 @@ class Pipeline(BasePipeline):
             "base_model": job.request.base_model,
             "enabled": False,  # not servable until merged, then promoted
             "task": "htr",
-            "level": params.granularity,
+            # The serving registry knows `line` and `page` only. A block model
+            # reads crops of several lines, which serving does not cut yet (#57),
+            # so it is registered at the level it can be served at today.
+            "level": "page" if params.granularity == "page" else "line",
             # The prompt travels with the model: serving it with different
             # wording than it was tuned on is a silent distribution shift.
             "prompt": params.prompt,
