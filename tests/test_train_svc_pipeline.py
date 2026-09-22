@@ -1002,15 +1002,10 @@ def test_the_run_that_fills_the_cache_moves_its_arrows_there(store, caching):
     assert "built by this job" in job.progress.artefact
 
 
-# ── a Slurm job leaves an existing registration alone (#17) ─────────────────
-def test_a_slurm_job_leaves_an_enabled_registration_byte_identical(store, settings, monkeypatch):
-    """Retraining a promoted id on UBELIX: no disable before the copy, no
-    registration, no enable by the gate — the file on the share is untouched."""
-    settings = _promoted_once(store, settings, monkeypatch)
-    path = registration_path(settings.registry_root, "kraken-thun-missiven-v1")
-    before = path.read_bytes()
-
-    # Disable-then-enable leaves the same bytes behind, so count the writes too.
+# ── a Slurm job and an existing registration (#17, #41) ─────────────────────
+def _count_enable_writes(monkeypatch) -> list[tuple]:
+    """Every set_enabled the job makes. Byte-identical is not enough on its own:
+    disable-then-enable leaves the same bytes behind."""
     import atr_training.registration as registration
     import atr_training.runner_base as runner_base
     import kraken_train_svc.runner as kraken_runner
@@ -1022,6 +1017,57 @@ def test_a_slurm_job_leaves_an_enabled_registration_byte_identical(store, settin
 
     monkeypatch.setattr(runner_base, "set_enabled", recording)
     monkeypatch.setattr(kraken_runner, "set_enabled", recording)
+    return writes
+
+
+def _reregister(settings, model_id, **changes):
+    from atr_training.registration import write_registration
+    spec = read_registration(settings.registry_root, model_id).model_dump(exclude_none=True)
+    spec.update(changes)
+    write_registration(settings.registry_root, spec)
+
+
+def test_a_slurm_retrain_onto_enabled_weights_is_refused_before_training(
+        store, settings, monkeypatch):
+    """#41: the id is registered and enabled, its local_path inside
+    trained_root/<id>. A Slurm job cannot disable it first (#17), so writing there
+    would swap the served weights under an enable the gate gave to others.
+
+    Refused up front: nothing compiled, nothing trained, nothing written — a
+    UBELIX job must not train for hours to be turned away at register."""
+    settings = _promoted_once(store, settings, monkeypatch)
+    path = registration_path(settings.registry_root, "kraken-thun-missiven-v1")
+    before = path.read_bytes()
+    writes = _count_enable_writes(monkeypatch)
+
+    monkeypatch.setenv("SLURM_JOB_ID", "15480898")
+    runner = FakeRunner()
+    job = store.create(request_with(), host="ubelix")
+    job = Pipeline(store, settings, runner=runner,
+                   source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+
+    assert job.status == "failed", job.error
+    assert "Refused before training" in job.error
+    assert "kraken-thun-missiven-v1 is registered and enabled" in job.error
+    assert runner.commands == [], "the job compiled or trained before being refused"
+    assert writes == []
+    assert path.read_bytes() == before
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled
+
+
+def test_a_slurm_job_leaves_a_registration_elsewhere_alone(store, settings, monkeypatch):
+    """#17 still holds where #41 does not apply: an enabled registration whose
+    weights live outside this job's directory is neither blocked nor touched —
+    no disable, no enable, no registration, the file byte-identical."""
+    settings = _promoted_once(store, settings, monkeypatch)
+    elsewhere = settings.trained_root.parent / "archive" / "kraken-thun-missiven-v1.mlmodel"
+    elsewhere.parent.mkdir(parents=True, exist_ok=True)
+    elsewhere.write_bytes(b"OLD")
+    _reregister(settings, "kraken-thun-missiven-v1", local_path=str(elsewhere))
+    path = registration_path(settings.registry_root, "kraken-thun-missiven-v1")
+    before = path.read_bytes()
+    writes = _count_enable_writes(monkeypatch)
+
     monkeypatch.setenv("SLURM_JOB_ID", "15480898")
     job = store.create(request_with(), host="ubelix")
     job = Pipeline(store, settings, runner=FakeRunner(),
@@ -1030,10 +1076,54 @@ def test_a_slurm_job_leaves_an_enabled_registration_byte_identical(store, settin
     assert job.status == "completed", job.error
     assert writes == []
     assert path.read_bytes() == before
-    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled
+    assert elsewhere.read_bytes() == b"OLD"
     assert job.promoted is False
     assert "Slurm job 15480898" in job.promotion_reason
     assert job.registration.startswith("not registered: this ran as Slurm job 15480898")
+
+
+def test_a_disabled_registration_does_not_block_a_slurm_job(store, settings, monkeypatch):
+    """Nothing is advertised, so nothing can be advertised wrongly."""
+    from atr_training.registration import set_enabled
+    settings = _promoted_once(store, settings, monkeypatch)
+    set_enabled(settings.registry_root, "kraken-thun-missiven-v1", False)
+
+    monkeypatch.setenv("SLURM_JOB_ID", "15480898")
+    job = store.create(request_with(), host="ubelix")
+    job = Pipeline(store, settings, runner=FakeRunner(),
+                   source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+    assert job.status == "completed", job.error
+
+
+def test_a_registration_enabled_while_the_job_ran_is_caught_at_register(
+        store, settings, monkeypatch):
+    """The up-front check saw a disabled registration; another host promoted it
+    while this job trained. The check at register catches that, before a byte
+    is copied — and says where the new weights still are."""
+    from atr_training.registration import set_enabled
+    settings = _promoted_once(store, settings, monkeypatch)
+    set_enabled(settings.registry_root, "kraken-thun-missiven-v1", False)
+    served = Path(read_registration(settings.registry_root,
+                                    "kraken-thun-missiven-v1").local_path)
+    served_before = served.read_bytes()
+
+    class PromotedMeanwhile(FakeRunner):
+        def run(self, cmd, log_path, env=None):
+            if "test" in cmd:
+                set_enabled(settings.registry_root, "kraken-thun-missiven-v1", True)
+            return super().run(cmd, log_path, env)
+
+    monkeypatch.setenv("SLURM_JOB_ID", "15480898")
+    runner = PromotedMeanwhile()
+    job = store.create(request_with(), host="ubelix")
+    job = Pipeline(store, settings, runner=runner,
+                   source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+
+    assert job.status == "failed", job.error
+    assert "is registered and enabled" in job.error
+    assert "Nothing was copied or registered" in job.error
+    assert any("train" in c for c in runner.commands), "this one did train"
+    assert served.read_bytes() == served_before, "the served weights were replaced"
 
 
 def test_a_slurm_job_still_refuses_a_curated_id(store, settings, monkeypatch):
@@ -1046,3 +1136,4 @@ def test_a_slurm_job_still_refuses_a_curated_id(store, settings, monkeypatch):
     job = Pipeline(store, settings, runner=FakeRunner(),
                    source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
     assert job.status == "failed" and "is curated" in job.error
+

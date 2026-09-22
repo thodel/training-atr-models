@@ -799,6 +799,54 @@ class BasePipeline(ABC):
                 f"hand (python -m atr_training.registration --root {root}).")
         return untouched
 
+    def _enabled_weights_clash(self, model_id: str) -> str | None:
+        """Why a Slurm job may not write ``<trained_root>/<model_id>`` — or ``None``.
+
+        A Slurm job never writes the registry (#17): not the disable before its
+        weights are replaced, not the registration, not the gate's enable. So if
+        ``model_id`` is registered **and enabled** with its ``local_path`` inside
+        the directory this job writes to, the job would swap the weights under an
+        enable the gate gave to other weights. On the service path the same state
+        is prevented by disabling first (:meth:`_before_register`); on Slurm the
+        only safe answer is not to write (#41).
+
+        Read-only. An unreadable registration raises :class:`StageFailed` — the
+        weights under it cannot be judged safe to replace.
+        """
+        root = self.settings.registry_root
+        try:
+            current = read_registration(root, model_id)
+        except RegistrationError as exc:
+            raise StageFailed(
+                f"{model_id} is already registered, and that registration could not be "
+                f"read: {exc}. Fix or remove {exc.path}, then resubmit.") from exc
+        if current is None or not current.enabled or not current.local_path:
+            return None
+        target = self.settings.trained_root / model_id
+        if not Path(current.local_path).is_relative_to(target):
+            return None
+        return (f"{model_id} is registered and enabled with local_path "
+                f"{current.local_path}, inside {target}, where this Slurm job writes. "
+                "A Slurm job cannot disable a registration before replacing its weights "
+                "(#17), so the served model would change under an enable the gate never "
+                "gave these weights (#41). Train under a new model_id, or disable the "
+                "registration first")
+
+    def _guard_slurm_retrain(self, job: TrainJob) -> None:
+        """Refuse, before any stage, a Slurm retrain onto enabled weights (#41).
+
+        Checked up front because the condition is known before training starts.
+        Checking it only at register would let a UBELIX job train for hours and
+        then be turned away — the weights kept, the GPU time lost.
+        :meth:`_finish` checks again, for a registration enabled while this job
+        ran.
+        """
+        if not slurm_job_id():
+            return
+        clash = self._enabled_weights_clash(job.request.model_id)
+        if clash:
+            raise StageFailed(f"{clash}. Refused before training: nothing was trained.")
+
     def _guard_slurm_host(self, job: TrainJob) -> None:
         """Refuse a service host's job that finds itself inside a Slurm job.
 
@@ -1110,6 +1158,7 @@ class BasePipeline(ABC):
 
         try:
             self._guard_slurm_host(job)
+            self._guard_slurm_retrain(job)
             if resuming:
                 # Two routes lead here and both are ordinary: a preemption or
                 # walltime requeue, or a job built off the GPU by
@@ -1215,7 +1264,12 @@ class BasePipeline(ABC):
         self.store.advance(job, "registering")
         with self._stage(job, "register"):
             if slurm:
-                self._refuse_curated(job, model)
+                untouched = self._refuse_curated(job, model)
+                # Again at the end: the registration can have been promoted by
+                # another host while this job trained (#41).
+                clash = self._enabled_weights_clash(job.request.model_id)
+                if clash:
+                    raise StageFailed(f"{clash}. {untouched}")
             else:
                 self._before_register(job, model)
             model_path = self._register(job, model, job.metrics)
