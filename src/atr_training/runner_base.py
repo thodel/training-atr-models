@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import threading
 import subprocess
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -116,21 +117,114 @@ class StageFailed(RuntimeError):
 
 
 class CommandRunner(Protocol):
-    def run(self, cmd: list[str], log_path: Path, env: dict[str, str] | None = None) -> int: ...
+    def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None) -> int: ...
+
+
+
+
+class LocalLogRunner:
+    """Writes stage logs to local NVMe first, mirrors to share as a non-blocking reader.
+
+    When the share is unreachable the mirror thread silently drops its write and
+    continues — the local copy is the authoritative record; the share is a
+    convenience copy for tailing live jobs over HTTP.
+    """
+
+    def __init__(self, local_root: Path, share_root: Path | None = None) -> None:
+        self.local_root = local_root
+        self.share_root = share_root
+
+    def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None) -> int:
+        """Mirror ``share_log`` to ``self.local_root / <relative>`` while the trainer runs."""
+        if self.share_root is not None:
+            local_log = self._local_path(share_log)
+        else:
+            local_log = share_log
+        local_log.parent.mkdir(parents=True, exist_ok=True)
+        full_env = {**os.environ, **(env or {})}
+        logger.info("$ {}", " ".join(cmd))
+        with local_log.open("ab") as local,              share_log.open("ab") as share:
+
+            local.write(f"\n$ {{' '.join(cmd)}}\n".encode())
+            local.flush()
+            share.write(f"\n$ {{' '.join(cmd)}}\n".encode())
+            share.flush()
+
+            # Pipe so the mirror thread can consume without blocking the trainer
+            pipe_read, pipe_write = os.pipe()
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdout=pipe_write, stderr=subprocess.STDOUT, env=full_env
+                )
+                os.close(pipe_write)  # runner owns the write end
+
+                mirror = threading.Thread(
+                    target=self._mirror_reader,
+                    args=(pipe_read, local, share),
+                    daemon=True,
+                )
+                mirror.start()
+
+                exit_code = proc.wait()
+                # Close the pipe so the mirror thread sees EOF and finishes
+                os.close(pipe_read)
+                mirror.join(timeout=5.0)
+                return exit_code
+            finally:
+                try:
+                    os.close(pipe_write)
+                except OSError:
+                    pass
+
+    def _mirror_reader(self, rfd: int, local: IO[bytes], share: IO[bytes]) -> None:
+        try:
+            with os.fdopen(rfd, "rb", closefd=True) as reader:
+                while True:
+                    try:
+                        chunk = reader.read(65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    try:
+                        local.write(chunk)
+                        local.flush()
+                    except OSError:
+                        pass  # local disk full — keep going
+                    try:
+                        share.write(chunk)
+                        share.flush()
+                    except OSError:
+                        pass  # share gone — drop and continue
+        except Exception:
+            pass  # never let the reader crash the process
+
+    def _local_path(self, share_path: Path) -> Path:
+        # /mnt/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs/<job>/logs/<stage>.log
+        #  → <checkpoint_root>/<job>/logs/<stage>.log
+        try:
+            rel = share_path.relative_to(self.share_root)
+        except ValueError:
+            return share_path
+        return self.local_root / rel
 
 
 class SubprocessRunner:
-    """Runs a command, streaming stdout+stderr into the stage log."""
+    """Runs a command, streaming stdout+stderr into the stage log.
 
-    def run(self, cmd: list[str], log_path: Path, env: dict[str, str] | None = None) -> int:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        full_env = {**os.environ, **(env or {})}
-        logger.info("$ {}", " ".join(cmd))
-        with log_path.open("ab") as log:
-            log.write(f"\n$ {' '.join(cmd)}\n".encode())
-            log.flush()
-            proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=full_env)
-            return proc.wait()
+    Writes to the local NVMe first (beside the checkpoint root) and mirrors
+    every read chunk to the share log. When the share is unreachable the
+    mirror silently drops writes and the local copy remains the authoritative
+    record (#21).
+    """
+
+    def __init__(self, local_root: Path | None = None) -> None:
+        self._local = LocalLogRunner(
+            local_root=local_root or Path.home() / "atr-cache" / "checkpoints"
+        )
+
+    def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None) -> int:
+        return self._local.run(cmd, share_log, env=env)
 
 
 def tail(path: Path, lines: int = 50) -> list[str]:
