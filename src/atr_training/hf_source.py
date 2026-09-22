@@ -774,6 +774,7 @@ def verify_dataset_spec(
        under ``data/<split>/``?
     3. Does the dataset have parquet files (proxy for PageXML format)?
     4. How large is **the selection** — not the repo — against ``min_free_disk_gb``?
+    5. Does ``DatasetSpec.chunk_size`` have a consumer, or is it set and silent?
 
     Returns a list of human-readable problem descriptions. Empty list = valid.
 
@@ -874,5 +875,17 @@ def verify_dataset_spec(
                 )
                 if oversize:
                     errors.append(oversize)
+
+    # 5. chunk_size on the spec has no consumer — warn when it would be silent.
+    if (spec.chunk_size is not None
+            and settings is not None
+            and getattr(settings, "chunk_pages", 0) == 0
+            and chunk_capable):
+        errors.append(
+            f"DatasetSpec.chunk_size={spec.chunk_size} is set, but "
+            f"ATR_TRAIN_CHUNK_PAGES={getattr(settings, 'chunk_pages', 0)} — "
+            "chunking is off and chunk_size is ignored. Set ATR_TRAIN_CHUNK_PAGES "
+            "(e.g. 5000) to use it, or remove chunk_size from the request."
+        )
 
     return errors

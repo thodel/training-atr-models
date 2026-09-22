@@ -299,6 +299,35 @@ class TestVerifyDatasetSpec:
                                      paths_size_fn=fake_size)
         assert any("GB" in e and "50" in e for e in errors)
 
+    def test_chunk_size_set_without_global_chunk_pages_warns(self):
+        """DatasetSpec.chunk_size is set but ATR_TRAIN_CHUNK_PAGES is 0: warned."""
+        def fake_list_ok(repo, **kwargs):
+            return [f"data/train/{THUN_TRAIN}/s.parquet",
+                    f"data/train/{THUN_TEST}/s.parquet"]
+
+        spec = DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN],
+                           chunk_size=5000)
+        # chunk_pages=0 (the default) means chunking is off
+        errors = verify_dataset_spec(spec, FakeSettings(chunk_pages=0),
+                                     list_repo_files_fn=fake_list_ok,
+                                     paths_size_fn=_small)
+        assert any("chunk_size" in e and "chunk_pages" in e.lower()
+                   for e in errors), errors
+
+    def test_chunk_size_ignored_when_global_chunk_pages_is_set(self):
+        """When ATR_TRAIN_CHUNK_PAGES > 0, chunk_size on the spec is allowed."""
+        def fake_list_ok(repo, **kwargs):
+            return [f"data/train/{THUN_TRAIN}/s.parquet",
+                    f"data/train/{THUN_TEST}/s.parquet"]
+
+        spec = DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN],
+                           chunk_size=5000)
+        # chunk_pages > 0 means chunking is on — no warning
+        errors = verify_dataset_spec(spec, FakeSettings(chunk_pages=5000),
+                                     list_repo_files_fn=fake_list_ok,
+                                     paths_size_fn=_small)
+        assert not any("chunk_size" in e for e in errors), errors
+
     # ── how the oversize refusal depends on the configuration (#85) ─────────
     #
     # The run behind these: a 461 K-page selection was refused at ~1023 GB while

@@ -204,9 +204,13 @@ class DatasetSpec(BaseModel):
     #: an unbounded one defeats the purpose of the guard). Mutually exclusive with
     #: ``train_projects``.
     all_projects: bool = False
-    #: When set, pages are materialized in chunks of this many pages each:
-    #: materialize → compile → discard → next chunk. Keeps peak disk bounded.
-    #: Must be ≥ 1. None (default) disables chunking.
+    #: Chunk size for this dataset — drives chunked prepare when
+    #: ``TrainerSettings.chunk_pages > 0``. The plan file prepare writes for the
+    #: train side carries ``chunk_pages``, not this field; this field is a
+    #: per-dataset override that **only** has an effect when global chunking is
+    #: on. ``verify_dataset_spec`` warns when this is set but
+    #: ``ATR_TRAIN_CHUNK_PAGES`` is 0 (#87 follow-up).
+    #: Must be ≥ 1. None (default) lets the global setting apply.
     chunk_size: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
