@@ -176,8 +176,8 @@ def frontmatter(card: str) -> dict:
 
 def test_the_card_reports_the_measured_error_rates(tmp_path: Path):
     card = card_for(tmp_path, KRAKEN_META)
-    assert "| CER | 4.50 % |" in card
-    assert "| WER | 10.40 % |" in card
+    assert "| split CER | 4.50 % |" in card
+    assert "| split WER | 10.40 % |" in card
     assert "12000" in card and "540" in card
 
 
@@ -341,7 +341,7 @@ def test_a_vlm_card_names_its_base_and_the_merge_requirement(tmp_path: Path):
 def test_a_missing_metric_is_a_dash_not_a_zero(tmp_path: Path):
     metadata = {**KRAKEN_META, "metrics": {"cer": 0.045}}
     card = card_for(tmp_path, metadata)
-    assert "| WER | — |" in card
+    assert "| split WER | — |" in card
     assert "model-index" in frontmatter(card)  # the CER it does have is still declared
 
 
@@ -518,7 +518,7 @@ def test_a_metric_measured_elsewhere_says_so_on_the_card(tmp_path: Path):
     card = card_for(tmp_path, meta)
 
     assert "german_test.arrow" in card
-    assert "not on this run's own validation split" in card
+    assert "secondary sanity check on the same data" in card
     assert "page-level and seeded" not in card
     assert "seed 20260810" in card
 
