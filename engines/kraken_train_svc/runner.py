@@ -207,6 +207,36 @@ class Pipeline(BasePipeline):
             if remaining is not None and remaining <= 0:
                 break
             chunk_dir = paths.pages / f"chunk_{index:04d}"
+            arrow = paths.data / f"train_{index:04d}.arrow"
+
+            # Resume: skip chunks whose arrow already exists from a previous run.
+            # Count pages/lines from the manifest to keep progress in sync.
+            if arrow.exists() and arrow.stat().st_size > 0:
+                manifest_path = paths.data / f"pages_train_{index:04d}.lst"
+                if manifest_path.exists():
+                    try:
+                        with manifest_path.open(encoding="utf-8") as mf:
+                            # One line per page; empty lines mean the page had none.
+                            page_count = sum(1 for line in mf if line.strip())
+                        with manifest_path.open(encoding="utf-8") as mf:
+                            line_count = sum(1 for line in mf)
+                    except OSError:
+                        page_count = line_count = 0
+                else:
+                    page_count = line_count = 0
+                logger.info("chunk {}: resume — using existing {} ({} pages, {} lines)",
+                            index, arrow.name, page_count, line_count)
+                arrows.append(arrow)
+                pages_total += page_count
+                lines_total += line_count
+                if remaining is not None:
+                    remaining -= page_count
+                job.progress.pages_written = pages_total
+                job.progress.lines_written = lines_total
+                job.progress.train_lines = lines_total
+                self.store.save(job)
+                continue
+
             written = materialize(
                 iter(batch), chunk_dir, role="train",
                 max_pages=remaining, start_index=pages_total,
@@ -219,7 +249,7 @@ class Pipeline(BasePipeline):
             manifest = write_manifest(paths.data / f"pages_train_{index:04d}.lst",
                                       [str(p) for p in written.xml_paths])
             arrows.append(self._compile_one(
-                job, manifest, paths.data / f"train_{index:04d}.arrow", record,
+                job, manifest, arrow, record,
                 f"train chunk {index}"))
 
             pages_total += written.pages_written
