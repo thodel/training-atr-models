@@ -1137,3 +1137,84 @@ def test_a_slurm_job_still_refuses_a_curated_id(store, settings, monkeypatch):
                    source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
     assert job.status == "failed" and "is curated" in job.error
 
+
+
+# ── two datasets share one index space (#28) ────────────────────────────────
+class TwoRepos:
+    """Two repos, both selected whole from their train projects.
+
+    ``empty_in_a`` marks pages of the first repo that carry no text line;
+    ``materialize`` skips those — and still spends an index on each.
+    """
+
+    def __init__(self, rows_a: int, empty_in_a: set[int], rows_b: int) -> None:
+        self.rows_a, self.empty_in_a, self.rows_b = rows_a, empty_in_a, rows_b
+
+    def stream(self, hf_repo, data_files, revision=None):
+        first = hf_repo.endswith("_a")
+        count = self.rows_a if first else self.rows_b
+        for i in range(count):
+            empty = first and i in self.empty_in_a
+            yield {
+                "image": {"bytes": b"\xff\xd8" + f"{hf_repo}{i}".encode(),
+                          "path": f"{i}.jpg"},
+                "xml_content": EMPTY_XML if empty else PAGE_XML,
+                "filename": f"{'a' if first else 'b'}_{i}.jpg",
+                "project_name": THUN_TRAIN,
+            }
+
+
+def _two_dataset_run(store, settings, source) -> tuple:
+    """Run only the multi-dataset materialize, and report the indices it used."""
+    from atr_training.contracts import DatasetSpec
+    specs = [DatasetSpec(hf_repo="dh-unibe/image-text_a", train_projects=[THUN_TRAIN]),
+             DatasetSpec(hf_repo="dh-unibe/image-text_b", train_projects=[THUN_TRAIN])]
+    job = store.create(request_with(datasets=specs))
+    paths = store.paths(job.id)
+    paths.pages.mkdir(parents=True, exist_ok=True)
+    Pipeline(store, settings, runner=FakeRunner(), source=source)._prepare_multi(
+        job, specs, paths)
+    indices = sorted(int(p.name.split("_")[0]) for p in paths.pages.glob("*.xml"))
+    return job, indices
+
+
+def test_the_second_dataset_starts_after_every_index_the_first_consumed(store, settings):
+    """A skipped page still spends an index (``prepare.materialize`` counts both).
+
+    Numbering the second dataset from the pages *written* made the two ranges
+    overlap: here B would start at 4 while A's pages run to 6, so three indices
+    would carry a page from each dataset and no reader could tell them apart.
+    """
+    job, indices = _two_dataset_run(store, settings,
+                                    TwoRepos(rows_a=7, empty_in_a={1, 3, 5}, rows_b=4))
+    # A: 7 rows, 3 of them empty → written at 0, 2, 4, 6; B starts at 7.
+    assert indices == [0, 2, 4, 6, 7, 8, 9, 10]
+    counts = [dc.model_dump() if hasattr(dc, "model_dump") else dict(dc)
+              for dc in job.progress.dataset_counts]
+    assert [(c["pages_written"], c["pages_skipped"]) for c in counts] == [(4, 3), (4, 0)]
+
+
+def test_the_spans_of_that_run_hold_exactly_their_own_pages(store, settings):
+    """The writer's arithmetic and eval_subset's reader agree, page for page."""
+    from atr_training.eval_subset import attribute, source_spans
+    job, indices = _two_dataset_run(store, settings,
+                                    TwoRepos(rows_a=7, empty_in_a={1, 3, 5}, rows_b=4))
+    counts = [dc.model_dump() if hasattr(dc, "model_dump") else dict(dc)
+              for dc in job.progress.dataset_counts]
+    spans = source_spans(counts)
+    assert spans == [("a", 0, 7), ("b", 7, 11)]
+    # One document per page: `attribute` places a document by majority vote, so a
+    # single document spanning both datasets would be ambiguous by construction.
+    owner = attribute([f"data/pages/{i:06d}_d{i}_0001_999.jpg" for i in indices], spans)
+    assert sorted(owner.values()).count("a") == 4
+    assert sorted(owner.values()).count("b") == 4
+    assert len(owner) == len(indices), "a page fell outside every span"
+
+
+def test_the_convergence_guard_gets_a_line_count_for_a_multi_dataset_run(store, settings):
+    """#72 reads ``train_lines``; without it the guard returns None and refuses
+    nothing, however small the run."""
+    job, _ = _two_dataset_run(store, settings,
+                              TwoRepos(rows_a=7, empty_in_a={1, 3, 5}, rows_b=4))
+    assert job.progress.train_lines > 0
+    assert job.progress.train_lines <= job.progress.lines_written

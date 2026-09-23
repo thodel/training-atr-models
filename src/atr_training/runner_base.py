@@ -623,8 +623,18 @@ class BasePipeline(ABC):
         """
         all_train_xml: list[str] = []
         all_val_xml: list[str] = []
-        total_pages_written = 0
+        # ``total_written`` is used for the running page count that goes into the
+        # job record. ``total_consumed`` tracks every page that consumed an index —
+        # written *and* skipped — so that the index space stays non-overlapping
+        # across datasets and :func:`eval_subset.source_spans` can correctly
+        # attribute pages to their source (#28f).
+        total_written = 0
+        total_consumed = 0
         total_lines_written = 0
+        # Lines attributed to the train split, for the convergence guard (#72).
+        # Mirrors the single-dataset path: after a seeded split ``train_lines`` is
+        # the train fraction; with a dedicated eval the full line count trains.
+        total_train_lines = 0
         dataset_counts: list[DatasetCounts] = []
 
         for spec in specs:
@@ -635,7 +645,7 @@ class BasePipeline(ABC):
                     self.source.stream(spec.hf_repo, files["train"], spec.revision),
                     keep_projects_for(spec)),
                 paths.pages, role="train", max_pages=spec.max_pages,
-                start_index=total_pages_written,
+                start_index=total_consumed,
                 min_free_disk_gb=self.settings.min_free_disk_gb,
             )
             train_page_paths = [str(p) for p in train_set.xml_paths]
@@ -650,9 +660,13 @@ class BasePipeline(ABC):
                 max_aspect=train_set.max_aspect,
             )
 
+            consumed_this_dataset = train_set.pages_written + train_set.pages_skipped
+
             if "eval" in files:
-                # Eval pages materialised with offset after all train pages so far.
-                eval_start = total_pages_written + train_set.pages_skipped
+                # Dedicated eval pages materialised with offset after all pages
+                # consumed from this dataset's train side so far, keeping the two
+                # roles' index ranges adjacent and non-overlapping.
+                eval_start = total_consumed + train_set.pages_skipped
                 eval_set = materialize(
                     self.source.stream(spec.hf_repo, files["eval"], spec.revision),
                     paths.pages, role="eval", max_pages=spec.max_pages,
@@ -665,7 +679,11 @@ class BasePipeline(ABC):
                 dc.pages_skipped += eval_set.pages_skipped
                 dc.lines += eval_set.lines
                 dc.chars += eval_set.chars
-                total_pages_written += train_set.pages_written + eval_set.pages_written
+                total_written += train_set.pages_written + eval_set.pages_written
+                total_consumed += consumed_this_dataset + (
+                    eval_set.pages_written + eval_set.pages_skipped
+                )
+                total_train_lines += train_set.lines
             else:
                 # No eval projects: split train pages into train/val.
                 subset_train, subset_val = split_pages(
@@ -673,7 +691,13 @@ class BasePipeline(ABC):
                 )
                 all_train_xml.extend(subset_train)
                 all_val_xml.extend(subset_val)
-                total_pages_written += train_set.pages_written
+                total_written += train_set.pages_written
+                total_consumed += consumed_this_dataset
+                # An estimate, and knowingly so: `split_pages` divides PAGES, not
+                # lines, so the train share of the lines is only proportional on
+                # average. The guard it feeds (#72) asks whether a run is orders
+                # of magnitude too small, and that question survives the error.
+                total_train_lines += round(train_set.lines * spec.partition)
 
             total_lines_written += train_set.lines
             dataset_counts.append(dc)
@@ -683,8 +707,9 @@ class BasePipeline(ABC):
                 f"multi-dataset run: no usable pages found across {len(specs)} datasets"
             )
 
-        job.progress.pages_written = total_pages_written
+        job.progress.pages_written = total_written
         job.progress.lines_written = total_lines_written
+        job.progress.train_lines = total_train_lines
         job.progress.dataset_counts = dataset_counts
         self.store.save(job)
 
