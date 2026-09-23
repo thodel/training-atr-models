@@ -51,19 +51,24 @@ __all__ = [
 def source_spans(dataset_counts: Sequence[dict]) -> list[tuple[str, int, int]]:
     """``(source, first, end)`` — the index range only that source can occupy.
 
-    ``first`` is advanced by the *previous* dataset's skipped pages, which is what
-    makes the range exclusive: those indices were consumed but never written, so
-    the next dataset's pages start somewhere inside them and cannot be told apart
-    by index alone.
+    A dataset consumes an index for every page it reads, written **or** skipped
+    (``prepare.materialize`` counts both), so its range is ``pages_written +
+    pages_skipped`` wide and the next one starts where it ends. Exact and without
+    overlap.
+
+    Until #28 the writer started each dataset at the number of pages *written*
+    so far, so the ranges overlapped by the previous dataset's skipped pages and
+    this function compensated by pushing ``first`` past them — which kept
+    attribution honest at the price of dropping the pages in between. Writer and
+    reader now use the same arithmetic, and nothing has to be dropped.
     """
     spans: list[tuple[str, int, int]] = []
     start = 0
-    prev_skipped = 0
     for dc in dataset_counts:
         name = str(dc["hf_repo"]).split("image-text_")[-1]
-        spans.append((name, start + prev_skipped, start + int(dc["pages_written"])))
-        start += int(dc["pages_written"])
-        prev_skipped = int(dc.get("pages_skipped", 0))
+        consumed = int(dc["pages_written"]) + int(dc.get("pages_skipped", 0))
+        spans.append((name, start, start + consumed))
+        start += consumed
     return spans
 
 

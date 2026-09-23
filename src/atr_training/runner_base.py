@@ -693,6 +693,10 @@ class BasePipeline(ABC):
                 all_val_xml.extend(subset_val)
                 total_written += train_set.pages_written
                 total_consumed += consumed_this_dataset
+                # An estimate, and knowingly so: `split_pages` divides PAGES, not
+                # lines, so the train share of the lines is only proportional on
+                # average. The guard it feeds (#72) asks whether a run is orders
+                # of magnitude too small, and that question survives the error.
                 total_train_lines += round(train_set.lines * spec.partition)
 
             total_lines_written += train_set.lines

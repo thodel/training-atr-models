@@ -18,8 +18,8 @@ from atr_training.eval_subset import (
     stratify,
 )
 
-# Dataset A wrote 10 pages and skipped 3, so it consumed indices 0..12; B starts
-# at 10 (written only) and therefore overlaps A's tail at 10..12.
+# Dataset A wrote 10 pages and skipped 3, so it consumed indices 0..12 and B
+# starts at 13. Both numbers matter: a skipped page consumes an index too (#28).
 COUNTS = [{"hf_repo": "dh-unibe/image-text_a", "pages_written": 10, "pages_skipped": 3},
           {"hf_repo": "dh-unibe/image-text_b", "pages_written": 10, "pages_skipped": 0}]
 
@@ -32,8 +32,19 @@ def row(index: int, doc: str) -> dict:
     return {"image": img(index, doc), "text": "x", "source_type": "page"}
 
 
-def test_spans_exclude_the_range_two_datasets_could_both_occupy():
-    assert source_spans(COUNTS) == [("a", 0, 10), ("b", 13, 20)]
+def test_a_span_covers_every_index_its_dataset_consumed():
+    """Written and skipped alike: the ranges meet, and neither loses a page.
+
+    Before #28 the writer numbered by pages written and these were
+    ``[("a", 0, 10), ("b", 13, 20)]`` — the three indices A skipped were left to
+    nobody, so B's last three pages fell outside every span and were dropped.
+    """
+    assert source_spans(COUNTS) == [("a", 0, 13), ("b", 13, 23)]
+
+
+def test_the_spans_of_two_datasets_never_overlap():
+    spans = source_spans(COUNTS)
+    assert spans[0][2] == spans[1][1]
 
 
 def test_a_page_name_yields_its_pool_index_and_document():
@@ -41,7 +52,8 @@ def test_a_page_name_yields_its_pool_index_and_document():
 
 
 def test_an_unplaceable_document_is_left_out_rather_than_guessed():
-    assert attribute([img(11, "8")], source_spans(COUNTS)) == {}
+    """An index beyond every span belongs to nobody and is not guessed at."""
+    assert attribute([img(99, "8")], source_spans(COUNTS)) == {}
 
 
 # ── the fix itself ──────────────────────────────────────────────────────────
