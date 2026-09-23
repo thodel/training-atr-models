@@ -324,49 +324,73 @@ def test_health_reports_the_queue(client):
 
 
 
-def test_host_returns_volume_free_space_and_ram(client, settings, monkeypatch, tmp_path):
-    """GET /host reports disk free for the four volumes and system RAM."""
-    import shutil
-    import unittest.mock
+def test_host_reports_free_disk_for_the_four_volumes_and_ram(
+        client, settings, monkeypatch, tmp_path):
+    """#40: disk free per volume, RAM from an injectable /proc/meminfo."""
+    import kraken_train_svc.app as app_module
 
-    # Give the settings real-looking paths under tmp_path
-    settings.jobs_root = tmp_path / "jobs"
-    settings.checkpoint_root = tmp_path / "checkpoints"
-    settings.artefact_cache_root = tmp_path / "artefacts"
-    settings.trained_root = tmp_path / "trained"
-    settings.jobs_root.mkdir(parents=True)
-    settings.checkpoint_root.mkdir(parents=True)
-    settings.artefact_cache_root.mkdir(parents=True)
-    settings.trained_root.mkdir(parents=True, exist_ok=True)
+    for attr in ("jobs_root", "checkpoint_root", "artefact_cache_root", "trained_root"):
+        path = tmp_path / attr
+        path.mkdir(parents=True, exist_ok=True)
+        setattr(settings, attr, path)
+    client.app.state.settings = settings
+    monkeypatch.setattr(app_module, "free_disk_gb", lambda p: 100.0)
+
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:       32000000 kB\n"
+                       "MemFree:         1000000 kB\n"
+                       "MemAvailable:    8000000 kB\n", encoding="ascii")
+    monkeypatch.setattr(app_module, "MEMINFO_PATH", meminfo)
+
+    body = client.get("/host").json()
+
+    assert body["host"] == socket.gethostname()
+    assert sorted(body["volumes"]) == ["artefact_cache_root", "checkpoint_root",
+                                       "jobs_root", "trained_root"]
+    for volume in body["volumes"].values():
+        assert volume["free_gb"] == 100.0
+        assert volume["path"].startswith(str(tmp_path))
+    assert body["ram"] == {"total_gb": 32.0, "available_gb": 8.0}
+
+
+def test_host_answers_without_ram_when_proc_cannot_be_read(
+        client, settings, monkeypatch, tmp_path):
+    """Partial data, not a 500 (#40). A real /proc never produces this case,
+    which is why the path is a module constant a test can point elsewhere."""
+    import kraken_train_svc.app as app_module
+
+    monkeypatch.setattr(app_module, "free_disk_gb", lambda p: 12.5)
+    monkeypatch.setattr(app_module, "MEMINFO_PATH", tmp_path / "not-here")
+
+    response = client.get("/host")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "ram" not in body            # unknown is absent, never invented
+    assert body["volumes"], "the volumes still answer"
+
+
+def test_host_omits_a_volume_it_cannot_measure(client, settings, monkeypatch, tmp_path):
+    """One unreadable path must not cost the other three."""
+    import kraken_train_svc.app as app_module
+
+    for attr in ("jobs_root", "checkpoint_root", "artefact_cache_root", "trained_root"):
+        setattr(settings, attr, tmp_path / attr)
     client.app.state.settings = settings
 
-    # Monkeypatch shutil.disk_usage to return predictable values.
-    def fake_usage(path):
-        class Result:
-            def __init__(self, free):
-                self.free = free
-                self.total = free * 2
-        return Result(free=100 * (10**9))  # 100 GB free
+    def measure(path):
+        if str(path).endswith("trained_root"):
+            raise OSError("no such volume")
+        return 7.0
 
-    with unittest.mock.patch("kraken_train_svc.app.free_disk_gb", side_effect=lambda p: 100.0):
-        resp = client.get("/host")
+    monkeypatch.setattr(app_module, "free_disk_gb", measure)
+    monkeypatch.setattr(app_module, "MEMINFO_PATH", tmp_path / "not-here")
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["host"] == socket.gethostname()
-    assert "jobs_root" in body["volumes"]
-    assert "checkpoint_root" in body["volumes"]
-    assert "artefact_cache_root" in body["volumes"]
-    assert "trained_root" in body["volumes"]
-    # Each volume has free_gb and path
-    for v in body["volumes"].values():
-        assert "free_gb" in v
-        assert "path" in v
-    # RAM
-    assert "ram" in body
-    assert "total_gb" in body["ram"]
-    assert "available_gb" in body["ram"]
+    body = client.get("/host").json()
 
+    assert "trained_root" not in body["volumes"]
+    assert sorted(body["volumes"]) == ["artefact_cache_root", "checkpoint_root",
+                                       "jobs_root"]
 
 def test_host_omits_unreadable_volumes(client, settings, monkeypatch, tmp_path):
     """Volumes that raise OSError in free_disk_gb are omitted from the response."""
@@ -402,7 +426,6 @@ def test_host_omits_unreadable_volumes(client, settings, monkeypatch, tmp_path):
 
 def test_host_returns_ram_from_proc_meminfo(client, settings, monkeypatch, tmp_path):
     import unittest.mock
-    from pathlib import Path
 
     for d in (settings.jobs_root, settings.checkpoint_root,
               settings.artefact_cache_root, settings.trained_root):

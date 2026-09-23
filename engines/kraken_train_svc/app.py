@@ -655,6 +655,12 @@ async def gpu() -> dict:
             "job_attribution_available": attribution, "known_job_pids": len(job_pids)}
 
 
+#: Where the RAM figures come from. A module constant, not a literal in the
+#: handler, so a test can substitute a fixture — including one that cannot be
+#: read, which is the case a real /proc never produces (#40).
+MEMINFO_PATH = Path("/proc/meminfo")
+
+
 @app.get("/host")
 async def host() -> dict:
     """Disk free and RAM on this machine.
@@ -682,9 +688,11 @@ async def host() -> dict:
         except OSError:
             pass  # path not readable or not a mount point
 
-    # RAM from /proc/meminfo
+    # RAM from /proc/meminfo. Named so a test can point it at a fixture: the
+    # issue asks for an injectable path and for partial data rather than a 500,
+    # and a real /proc cannot produce the unreadable case on demand (#40).
     try:
-        meminfo = Path("/proc/meminfo").read_text(encoding="ascii")
+        meminfo = MEMINFO_PATH.read_text(encoding="ascii")
         total_kb = free_kb = None
         for line in meminfo.splitlines():
             if line.startswith("MemTotal:"):
