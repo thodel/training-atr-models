@@ -314,57 +314,75 @@ class Pipeline(BasePipeline):
         return out
 
     def _benchmark_jsonl(self, job: TrainJob, benchmark) -> Path:
-        """The compiled JSONL for one benchmark, under ``data/benchmarks/``.
+        """Compile one held-out benchmark into a JSONL the evaluator can read.
 
-        Layout mirrors the main corpus: ``data/benchmarks/<project>.jsonl`` with
-        pages at ``data/benchmarks/pages/<project>/*.{jpg,xml}``.  The pages
-        resolve from ``data/benchmarks/`` as data root, which is what
-        ``_corpus_root`` returns for a JSONL at that path.
+        The same route the corpus takes — materialize the project's pages, then
+        ``samples_for`` and ``write_jsonl`` — because a benchmark scored through a
+        second, private pipeline measures that pipeline as much as it measures the
+        model, and the number is meant to be comparable with the split CER beside
+        it.
+
+        Written next to ``train.jsonl`` rather than in a subdirectory: the
+        evaluator resolves image paths against ``_corpus_root``, which is the
+        JSONL's grandparent, so a deeper file would silently resolve them wrong.
+
+        **No length filtering.** ``_compile`` drops samples above the sample cap
+        and (for train) below the floor; both shape what the model sees. Applying
+        them here would remove the hardest lines from the measurement and flatter
+        the score — which is the failure #23 exists to end.
         """
+        from atr_training.contracts import DatasetSpec
+        from atr_training.hf_source import data_files_for
+        from atr_training.manifests import write_manifest
+        from atr_training.prepare import materialize
+        from atr_training.preflight import PreflightError
+
         paths = self.store.paths(job.id)
-        bm_dir = paths.data / "benchmarks"
-        bm_dir.mkdir(parents=True, exist_ok=True)
-        jsonl = bm_dir / f"{benchmark.project}.jsonl"
+        params = job.request.params
+        jsonl = paths.data / f"benchmark_{benchmark.project}.jsonl"
         if jsonl.is_file():
             return jsonl
-        # Build it from the HuggingFace source, one project at a time.
-        from atr_training.hf_source import HFPageSource
-        from atr_training.prepare import materialize
-        from atr_training.manifests import split_pages
 
-        spec = next((d for d in job.request.datasets
-                     if d.hf_repo == benchmark.hf_repo), None)
-        source = HFPageSource()
-        pages: list[str] = []
-        for raw in source.stream(benchmark.hf_repo,
-                                 [f"{benchmark.project}/*.parquet"],
-                                 revision=spec.revision if spec else None):
-            pages.append(raw["image_filename"])
-        if not pages:
+        # The revision of the request's own entry for this repo, when it has one:
+        # a benchmark pinned to a different revision than the corpus would be a
+        # different dataset wearing the same name.
+        known = next((d for d in job.request.datasets
+                      if d.hf_repo == benchmark.hf_repo), None)
+        spec = DatasetSpec(hf_repo=benchmark.hf_repo, split=benchmark.split,
+                           train_projects=[benchmark.project],
+                           revision=known.revision if known else None)
+        try:
+            prepared = materialize(
+                self.source.stream(spec.hf_repo, data_files_for(spec)["train"],
+                                   spec.revision),
+                paths.data / "benchmarks" / benchmark.project, role="eval",
+                min_free_disk_gb=self.settings.min_free_disk_gb)
+        except PreflightError as exc:
+            # materialize says "role eval", which is also what the corpus's own
+            # validation pages are called. Name the benchmark, or the message
+            # sends the reader to the wrong half of the run.
             raise StageFailed(
-                f"benchmark {benchmark.hf_repo}/{benchmark.project} returned no pages"
-            )
-        # Materialise benchmark pages beside the main corpus pages so they
-        # share the same directory tree and the data root covers all of it.
-        pages_dir = paths.data / "pages"
-        materialize(pages, pages_dir,
-                    HFPageSource(), lambda path: path,
-                    lambda row: row, dry_run=False)
-        # Write the JSONL — one entry per page with its ground truth.
-        rows = []
-        for raw in source.stream(benchmark.hf_repo,
-                                 [f"{benchmark.project}/*.parquet"],
-                                 revision=spec.revision if spec else None):
-            stem = Path(raw["image_filename"]).stem
-            rows.append({
-                "image": f"pages/{stem}.jpg",
-                "text": raw["text_line"],
-            })
-        jsonl.write_text(
-            "".join(__import__("json").dumps(r, ensure_ascii=False) + "\n"
-                    for r in rows),
-            encoding="utf-8",
-        )
+                f"benchmark {benchmark.hf_repo}/{benchmark.project} produced no pages: "
+                f"{exc}") from exc
+        if not prepared.pages_written:
+            raise StageFailed(
+                f"benchmark {benchmark.hf_repo}/{benchmark.project} produced no pages: "
+                f"{prepared.pages_skipped} page(s) were read and every one was skipped.")
+
+        manifest = write_manifest(
+            paths.data / f"pages_benchmark_{benchmark.project}.lst",
+            [str(path) for path in prepared.xml_paths])
+        samples = samples_for(read_manifest(manifest), params.granularity,
+                              root=paths.root)
+        if params.granularity == "line":
+            samples = write_crops(samples, paths.root,
+                                  paths.data / "crops" / f"benchmark_{benchmark.project}")
+        if not write_jsonl(jsonl, samples):
+            raise StageFailed(
+                f"benchmark {benchmark.hf_repo}/{benchmark.project} produced no samples "
+                f"from {prepared.pages_written} page(s) — no usable line geometry.")
+        logger.info("benchmark {}: {} pages -> {}",
+                    benchmark.project, prepared.pages_written, jsonl)
         return jsonl
 
     def _test(self, job: TrainJob, adapter: Path, val_jsonl: Path,

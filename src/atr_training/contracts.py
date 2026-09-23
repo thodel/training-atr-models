@@ -643,6 +643,10 @@ class BenchmarkSpec(BaseModel):
     hf_repo: str
     #: Project directory name inside that dataset, e.g. ``TEST_federal_minutes``.
     project: str
+    #: Split the project lives under, as in ``data/<split>/<project>/``. Named
+    #: rather than assumed: a set built to be held out is often published under
+    #: ``test``, and a wrong guess here reads as "the benchmark has no pages".
+    split: str = "train"
     #: Human-readable label for the model card. None = ``"<repo> / <project>"``.
     label: str | None = None
 
