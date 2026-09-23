@@ -1214,12 +1214,20 @@ class BasePipeline(ABC):
             source = self._cacheable(job, train_artifact, val_artifact)
             if source is None:
                 return train_artifact, val_artifact
-            # Copied, not moved: the originals stay put until the store has
-            # succeeded, and `_adopt_cached` removes them only once this job's
-            # manifests point at the cache. A failed move would otherwise leave a
-            # job holding manifests for arrows that are no longer anywhere.
+            # Move, not copy, when the source is a flat file list (kraken arrows)
+            # and source + cache are on the same filesystem — a rename is one
+            # syscall instead of one copy per file (41 GB over SMB otherwise).
+            # The directory form (VLM pages) stays as copy: the job keeps its
+            # pages directory and a move would rob it of the path a later
+            # resume looks up.  A failed move on the list form would leave the
+            # job holding manifests for arrows that are gone, so we only move
+            # when we know both sides of the rename are on the same device.
+            do_move = (
+                isinstance(source, (list, tuple))
+                and _filesystem_of(Path(source[0]).parent) == _filesystem_of(cache.root)
+            )
             entry = cache.put(key, source, job_id=job.id,
-                              inner=self.ARTEFACT_INNER, payload={
+                              move=do_move, inner=self.ARTEFACT_INNER, payload={
                 "train_lines": job.progress.train_lines,
                 "lines_written": job.progress.lines_written,
                 "pages_written": job.progress.pages_written,

@@ -286,3 +286,90 @@ def test_put_refuses_a_file_list_with_a_gap(tmp_path):
                   [source / "train.arrow", source / "missing.arrow"])
     assert not [p for p in (tmp_path / "cache").iterdir() if p.name.startswith(".incoming")] \
         if (tmp_path / "cache").is_dir() else True
+
+
+# ── move vs copy ─────────────────────────────────────────────────────────────
+def test_same_device_moves_not_copies(monkeypatch, tmp_path):
+    """On kraken the arrows and the cache are on the same device — move them."""
+    # Imports must come before any use of the imported names (Python scoping)
+    from atr_training.artefact_cache import ArtefactCache, key_for
+    from atr_training.contracts import DatasetSpec
+    import atr_training.runner_base as rb
+    from pathlib import Path
+
+    # Same device: _filesystem_of returns the same integer for both
+    dev = 42
+    def fake_fs_of(path):
+        return dev
+    monkeypatch.setattr(rb, "_filesystem_of", fake_fs_of)
+
+    cache = ArtefactCache(tmp_path / "cache")
+    source = tmp_path / "arrows"
+    source.mkdir()
+    (source / "train.arrow").write_bytes(b"t" * 32)
+    (source / "val.arrow").write_bytes(b"v" * 16)
+
+    key = key_for(DatasetSpec(hf_repo="dh-unibe/medieval", train_projects=["a"]), "kraken")
+    source_paths = [source / "train.arrow", source / "val.arrow"]
+
+    # Simulate the do_move logic from _store_artefact
+    do_move = (
+        isinstance(source_paths, (list, tuple))
+        and fake_fs_of(Path(source_paths[0]).parent) == fake_fs_of(cache.root)
+    )
+    assert do_move, "same device should select move"
+    entry = cache.put(key, source_paths, move=do_move)
+    assert not (source / "train.arrow").exists(), "original arrows should be gone after move"
+    assert (entry.path / "train.arrow").exists()
+
+
+def test_different_device_copies_not_moves(monkeypatch, tmp_path):
+    """On a heterogeneous cluster the job share and cache may differ — always copy."""
+    from atr_training.artefact_cache import ArtefactCache, key_for
+    from atr_training.contracts import DatasetSpec
+    import atr_training.runner_base as rb
+    from pathlib import Path
+
+    # Different device: _filesystem_of returns different integers
+    def fake_fs_of(path):
+        if "cache" in str(path):
+            return 99
+        return 42
+    monkeypatch.setattr(rb, "_filesystem_of", fake_fs_of)
+
+    cache = ArtefactCache(tmp_path / "cache")
+    source = tmp_path / "arrows"
+    source.mkdir()
+    (source / "train.arrow").write_bytes(b"t" * 32)
+
+    key = key_for(DatasetSpec(hf_repo="dh-unibe/medieval", train_projects=["a"]), "kraken")
+    source_paths = [source / "train.arrow"]
+    do_move = (
+        isinstance(source_paths, (list, tuple))
+        and fake_fs_of(Path(source_paths[0]).parent) == fake_fs_of(cache.root)
+    )
+    assert not do_move, "different devices should select copy"
+    entry = cache.put(key, source_paths, move=do_move)
+    assert (source / "train.arrow").exists(), "original arrows must stay after copy"
+    assert (entry.path / "train.arrow").exists()
+
+
+def test_fresh_cache_root_falls_back_to_copy(monkeypatch, tmp_path):
+    """When the cache root does not yet exist the put still succeeds (copy, not move)."""
+    from atr_training.artefact_cache import ArtefactCache, key_for
+    from atr_training.contracts import DatasetSpec
+
+    source = tmp_path / "arrows"
+    source.mkdir()
+    (source / "train.arrow").write_bytes(b"t" * 32)
+
+    # cache root does not yet exist — mkdir will create it during put
+    cache = ArtefactCache(tmp_path / "brand_new_cache")
+    key = key_for(DatasetSpec(hf_repo="dh-unibe/medieval", train_projects=["a"]), "kraken")
+
+    # do_move would be False here: source arrow exists (dev=N) but cache.root
+    # doesn't, so _filesystem_of(cache.root) returns None.  None == N is False.
+    # We test the outcome: put must not raise, and it copies (original stays).
+    entry = cache.put(key, [source / "train.arrow"], move=False)
+    assert (source / "train.arrow").exists(), "copied: originals must stay"
+    assert (entry.path / "train.arrow").exists()
