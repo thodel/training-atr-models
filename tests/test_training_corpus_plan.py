@@ -346,3 +346,63 @@ class TestSliversAndHoldouts:
         with pytest.raises(CorpusPlanError, match="every dataset fell below"):
             plan_corpus([cand("a", pages=10, projects=["p"])],
                         MEDIEVAL_GERMAN, min_pages=1000)
+
+
+class TestExcludeRepos:
+    """#30: a held-out evaluation corpus is named once, not enumerated by hand.
+
+    Measured on the real catalogue: `medieval-scripts_xiv-xv-xvi` (held out for
+    evaluation) shares 17 project directories with `koenigsfelden-charters-post-1500`.
+    `plan_corpus` deduplicates only among the datasets it selects, so nothing kept
+    those 17 out of training.
+    """
+
+    EVAL = "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi"
+    SHARED = ["u-17_0059", "u-17_0060", "u-17_0061_01"]
+
+    def candidates(self):
+        return [
+            cand(self.EVAL, pages=5000, projects=[*self.SHARED, "eval_only"]),
+            cand("dh-unibe/image-text_koenigsfelden-charters-post-1500",
+                 pages=9000, projects=[*self.SHARED, "k_a", "k_b"]),
+            cand("dh-unibe/image-text_rats-und-richtebuecher_xv-xvi",
+                 pages=8000, projects=["r_a", "r_b"]),
+        ]
+
+    def plan(self, **kw):
+        return plan_corpus(self.candidates(), MEDIEVAL_GERMAN, max_share=1.0, **kw)
+
+    def selected_projects(self, plan):
+        return {p for s in plan.selections for p in s.projects}
+
+    def test_naming_the_eval_repo_drops_its_projects_from_every_other_dataset(self):
+        plan = self.plan(exclude_repos=[self.EVAL])
+        chosen = self.selected_projects(plan)
+        assert not (chosen & set(self.SHARED)), "shared projects reached the corpus"
+        assert "k_a" in chosen and "r_a" in chosen, "the rest of each dataset stays"
+
+    def test_without_it_the_shared_projects_are_trained_on(self):
+        """The state #30 reports, kept as a test so the fix has something to be
+        the fix *of*."""
+        assert set(self.SHARED) & self.selected_projects(self.plan())
+
+    def test_the_short_name_of_a_repo_is_accepted_too(self):
+        plan = self.plan(exclude_repos=["image-text_medieval-scripts_xiv-xv-xvi"])
+        assert not (self.selected_projects(plan) & set(self.SHARED))
+
+    def test_a_generator_of_candidates_is_not_consumed_before_the_exclusion(self):
+        """`plan_corpus` walks its candidates twice. Read lazily, the second walk
+        finds nothing and the exclusion silently does nothing at all."""
+        plan = plan_corpus((c for c in self.candidates()), MEDIEVAL_GERMAN,
+                           max_share=1.0, exclude_repos=[self.EVAL])
+        assert not (self.selected_projects(plan) & set(self.SHARED))
+
+    def test_an_unknown_repo_is_not_mistaken_for_an_exclusion(self):
+        plan = self.plan(exclude_repos=["dh-unibe/image-text_not-in-this-catalogue"])
+        assert set(self.SHARED) & self.selected_projects(plan)
+
+    def test_a_dataset_without_projects_can_be_named_without_harm(self):
+        """Whole-dataset selection has no project list to expand."""
+        plan = plan_corpus([*self.candidates(), cand("dh-unibe/whole", projects=())],
+                           MEDIEVAL_GERMAN, max_share=1.0, exclude_repos=["dh-unibe/whole"])
+        assert "k_a" in self.selected_projects(plan)

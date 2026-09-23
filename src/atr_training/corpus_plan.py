@@ -395,6 +395,10 @@ def plan_corpus(candidates: Iterable[Candidate], target: Target = MEDIEVAL_GERMA
     if not 0 < max_share <= 1:
         raise CorpusPlanError(f"max_share must be in (0, 1], got {max_share}")
 
+    # Read once: this function walks the candidates twice (scoring, then the
+    # project lists behind `exclude_repos`), and a generator is empty the second
+    # time — which would make the exclusion silently do nothing.
+    candidates = list(candidates)
     scored = sorted((score_candidate(c, target) for c in candidates),
                     key=lambda s: (-round(s.score / SCORE_TIE_BAND),
                                    -s.candidate.pages))
@@ -409,16 +413,22 @@ def plan_corpus(candidates: Iterable[Candidate], target: Target = MEDIEVAL_GERMA
         )
 
     # Dedup: the highest-scoring dataset holding a project keeps it.
-    # Expand exclude_repos to the project lists of those datasets.
-    repo_projects = {c.repo: c.projects for c in candidates}
-    repo_key = {r.split("/")[-1]: r for r in exclude_repos}
-    extra_exclude: list[str] = []
-    for r in exclude_repos:
-        proj = repo_projects.get(r) or repo_projects.get(repo_key.get(r.split("/")[-1], ""))
-        if proj:
-            extra_exclude.extend(proj)
+    #
+    # A named repo contributes its whole project list to the exclusion, which is
+    # the point of `exclude_repos`: the held-out corpus is named once instead of
+    # having its 184 project directories written out. Both the full id and the
+    # bare name after the slash are accepted — the catalogue is written both ways.
+    by_repo = {c.repo: c.projects for c in candidates}
+    by_name = {c.repo.split("/")[-1]: c.projects for c in candidates}
     excluded: set[str] = set(exclude_projects)
-    excluded.update(extra_exclude)
+    for repo in exclude_repos:
+        projects = by_repo.get(repo)
+        if projects is None:
+            projects = by_name.get(repo.split("/")[-1])
+        # None: not in this catalogue. Empty: a whole-dataset selection, which has
+        # no project list to exclude. Neither is an error here — plan_corpus does
+        # not own the question of whether the eval corpus exists.
+        excluded.update(projects or ())
     claimed: set[str] = set(excluded)
     selections: list[Selection] = []
     for entry in keep:
