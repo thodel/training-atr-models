@@ -375,7 +375,8 @@ def score_candidate(candidate: Candidate, target: Target) -> Scored:
 def plan_corpus(candidates: Iterable[Candidate], target: Target = MEDIEVAL_GERMAN,
                 *, max_share: float = 0.45, max_pages: int | None = None,
                 min_pages: int = 0,
-                exclude_projects: Iterable[str] = ()) -> CorpusPlan:
+                exclude_projects: Iterable[str] = (),
+                exclude_repos: Iterable[str] = ()) -> CorpusPlan:
     """Score, deduplicate and balance a set of datasets into one corpus.
 
     ``max_share`` caps any single dataset's contribution, because a corpus that is
@@ -385,10 +386,19 @@ def plan_corpus(candidates: Iterable[Candidate], target: Target = MEDIEVAL_GERMA
     too small to be worth its own prepare stream: on the real catalogue three
     datasets survived deduplication with 4, 14 and 33 pages, together 0.4 % of the
     corpus and three extra streams.
+
+    ``exclude_repos`` names whole datasets whose projects are excluded as a unit.
+    Use it to hold out an evaluation corpus without having to enumerate its
+    project directories by hand. A repo with no projects (whole-dataset selection)
+    cannot contribute excluded projects and is silently ignored.
     """
     if not 0 < max_share <= 1:
         raise CorpusPlanError(f"max_share must be in (0, 1], got {max_share}")
 
+    # Read once: this function walks the candidates twice (scoring, then the
+    # project lists behind `exclude_repos`), and a generator is empty the second
+    # time — which would make the exclusion silently do nothing.
+    candidates = list(candidates)
     scored = sorted((score_candidate(c, target) for c in candidates),
                     key=lambda s: (-round(s.score / SCORE_TIE_BAND),
                                    -s.candidate.pages))
@@ -403,7 +413,22 @@ def plan_corpus(candidates: Iterable[Candidate], target: Target = MEDIEVAL_GERMA
         )
 
     # Dedup: the highest-scoring dataset holding a project keeps it.
+    #
+    # A named repo contributes its whole project list to the exclusion, which is
+    # the point of `exclude_repos`: the held-out corpus is named once instead of
+    # having its 184 project directories written out. Both the full id and the
+    # bare name after the slash are accepted — the catalogue is written both ways.
+    by_repo = {c.repo: c.projects for c in candidates}
+    by_name = {c.repo.split("/")[-1]: c.projects for c in candidates}
     excluded: set[str] = set(exclude_projects)
+    for repo in exclude_repos:
+        projects = by_repo.get(repo)
+        if projects is None:
+            projects = by_name.get(repo.split("/")[-1])
+        # None: not in this catalogue. Empty: a whole-dataset selection, which has
+        # no project list to exclude. Neither is an error here — plan_corpus does
+        # not own the question of whether the eval corpus exists.
+        excluded.update(projects or ())
     claimed: set[str] = set(excluded)
     selections: list[Selection] = []
     for entry in keep:
