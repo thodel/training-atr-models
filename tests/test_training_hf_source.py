@@ -224,6 +224,39 @@ class TestVerifyDatasetSpec:
         assert "does/not-exist" in errors[0]
         assert "not exist" in errors[0].lower()
 
+    def test_all_projects_is_resolved_before_the_project_check(self, monkeypatch):
+        """A bounded whole-repo selection reaches the queue (training#74).
+
+        ``all_projects`` names its projects only after the hub is listed. This
+        check read ``train_projects`` first and refused the spec as "selects no
+        train_projects" — so `qwen3vl-medieval-german-page-v1`, the page arm of
+        an existing line run, could not be submitted at all.
+        """
+        import atr_training.hf_source as hf_source
+
+        monkeypatch.setattr(hf_source, "list_projects",
+                            lambda repo, split, revision=None: [THUN_TRAIN, THUN_TEST])
+
+        def fake_list_ok(repo, **kwargs):
+            return [f"data/train/{THUN_TRAIN}/shard.parquet",
+                    f"data/train/{THUN_TEST}/shard.parquet"]
+
+        spec = DatasetSpec(hf_repo=REPO, granularity="page",
+                           all_projects=True, max_pages=6000)
+        errors = verify_dataset_spec(spec, FakeSettings(),
+                                     list_repo_files_fn=fake_list_ok,
+                                     paths_size_fn=_small)
+        assert errors == []
+
+    def test_a_page_spec_with_no_projects_at_all_is_still_refused(self):
+        """Without ``all_projects`` an empty selection is still the whole repo,
+        and that is what the guard exists for."""
+        spec = DatasetSpec(hf_repo=REPO, granularity="page")
+        with pytest.raises(DatasetSelectionError, match="selects no train_projects"):
+            verify_dataset_spec(spec, FakeSettings(),
+                                list_repo_files_fn=lambda repo, **kw: [],
+                                paths_size_fn=_small)
+
     def test_missing_train_project_is_reported(self):
         """A project that does not exist in the repo is named in the error."""
         def fake_list_ok(repo, **kwargs):

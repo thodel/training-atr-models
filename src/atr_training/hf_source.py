@@ -793,6 +793,14 @@ def verify_dataset_spec(
 
     errors: list[str] = []
 
+    # ``all_projects`` names its projects only once the hub has been listed, and
+    # :func:`materialize` and :func:`plan_pages` already resolve it before they
+    # look at ``train_projects``. This one did not, so a bounded whole-repo
+    # selection — which the contract only accepts *with* ``max_pages`` — was
+    # refused here as "selects no train_projects" and never reached the queue.
+    if spec.all_projects:
+        spec = expand_all_projects(spec)
+
     # Structural validation for page-level (line-level skips train_projects check)
     if spec.granularity == "page":
         if not spec.train_projects:
