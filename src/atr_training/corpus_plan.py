@@ -375,7 +375,8 @@ def score_candidate(candidate: Candidate, target: Target) -> Scored:
 def plan_corpus(candidates: Iterable[Candidate], target: Target = MEDIEVAL_GERMAN,
                 *, max_share: float = 0.45, max_pages: int | None = None,
                 min_pages: int = 0,
-                exclude_projects: Iterable[str] = ()) -> CorpusPlan:
+                exclude_projects: Iterable[str] = (),
+                exclude_repos: Iterable[str] = ()) -> CorpusPlan:
     """Score, deduplicate and balance a set of datasets into one corpus.
 
     ``max_share`` caps any single dataset's contribution, because a corpus that is
@@ -385,6 +386,11 @@ def plan_corpus(candidates: Iterable[Candidate], target: Target = MEDIEVAL_GERMA
     too small to be worth its own prepare stream: on the real catalogue three
     datasets survived deduplication with 4, 14 and 33 pages, together 0.4 % of the
     corpus and three extra streams.
+
+    ``exclude_repos`` names whole datasets whose projects are excluded as a unit.
+    Use it to hold out an evaluation corpus without having to enumerate its
+    project directories by hand. A repo with no projects (whole-dataset selection)
+    cannot contribute excluded projects and is silently ignored.
     """
     if not 0 < max_share <= 1:
         raise CorpusPlanError(f"max_share must be in (0, 1], got {max_share}")
@@ -403,7 +409,16 @@ def plan_corpus(candidates: Iterable[Candidate], target: Target = MEDIEVAL_GERMA
         )
 
     # Dedup: the highest-scoring dataset holding a project keeps it.
+    # Expand exclude_repos to the project lists of those datasets.
+    repo_projects = {c.repo: c.projects for c in candidates}
+    repo_key = {r.split("/")[-1]: r for r in exclude_repos}
+    extra_exclude: list[str] = []
+    for r in exclude_repos:
+        proj = repo_projects.get(r) or repo_projects.get(repo_key.get(r.split("/")[-1], ""))
+        if proj:
+            extra_exclude.extend(proj)
     excluded: set[str] = set(exclude_projects)
+    excluded.update(extra_exclude)
     claimed: set[str] = set(excluded)
     selections: list[Selection] = []
     for entry in keep:
