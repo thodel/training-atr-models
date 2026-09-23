@@ -441,7 +441,8 @@ class JobStore:
         """
         if not self.can_transition(job.status, target):
             raise IllegalTransition(f"{job.id}: {job.status} → {target} is not a legal transition")
-        if target == "completed" and (job.metrics is None or job.metrics.cer is None):
+        if target == "completed" and (job.metrics is None
+                or (job.metrics.cer is None and job.metrics.benchmark_cer is None)):
             raise JobStoreError(
                 f"{job.id}: refusing to complete without a parsed CER — a run whose "
                 "ketos test report could not be read is a failure, not a success"

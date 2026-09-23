@@ -313,10 +313,84 @@ class Pipeline(BasePipeline):
                        encoding="utf-8")
         return out
 
+    def _benchmark_jsonl(self, job: TrainJob, benchmark) -> Path:
+        """Compile one held-out benchmark into a JSONL the evaluator can read.
+
+        The same route the corpus takes — materialize the project's pages, then
+        ``samples_for`` and ``write_jsonl`` — because a benchmark scored through a
+        second, private pipeline measures that pipeline as much as it measures the
+        model, and the number is meant to be comparable with the split CER beside
+        it.
+
+        Written next to ``train.jsonl`` rather than in a subdirectory: the
+        evaluator resolves image paths against ``_corpus_root``, which is the
+        JSONL's grandparent, so a deeper file would silently resolve them wrong.
+
+        **No length filtering.** ``_compile`` drops samples above the sample cap
+        and (for train) below the floor; both shape what the model sees. Applying
+        them here would remove the hardest lines from the measurement and flatter
+        the score — which is the failure #23 exists to end.
+        """
+        from atr_training.contracts import DatasetSpec
+        from atr_training.hf_source import data_files_for
+        from atr_training.manifests import write_manifest
+        from atr_training.prepare import materialize
+        from atr_training.preflight import PreflightError
+
+        paths = self.store.paths(job.id)
+        params = job.request.params
+        jsonl = paths.data / f"benchmark_{benchmark.project}.jsonl"
+        if jsonl.is_file():
+            return jsonl
+
+        # The revision of the request's own entry for this repo, when it has one:
+        # a benchmark pinned to a different revision than the corpus would be a
+        # different dataset wearing the same name.
+        known = next((d for d in job.request.datasets
+                      if d.hf_repo == benchmark.hf_repo), None)
+        spec = DatasetSpec(hf_repo=benchmark.hf_repo, split=benchmark.split,
+                           train_projects=[benchmark.project],
+                           revision=known.revision if known else None)
+        try:
+            prepared = materialize(
+                self.source.stream(spec.hf_repo, data_files_for(spec)["train"],
+                                   spec.revision),
+                paths.data / "benchmarks" / benchmark.project, role="eval",
+                min_free_disk_gb=self.settings.min_free_disk_gb)
+        except PreflightError as exc:
+            # materialize says "role eval", which is also what the corpus's own
+            # validation pages are called. Name the benchmark, or the message
+            # sends the reader to the wrong half of the run.
+            raise StageFailed(
+                f"benchmark {benchmark.hf_repo}/{benchmark.project} produced no pages: "
+                f"{exc}") from exc
+        if not prepared.pages_written:
+            raise StageFailed(
+                f"benchmark {benchmark.hf_repo}/{benchmark.project} produced no pages: "
+                f"{prepared.pages_skipped} page(s) were read and every one was skipped.")
+
+        manifest = write_manifest(
+            paths.data / f"pages_benchmark_{benchmark.project}.lst",
+            [str(path) for path in prepared.xml_paths])
+        samples = samples_for(read_manifest(manifest), params.granularity,
+                              root=paths.root)
+        if params.granularity == "line":
+            samples = write_crops(samples, paths.root,
+                                  paths.data / "crops" / f"benchmark_{benchmark.project}")
+        if not write_jsonl(jsonl, samples):
+            raise StageFailed(
+                f"benchmark {benchmark.hf_repo}/{benchmark.project} produced no samples "
+                f"from {prepared.pages_written} page(s) — no usable line geometry.")
+        logger.info("benchmark {}: {} pages -> {}",
+                    benchmark.project, prepared.pages_written, jsonl)
+        return jsonl
+
     def _test(self, job: TrainJob, adapter: Path, val_jsonl: Path,
               record: StageRecord) -> Metrics:
         paths = self.store.paths(job.id)
         params = job.request.params
+
+        # ── split evaluation ────────────────────────────────────────────────
         report = paths.data / "eval_report.json"
         self._run(job, "test",
                   evaluate_cmd(self.settings.runner_python(self.engine),
@@ -338,6 +412,32 @@ class Pipeline(BasePipeline):
             )
         logger.info("CER {:.4f} / WER {} over {} samples",
                     metrics.cer, metrics.wer, metrics.samples)
+
+        # ── benchmark evaluation ────────────────────────────────────────────
+        if params.benchmarks:
+            first = params.benchmarks[0]
+            label = first.label or f"{first.hf_repo} / {first.project}"
+            bm_jsonl = self._benchmark_jsonl(job, first)
+            bm_report = paths.data / "eval_report_benchmark.json"
+            self._run(job, "test (benchmark)",
+                      evaluate_cmd(self.settings.runner_python(self.engine),
+                                   params=params, base_model=job.request.base_model,
+                                   adapter_dir=adapter, val_jsonl=bm_jsonl,
+                                   data_root=self._corpus_root(bm_jsonl),
+                                   report=bm_report),
+                      record)
+            if bm_report.exists():
+                bm = parse_eval_report(
+                    bm_report.read_text(encoding="utf-8", errors="replace"))
+                if bm.cer is not None:
+                    metrics = metrics.model_copy(deep=True)
+                    metrics.benchmark_cer = bm.cer
+                    metrics.benchmark_wer = bm.wer
+                    metrics.benchmark_samples = bm.samples
+                    metrics.measured_on = label
+                    logger.info("benchmark CER {:.4f} / WER {} over {} samples"
+                                " (measured on {})",
+                                bm.cer, bm.wer, bm.samples, label)
         return metrics
 
     # ── register ────────────────────────────────────────────────────────────

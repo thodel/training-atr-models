@@ -854,3 +854,109 @@ def test_a_service_job_with_a_leaked_slurm_job_id_fails_before_training(
     assert "SLURM_JOB_ID=15450030" in job.error and "'test-trainer'" in job.error
     assert [s.name for s in job.stages] == []          # nothing ran, not even prepare
     assert not settings.trained_root.exists() or not any(settings.trained_root.iterdir())
+
+
+# ── a held-out benchmark beside the split (#23) ─────────────────────────────
+BENCH_PROJECT = "TEST_federal_minutes"
+BENCH_REPO = "dh-unibe/image-text_federal-minutes-testset"
+
+
+class SourceWithBenchmark(FakeSource):
+    """Also serves a benchmark project, from its own repo.
+
+    The benchmark pages carry a different transcription, so a JSONL built from
+    the corpus instead of the benchmark is visible in the test rather than
+    plausible.
+    """
+
+    # Both lines: at line granularity every sample is its own row, so leaving
+    # one line from the corpus fixture would make half the JSONL indistinguishable.
+    BENCH_XML = (PAGE_XML.replace("Item ontfaen van Janne", "Der Bundesrat beschliesst")
+                         .replace("van der Straten", "in Anwesenheit des Kanzlers"))
+
+    def __init__(self, per_role, bench_pages: int = 3) -> None:
+        super().__init__(per_role)
+        self.bench_pages = bench_pages
+
+    def stream(self, hf_repo, data_files, revision=None):
+        if hf_repo == BENCH_REPO:
+            self.calls.append((hf_repo, list(data_files)))
+            for i in range(self.bench_pages):
+                yield {
+                    "image": {"bytes": _jpeg_bytes(), "path": f"b{i}.jpg"},
+                    "xml_content": self.BENCH_XML,
+                    "filename": f"bench_{i}.jpg",
+                    "project_name": BENCH_PROJECT,
+                }
+            return
+        yield from super().stream(hf_repo, data_files, revision)
+
+
+def _benchmark_request(**kw):
+    from atr_training.contracts import BenchmarkSpec, VlmTrainParams
+    params = VlmTrainParams(benchmarks=[BenchmarkSpec(
+        hf_repo=BENCH_REPO, project=BENCH_PROJECT, label="Federal minutes 1848-1903")])
+    return request_with(params=params, **kw)
+
+
+def test_a_benchmark_is_compiled_from_its_own_project_and_scored(store, settings):
+    """The whole point of #23: a number measured on documents the run never saw.
+
+    Before this, the builder called `materialize` with a signature it does not
+    have and read row keys the source does not produce — so the first real
+    benchmark run would have raised TypeError after the training was already
+    paid for. No test exercised it.
+    """
+    source = SourceWithBenchmark({"train": 4, "eval": 2})
+    runner = FakeRunner()
+    job = run_pipeline(store, settings, source, runner, _benchmark_request())
+
+    assert job.status == "completed", job.error
+    jsonl = store.paths(job.id).data / f"benchmark_{BENCH_PROJECT}.jsonl"
+    assert jsonl.is_file(), "no benchmark JSONL was built"
+    rows = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
+    assert rows, "the benchmark JSONL is empty"
+    texts = " ".join(r["text"] for r in rows)
+    assert "Bundesrat" in texts
+    assert "ontfaen" not in texts and "Straten" not in texts, \
+        "the JSONL carries corpus lines: it was built from the wrong project"
+    assert (BENCH_REPO, [f"data/train/{BENCH_PROJECT}/*.parquet"]) in [
+        (repo, files) for repo, files in source.calls], source.calls
+
+
+def test_the_benchmark_is_evaluated_as_its_own_run_and_recorded_separately(store, settings):
+    """Two evaluations, two reports: the split score stays, the benchmark is
+    labelled with what it was measured on."""
+    runner = FakeRunner()
+    job = run_pipeline(store, settings, SourceWithBenchmark({"train": 4, "eval": 2}),
+                       runner, _benchmark_request())
+
+    evaluations = [c for c in runner.commands if runner._kind(c) == "test"]
+    assert len(evaluations) == 2, "the benchmark did not get its own evaluation"
+    scored = [Path(c[c.index("--val-jsonl") + 1]).name for c in evaluations]
+    assert f"benchmark_{BENCH_PROJECT}.jsonl" in scored
+    assert any(name.startswith("val") for name in scored), scored
+
+    assert job.metrics.cer == REPORT["cer"], "the split CER was lost"
+    assert job.metrics.benchmark_cer == REPORT["cer"]
+    assert job.metrics.measured_on == "Federal minutes 1848-1903"
+
+
+def test_a_run_without_benchmarks_is_unchanged(store, settings):
+    """Optional means optional: no extra evaluation, no benchmark fields."""
+    runner = FakeRunner()
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), runner)
+
+    assert len([c for c in runner.commands if runner._kind(c) == "test"]) == 1
+    assert job.metrics.cer == REPORT["cer"]
+    assert job.metrics.benchmark_cer is None and job.metrics.measured_on is None
+
+
+def test_a_benchmark_that_yields_no_page_fails_the_run_rather_than_scoring_nothing(
+        store, settings):
+    """An empty benchmark must not pass as a held-out result."""
+    source = SourceWithBenchmark({"train": 4, "eval": 2}, bench_pages=0)
+    job = run_pipeline(store, settings, source, FakeRunner(), _benchmark_request())
+
+    assert job.status == "failed"
+    assert "produced no pages" in job.error
