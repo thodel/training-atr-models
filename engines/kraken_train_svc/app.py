@@ -53,6 +53,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from atr_training import gpu as gpu_probe
+from atr_training.preflight import free_disk_gb
 from atr_training.access import AccessGuard, key_refusal
 from atr_training.shared_registry import RegistryUnavailable, load_shared_registry
 from atr_training.base_models import BaseModelError, resolve_base_model
@@ -652,6 +653,62 @@ async def gpu() -> dict:
     rows = gpu_probe.card_rows(cards, services_expected=False)
     return {"host": socket.gethostname(), "cards": rows,
             "job_attribution_available": attribution, "known_job_pids": len(job_pids)}
+
+
+#: Where the RAM figures come from. A module constant, not a literal in the
+#: handler, so a test can substitute a fixture — including one that cannot be
+#: read, which is the case a real /proc never produces (#40).
+MEMINFO_PATH = Path("/proc/meminfo")
+
+
+@app.get("/host")
+async def host() -> dict:
+    """Disk free and RAM on this machine.
+
+    Returns free bytes for the four volumes the trainer cares about, and the
+    system's total and available RAM. Missing volumes (path does not exist or
+    is not a mount point) are omitted. A caller that needs a guarantee should
+    check that the expected keys are present.
+
+    The four paths are taken from the settings rather than hard-coded, so they
+    match what this box actually uses regardless of defaults.
+    """
+    settings = _settings()
+    result: dict = {"host": socket.gethostname(), "volumes": {}}
+
+    for label, attr in [
+        ("jobs_root",      settings.jobs_root),
+        ("checkpoint_root", settings.checkpoint_root),
+        ("artefact_cache_root", settings.artefact_cache_root),
+        ("trained_root",   settings.trained_root),
+    ]:
+        try:
+            free_gb = free_disk_gb(attr)
+            result["volumes"][label] = {"free_gb": round(free_gb, 2), "path": str(attr)}
+        except OSError:
+            pass  # path not readable or not a mount point
+
+    # RAM from /proc/meminfo. Named so a test can point it at a fixture: the
+    # issue asks for an injectable path and for partial data rather than a 500,
+    # and a real /proc cannot produce the unreadable case on demand (#40).
+    try:
+        meminfo = MEMINFO_PATH.read_text(encoding="ascii")
+        total_kb = free_kb = None
+        for line in meminfo.splitlines():
+            if line.startswith("MemTotal:"):
+                total_kb = int(line.split()[1])
+            elif line.startswith("MemAvailable:"):
+                free_kb = int(line.split()[1])
+                break
+        if total_kb is not None:
+            result["ram"] = {
+                "total_gb": round(total_kb / 1e6, 2),
+                "available_gb": round(free_kb / 1e6, 2) if free_kb is not None else None,
+            }
+    except (OSError, ValueError):
+        pass  # /proc/meminfo not readable (not Linux?)
+
+    return result
 
 
 @app.post("/jobs", status_code=202)
