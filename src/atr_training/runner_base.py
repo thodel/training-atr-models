@@ -122,109 +122,117 @@ class CommandRunner(Protocol):
 
 
 
-class LocalLogRunner:
-    """Writes stage logs to local NVMe first, mirrors to share as a non-blocking reader.
-
-    When the share is unreachable the mirror thread silently drops its write and
-    continues — the local copy is the authoritative record; the share is a
-    convenience copy for tailing live jobs over HTTP.
-    """
-
-    def __init__(self, local_root: Path, share_root: Path | None = None) -> None:
-        self.local_root = local_root
-        self.share_root = share_root
-
-    def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None) -> int:
-        """Mirror ``share_log`` to ``self.local_root / <relative>`` while the trainer runs."""
-        if self.share_root is not None:
-            local_log = self._local_path(share_log)
-        else:
-            local_log = share_log
-        local_log.parent.mkdir(parents=True, exist_ok=True)
-        full_env = {**os.environ, **(env or {})}
-        logger.info("$ {}", " ".join(cmd))
-        with local_log.open("ab") as local,              share_log.open("ab") as share:
-
-            local.write(f"\n$ {{' '.join(cmd)}}\n".encode())
-            local.flush()
-            share.write(f"\n$ {{' '.join(cmd)}}\n".encode())
-            share.flush()
-
-            # Pipe so the mirror thread can consume without blocking the trainer
-            pipe_read, pipe_write = os.pipe()
-            try:
-                proc = subprocess.Popen(
-                    cmd, stdout=pipe_write, stderr=subprocess.STDOUT, env=full_env
-                )
-                os.close(pipe_write)  # runner owns the write end
-
-                mirror = threading.Thread(
-                    target=self._mirror_reader,
-                    args=(pipe_read, local, share),
-                    daemon=True,
-                )
-                mirror.start()
-
-                exit_code = proc.wait()
-                # Close the pipe so the mirror thread sees EOF and finishes
-                os.close(pipe_read)
-                mirror.join(timeout=5.0)
-                return exit_code
-            finally:
-                try:
-                    os.close(pipe_write)
-                except OSError:
-                    pass
-
-    def _mirror_reader(self, rfd: int, local: IO[bytes], share: IO[bytes]) -> None:
-        try:
-            with os.fdopen(rfd, "rb", closefd=True) as reader:
-                while True:
-                    try:
-                        chunk = reader.read(65536)
-                    except OSError:
-                        break
-                    if not chunk:
-                        break
-                    try:
-                        local.write(chunk)
-                        local.flush()
-                    except OSError:
-                        pass  # local disk full — keep going
-                    try:
-                        share.write(chunk)
-                        share.flush()
-                    except OSError:
-                        pass  # share gone — drop and continue
-        except Exception:
-            pass  # never let the reader crash the process
-
-    def _local_path(self, share_path: Path) -> Path:
-        # /mnt/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs/<job>/logs/<stage>.log
-        #  → <checkpoint_root>/<job>/logs/<stage>.log
-        try:
-            rel = share_path.relative_to(self.share_root)
-        except ValueError:
-            return share_path
-        return self.local_root / rel
-
-
 class SubprocessRunner:
     """Runs a command, streaming stdout+stderr into the stage log.
 
-    Writes to the local NVMe first (beside the checkpoint root) and mirrors
-    every read chunk to the share log. When the share is unreachable the
-    mirror silently drops writes and the local copy remains the authoritative
-    record (#21).
+    **The local copy is the one the process writes (#21).** On asteraix the jobs
+    root is the share, and when the network went on 09.09. the log of the run it
+    killed ended mid-progress-line at step 628, with no traceback: the failure
+    that ended the run also erased its description. The child now writes into a
+    pipe; a reader thread appends every chunk to a log beside the checkpoint
+    root, then mirrors it to the share.
+
+    Two things the issue says must not break, and do not:
+
+    * **Live tailing.** ``/train/jobs/{id}`` and :func:`tail` read the share log
+      while the job runs, so the mirror is per chunk and flushed, not a copy at
+      the end of the stage.
+    * **Throughput.** A share write that fails or hangs must not stop the
+      trainer: the share half is best-effort and dropped on error, and the local
+      half continues.
+
+    Without a distinct local root — a box whose jobs root is already local — it
+    writes the one file directly, exactly as it did before.
     """
 
-    def __init__(self, local_root: Path | None = None) -> None:
-        self._local = LocalLogRunner(
-            local_root=local_root or Path.home() / "atr-cache" / "checkpoints"
-        )
+    def __init__(self, local_root: Path | None = None,
+                 share_root: Path | None = None) -> None:
+        self.local_root = local_root
+        self.share_root = share_root
+
+    def _local_path(self, share_log: Path) -> Path | None:
+        """Where the authoritative copy goes, or ``None`` for "same file".
+
+        ``None`` whenever the two would be the same path or the share log lies
+        outside the share root — mirroring a file onto itself would write every
+        chunk twice.
+        """
+        if self.local_root is None or self.share_root is None:
+            return None
+        try:
+            local = self.local_root / share_log.relative_to(self.share_root)
+        except ValueError:
+            return None
+        return None if local == share_log else local
 
     def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None) -> int:
-        return self._local.run(cmd, share_log, env=env)
+        share_log.parent.mkdir(parents=True, exist_ok=True)
+        full_env = {**os.environ, **(env or {})}
+        header = f"\n$ {' '.join(cmd)}\n".encode()
+
+        local_path = self._local_path(share_log)
+        if local_path is None:
+            with share_log.open("ab") as log:
+                log.write(header)
+                log.flush()
+                proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                        env=full_env, start_new_session=True)
+                return proc.wait()
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        with local_path.open("ab") as local, share_log.open("ab") as share:
+            for handle in (local, share):
+                _write_best_effort(handle, header)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, env=full_env,
+                                    start_new_session=True)
+            # The thread owns proc.stdout: reading it here as well would race for
+            # the same buffer, and closing it from the other side is how a reader
+            # ends up with a file descriptor somebody else has reused.
+            mirror = threading.Thread(target=_mirror, args=(proc.stdout, local, share),
+                                      daemon=True)
+            mirror.start()
+            exit_code = proc.wait()
+            # The child is gone, so the pipe is at EOF and the thread returns on
+            # its own. Bounded anyway: a hung share write must not hold the stage.
+            mirror.join(timeout=MIRROR_JOIN_TIMEOUT_S)
+            return exit_code
+
+
+#: How long a stage waits for the mirror thread after the child has exited. The
+#: thread is a daemon, so a share that never returns costs this much and no more.
+MIRROR_JOIN_TIMEOUT_S = 5.0
+
+
+def _write_best_effort(handle, chunk: bytes) -> None:
+    """Write and flush, or give up on this handle. Never raises.
+
+    The share is the half that disappears; losing it must not cost the run, and
+    must not cost the local copy either.
+    """
+    try:
+        handle.write(chunk)
+        handle.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _mirror(reader, local, share) -> None:
+    """Pump the child's output into the local log, then the share. Never raises.
+
+    Local first, deliberately: it is the copy that has to survive, and a share
+    write that blocks must not delay it.
+    """
+    try:
+        with reader:
+            while True:
+                chunk = reader.read(65536)
+                if not chunk:
+                    return
+                _write_best_effort(local, chunk)
+                _write_best_effort(share, chunk)
+    except Exception:                       # noqa: BLE001 — a logger may not kill a run
+        logger.exception("stage log mirror stopped early")
 
 
 def tail(path: Path, lines: int = 50) -> list[str]:
@@ -303,7 +311,13 @@ class BasePipeline(ABC):
     ) -> None:
         self.store = store
         self.settings = settings
-        self.runner = runner or SubprocessRunner()
+        # The roots, not defaults: without them the runner cannot tell a share
+        # path from a local one, and #21's whole point is which file the child
+        # process writes. On asteraix jobs_root is the share and checkpoint_root
+        # is the NVMe; on a box where both are local the runner notices that the
+        # two paths coincide and writes one file, as before.
+        self.runner = runner or SubprocessRunner(
+            local_root=settings.checkpoint_root, share_root=settings.jobs_root)
         self.source = source or HFPageSource(settings.cache_datasets)
 
     # ── stage bookkeeping ───────────────────────────────────────────────────
