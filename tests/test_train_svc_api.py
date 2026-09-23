@@ -1045,3 +1045,19 @@ def test_startup_says_when_the_gateway_key_is_missing(settings, monkeypatch):
     assert len(missing) == 1 and missing[0].startswith("WARNING")
     assert "ATR_TRAIN_GATEWAY_API_KEY" in missing[0]
     assert lines == []
+
+
+def test_every_route_is_registered_once(client):
+    """Two handlers for one path: the first wins and the second is dead code.
+
+    #64 and #69 each brought a `GET /host`. Both landed, the shutil-based one
+    was registered first, and five of the six /host tests went red on main while
+    each PR had been green on its own.
+    """
+    from collections import Counter
+
+    seen = Counter((route.path, method)
+                   for route in client.app.routes
+                   for method in getattr(route, "methods", ()) or ())
+    duplicates = {key: n for key, n in seen.items() if n > 1}
+    assert not duplicates, f"registered more than once: {duplicates}"
