@@ -5,6 +5,7 @@ touches a GPU or starts a process.
 """
 
 import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -319,6 +320,120 @@ def test_health_reports_the_queue(client):
     assert body["status"] == "ok"
     assert body["gpu"] == 1
     assert body["jobs"]["total"] == 1
+
+
+
+
+def test_host_returns_volume_free_space_and_ram(client, settings, monkeypatch, tmp_path):
+    """GET /host reports disk free for the four volumes and system RAM."""
+    import shutil
+    import unittest.mock
+
+    # Give the settings real-looking paths under tmp_path
+    settings.jobs_root = tmp_path / "jobs"
+    settings.checkpoint_root = tmp_path / "checkpoints"
+    settings.artefact_cache_root = tmp_path / "artefacts"
+    settings.trained_root = tmp_path / "trained"
+    settings.jobs_root.mkdir(parents=True)
+    settings.checkpoint_root.mkdir(parents=True)
+    settings.artefact_cache_root.mkdir(parents=True)
+    settings.trained_root.mkdir(parents=True, exist_ok=True)
+    client.app.state.settings = settings
+
+    # Monkeypatch shutil.disk_usage to return predictable values.
+    def fake_usage(path):
+        class Result:
+            def __init__(self, free):
+                self.free = free
+                self.total = free * 2
+        return Result(free=100 * (10**9))  # 100 GB free
+
+    with unittest.mock.patch("kraken_train_svc.app.free_disk_gb", side_effect=lambda p: 100.0):
+        resp = client.get("/host")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["host"] == socket.gethostname()
+    assert "jobs_root" in body["volumes"]
+    assert "checkpoint_root" in body["volumes"]
+    assert "artefact_cache_root" in body["volumes"]
+    assert "trained_root" in body["volumes"]
+    # Each volume has free_gb and path
+    for v in body["volumes"].values():
+        assert "free_gb" in v
+        assert "path" in v
+    # RAM
+    assert "ram" in body
+    assert "total_gb" in body["ram"]
+    assert "available_gb" in body["ram"]
+
+
+def test_host_omits_unreadable_volumes(client, settings, monkeypatch, tmp_path):
+    """Volumes that raise OSError in free_disk_gb are omitted from the response."""
+    import unittest.mock
+    from atr_training.preflight import free_disk_gb as _real_free_disk_gb
+
+    settings.jobs_root = tmp_path / "jobs"
+    settings.checkpoint_root = tmp_path / "checkpoints"
+    settings.artefact_cache_root = tmp_path / "nonexistent"
+    settings.trained_root = tmp_path / "also-nonexistent"
+    for d in (settings.jobs_root, settings.checkpoint_root):
+        d.mkdir(parents=True)
+    client.app.state.settings = settings
+
+    FAILED = {"nonexistent", "also-nonexistent"}
+
+    def fake_free_disk(path):
+        # free_disk_gb traverses up to the nearest existing parent before calling
+        # disk_usage.  Check the original path name to decide failure — both
+        # non-existent subdirs resolve to the same existing parent.
+        if Path(path).name in FAILED:
+            raise OSError(f"not accessible: {path}")
+        return _real_free_disk_gb(path)
+
+    with unittest.mock.patch("kraken_train_svc.app.free_disk_gb", side_effect=fake_free_disk):
+        resp = client.get("/host")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Only the two whose free_disk_gb succeeded survive
+    assert set(body["volumes"].keys()) == {"jobs_root", "checkpoint_root"}
+
+
+def test_host_returns_ram_from_proc_meminfo(client, settings, monkeypatch, tmp_path):
+    import unittest.mock
+    from pathlib import Path
+
+    for d in (settings.jobs_root, settings.checkpoint_root,
+              settings.artefact_cache_root, settings.trained_root):
+        d.mkdir(parents=True, exist_ok=True)
+    client.app.state.settings = settings
+
+    fake_meminfo = "MemTotal:       64000000 kB\nMemAvailable:   48000000 kB\n"
+    with unittest.mock.patch("pathlib.Path.read_text", return_value=fake_meminfo):
+        resp = client.get("/host")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ram"]["total_gb"] == 64.0
+    assert body["ram"]["available_gb"] == 48.0
+
+
+def test_host_fails_gracefully_when_proc_meminfo_unreadable(client, settings, tmp_path, monkeypatch):
+    for d in (settings.jobs_root, settings.checkpoint_root,
+              settings.artefact_cache_root, settings.trained_root):
+        d.mkdir(parents=True, exist_ok=True)
+    client.app.state.settings = settings
+
+    def read_text_that_fails(*args, **kwargs):
+        raise OSError("no /proc/meminfo")
+    import unittest.mock
+    with unittest.mock.patch("pathlib.Path.read_text", side_effect=read_text_that_fails):
+        resp = client.get("/host")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "ram" not in body  # gracefully absent when unreadable
 
 
 # ── cancel / delete ─────────────────────────────────────────────────────────
