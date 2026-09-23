@@ -622,65 +622,6 @@ def _job_pids(store: JobStore, jobs) -> dict[int, str]:
             if job.pid and not job.is_terminal and store.owns(job)}
 
 
-def _host_body() -> dict:
-    """Disk and RAM for this machine, used by GET /host and by the gateway."""
-    settings = _settings()
-    volumes = [
-        {"name": "jobs_root",      "path": str(settings.jobs_root)},
-        {"name": "checkpoint_root","path": str(settings.checkpoint_root)},
-        {"name": "trained_root",   "path": str(settings.trained_root)},
-        {"name": "artefact_cache", "path": str(settings.artefact_cache_root)},
-    ]
-    disk = []
-    for vol in volumes:
-        try:
-            usage = shutil.disk_usage(vol["path"])
-            disk.append({
-                "name": vol["name"],
-                "path": vol["path"],
-                "total_gb": round(usage.total / (1024**3), 1),
-                "free_gb":  round(usage.free  / (1024**3), 1),
-            })
-        except OSError as exc:
-            disk.append({"name": vol["name"], "path": vol["path"],
-                         "error": str(exc)})
-
-    # RAM: read MemTotal and MemAvailable from /proc/meminfo directly so a
-    # monkeypatched test can substitute a tmp_path.  A missing or unreadable
-    # /proc/meminfo is treated as "unknown" (None) rather than a 500, because
-    # partial data is better than no data for an operator watching this endpoint.
-    ram: dict = {}
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith(("MemTotal:", "MemAvailable:")):
-                    key = line.split(":")[0].strip().lower()
-                    # value is in kB; store as MiB
-                    ram[key] = int(line.split()[1]) // 1024
-    except OSError:
-        ram = {"error": "/proc/meminfo unreadable"}
-
-    return {
-        "host": socket.gethostname(),
-        "disk": disk,
-        "ram_mib": ram,
-    }
-
-
-@app.get("/host")
-async def host() -> JSONResponse:
-    """Disk free and RAM for this machine, for the gateway's /train/host proxy.
-
-    Returns per-volume free space (jobs_root, checkpoint_root, trained_root,
-    artefact_cache_root) and RAM (MemTotal / MemAvailable from /proc/meminfo).
-    A volume that cannot be read appears with an "error" string instead of
-    numbers, so the caller can distinguish "this volume is fine but empty" from
-    "this volume is not readable".  A missing /proc/meminfo returns an error
-    rather than a 500 so monitoring can still see the disk numbers.
-    """
-    return JSONResponse(await asyncio.to_thread(_host_body))
-
-
 @app.get("/gpu")
 async def gpu() -> dict:
     """This machine's cards, every process holding memory, and whose it is.
@@ -722,6 +663,13 @@ MEMINFO_PATH = Path("/proc/meminfo")
 
 @app.get("/host")
 async def host() -> dict:
+    # Off the event loop: four `statvfs` calls against volumes that may be on a
+    # share, and a share that has gone away is exactly when this endpoint is
+    # asked. The idea is from the duplicate route this replaced (#64).
+    return await asyncio.to_thread(_host_body)
+
+
+def _host_body() -> dict:
     """Disk free and RAM on this machine.
 
     Returns free bytes for the four volumes the trainer cares about, and the
