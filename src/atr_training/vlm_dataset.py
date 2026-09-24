@@ -24,11 +24,12 @@ same field, spelled the same way, as in ``lassberg/vlm_training``.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from atr_training.contracts import VLM_PIXEL_BUDGET
+from atr_training.contracts import DEFAULT_GRANULARITY_MIX, VLM_PIXEL_BUDGET
 from atr_training.pagexml import (
     MAX_LINE_ASPECT,
     is_plausible_line,
@@ -43,6 +44,7 @@ __all__ = [
     "AppliedBudget",
     "FALLBACK_CELL_PX",
     "apply_visual_budget",
+    "fit_pixels",
     "Sample",
     "DEFAULT_LINE_PAD",
     "MIN_CROP_PX",
@@ -51,6 +53,7 @@ __all__ = [
     "page_sample",
     "line_samples",
     "block_samples",
+    "mix_samples",
     "DEFAULT_BLOCK_LINES",
     "samples_for",
     "write_jsonl",
@@ -258,6 +261,36 @@ def block_samples(
     return out
 
 
+def mix_samples(by_kind: dict[str, list[Sample]], shares: dict[str, float],
+                seed: int) -> list[Sample]:
+    """Draw from each kind in the given shares, as many as the scarcest allows (#59).
+
+    The three kinds of one corpus are wildly different in size — the 19th-century
+    corpus has ~964k lines, ~192k blocks and ~24k pages — so concatenating them
+    *is* a mix, just one nobody chose: 82 % lines. This takes the largest total
+    for which every kind can supply its share, which means the scarcest kind is
+    used in full and no sample is ever repeated.
+
+    Deterministic in ``seed``: the same corpus and the same shares draw the same
+    samples, which is what makes a mixed run comparable with a single-granularity
+    one.
+    """
+    shares = {k: v for k, v in shares.items() if v > 0}
+    missing = sorted(k for k in shares if not by_kind.get(k))
+    if missing:
+        raise VlmDatasetError(
+            f"granularity_mix asks for {missing} but the corpus has no such samples"
+        )
+    total = min(len(by_kind[k]) / share for k, share in shares.items())
+    rng = random.Random(seed)
+    out: list[Sample] = []
+    for kind in sorted(shares):
+        take = min(round(total * shares[kind]), len(by_kind[kind]))
+        out.extend(rng.sample(by_kind[kind], take))
+    rng.shuffle(out)
+    return out
+
+
 def samples_for(
     xml_paths: Iterable[str | Path],
     granularity: str,
@@ -265,15 +298,23 @@ def samples_for(
     pad: int = DEFAULT_LINE_PAD,
     page_sizes: dict[str, tuple[int, int]] | None = None,
     block_lines: int = DEFAULT_BLOCK_LINES,
+    mix: dict[str, float] | None = None,
+    seed: int = 42,
 ) -> list[Sample]:
     """Build every sample for a set of pages at the requested granularity.
 
     ``page_sizes`` maps an image path (as written into the sample) to its
-    ``(width, height)``; missing entries simply skip the clamp.
+    ``(width, height)``; missing entries simply skip the clamp. ``granularity:
+    mixed`` builds each kind of ``mix`` and then draws them in those shares.
     """
+    if granularity == "mixed":
+        shares = mix or DEFAULT_GRANULARITY_MIX
+        by_kind = {kind: samples_for(list(xml_paths), kind, root, pad, page_sizes, block_lines)
+                   for kind in shares}
+        return mix_samples(by_kind, shares, seed)
     if granularity not in VLM_PIXEL_BUDGET:
         raise VlmDatasetError(
-            f"granularity {granularity!r} is not one of {sorted(VLM_PIXEL_BUDGET)}"
+            f"granularity {granularity!r} is not one of {sorted(VLM_PIXEL_BUDGET)} or 'mixed'"
         )
     out: list[Sample] = []
     for xml_path in xml_paths:
@@ -500,6 +541,22 @@ class AppliedBudget:
         grid = f"{self.cell_px}px cell" + ("" if self.grid_known else ", ASSUMED")
         return (f"{self.knob}={self.max_pixels} -> ~{self.visual_tokens} visual "
                 f"tokens ({grid})")
+
+
+def fit_pixels(image, max_pixels: int):
+    """Scale ``image`` down so ``width * height <= max_pixels``; never up.
+
+    The processor's budget is set once per job, so in a mixed corpus (#59) it is
+    the largest kind's. Everything smaller is fitted here first, which is the only
+    way a line crop and a whole page can share one batch and still each get the
+    budget they were measured at. A crop already under its budget is returned
+    untouched — upscaling would invent detail the scan does not have.
+    """
+    width, height = image.size
+    if width * height <= max_pixels or not width or not height:
+        return image
+    scale = (max_pixels / (width * height)) ** 0.5
+    return image.resize((max(1, int(width * scale)), max(1, int(height * scale))))
 
 
 def apply_visual_budget(processor, max_pixels: int) -> AppliedBudget:

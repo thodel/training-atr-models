@@ -105,6 +105,14 @@ VLM_MAX_NEW_TOKENS: dict[str, int] = {"line": 256, "block": 768, "page": 1536}
 #: A "line" longer than 1,000 characters is not a line — it is a mis-segmented
 #: block, and it was never going to train usefully.
 VLM_MAX_SAMPLE_CHARS: dict[str, int] = {"line": 1000, "block": 3000, "page": 8000}
+#: The kinds a sample can be. ``mixed`` is not one of them: it is a *job* that
+#: draws from all three (#59), and every sample still carries one of these.
+VLM_SAMPLE_KINDS: tuple[str, ...] = ("line", "block", "page")
+#: Shares of a mixed corpus when the job does not say otherwise. Line-heavy on
+#: purpose: the line is what the CER is measured against on the serving side, and
+#: `block-v1` showed that a middle unit already carries much of the range
+#: (training-atr-models#60).
+DEFAULT_GRANULARITY_MIX: dict[str, float] = {"line": 0.5, "block": 0.3, "page": 0.2}
 
 # A model id doubles as a directory name and a registry id — keep it boring.
 MODEL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -327,9 +335,17 @@ class VlmTrainParams(BaseModel):
     #: A model trained at ``line`` reads lines only: whole pages came back at CER
     #: 0.98-1.00 (serving-atr-inference#165). Train at ``block`` or ``page`` for a
     #: model that reads more than one line per call.
-    granularity: Literal["line", "block", "page"] = "line"
-    #: Lines per sample at ``granularity: block``; ignored otherwise.
+    #: ``mixed`` trains on all three at once, in the shares of
+    #: ``granularity_mix`` — the answer to a model that reads one unit and
+    #: collapses (line-trained) or over-generates (page-trained) on the others
+    #: (#59, measured in #60).
+    granularity: Literal["line", "block", "page", "mixed"] = "line"
+    #: Lines per sample at ``granularity: block`` and in a mix; ignored otherwise.
     block_lines: int = Field(default=6, ge=1, le=16)
+    #: Shares per sample kind at ``granularity: mixed``; None takes
+    #: :data:`DEFAULT_GRANULARITY_MIX`. Refused for any other granularity, so a
+    #: mix that is silently ignored cannot happen.
+    granularity_mix: dict[str, float] | None = None
     prompt: str = VLM_PROMPT
 
     # ── QLoRA ────────────────────────────────────────────────────────────────
@@ -450,15 +466,61 @@ class VlmTrainParams(BaseModel):
     def effective_batch_size(self) -> int:
         return self.batch_size * self.accumulate_grad_batches
 
+    def kinds(self) -> tuple[str, ...]:
+        """The sample kinds this job trains on, in a stable order."""
+        if self.granularity != "mixed":
+            return (self.granularity,)
+        return tuple(k for k in VLM_SAMPLE_KINDS if k in self.mix())
+
+    def mix(self) -> dict[str, float]:
+        """The shares per kind, normalised to 1. A single granularity is its own mix."""
+        if self.granularity != "mixed":
+            return {self.granularity: 1.0}
+        raw = self.granularity_mix or DEFAULT_GRANULARITY_MIX
+        total = sum(raw.values())
+        return {k: v / total for k, v in raw.items()}
+
     def pixel_budget(self) -> int:
-        return self.max_pixels or VLM_PIXEL_BUDGET[self.granularity]
+        """The ceiling for the processor. Each kind is fitted to its own budget
+        before it reaches the processor (``kind_budgets``), so this is the largest
+        of them — a smaller ceiling would shrink the page samples a second time."""
+        if self.max_pixels:
+            return self.max_pixels
+        return max(VLM_PIXEL_BUDGET[k] for k in self.kinds())
+
+    def kind_budgets(self) -> dict[str, int]:
+        """Pixels per sample kind, which is what a mixed batch needs."""
+        if self.max_pixels:
+            return {k: self.max_pixels for k in self.kinds()}
+        return {k: VLM_PIXEL_BUDGET[k] for k in self.kinds()}
 
     def sequence_budget(self) -> int:
-        return self.max_seq_len or VLM_MAX_SEQ_LEN[self.granularity]
+        if self.max_seq_len:
+            return self.max_seq_len
+        return max(VLM_MAX_SEQ_LEN[k] for k in self.kinds())
 
     def generation_budget(self) -> int:
         """How many tokens evaluation may generate for one sample."""
-        return self.max_new_tokens or VLM_MAX_NEW_TOKENS[self.granularity]
+        if self.max_new_tokens:
+            return self.max_new_tokens
+        return max(VLM_MAX_NEW_TOKENS[k] for k in self.kinds())
+
+    @model_validator(mode="after")
+    def _check_mix(self) -> "VlmTrainParams":
+        if self.granularity_mix is not None:
+            if self.granularity != "mixed":
+                raise ValueError(
+                    f"granularity_mix is only meaningful at granularity: mixed, "
+                    f"not {self.granularity!r}"
+                )
+            unknown = sorted(set(self.granularity_mix) - set(VLM_SAMPLE_KINDS))
+            if unknown:
+                raise ValueError(f"granularity_mix: unknown kind(s) {unknown}; "
+                                 f"pick from {list(VLM_SAMPLE_KINDS)}")
+            if not self.granularity_mix or any(v <= 0 for v in self.granularity_mix.values()):
+                raise ValueError("granularity_mix: every share must be greater than 0 "
+                                 "(leave a kind out instead of asking for none of it)")
+        return self
 
 
 class TrOCRTrainParams(BaseModel):

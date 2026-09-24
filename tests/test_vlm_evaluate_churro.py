@@ -41,7 +41,7 @@ def run(tmp_path, monkeypatch):
     seen: list[dict] = []
     outputs = iter([GOOD, CUT])
 
-    def fake_transcribe(model, processor, image_path, prompt, max_new_tokens, system=None):
+    def fake_transcribe(model, processor, image_path, prompt, max_new_tokens, system=None, **kwargs):
         seen.append({"prompt": prompt, "system": system})
         return next(outputs)
 
@@ -112,7 +112,7 @@ def test_the_plain_template_scores_exactly_as_before(tmp_path, monkeypatch):
                    encoding="utf-8")
     seen = []
 
-    def fake_transcribe(model, processor, image_path, prompt, max_new_tokens, system=None):
+    def fake_transcribe(model, processor, image_path, prompt, max_new_tokens, system=None, **kwargs):
         seen.append((prompt, system))
         return "<HistoricalDocument><Page><Body><Line>abc</Line></Body></Page></HistoricalDocument>"
 

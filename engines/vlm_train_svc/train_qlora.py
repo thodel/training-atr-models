@@ -27,6 +27,7 @@ from atr_training.continuation import ContinuationPolicy, should_stop
 from atr_training.vlm_dataset import (
     CHAT_TEMPLATE_KWARGS,
     apply_visual_budget,
+    fit_pixels,
     chat_example,
     read_jsonl,
 )
@@ -41,7 +42,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--data-root", required=True,
                    help="what the relative image paths in the JSONL resolve against")
     p.add_argument("--prompt", required=True)
-    p.add_argument("--granularity", default="line", choices=["line", "block", "page"])
+    p.add_argument("--granularity", default="line",
+                   choices=["line", "block", "page", "mixed"])
+    p.add_argument("--kind-pixels", default=None,
+                   help="per-kind visual budget for a mixed corpus, e.g. "
+                        "line=262144,block=1048576,page=2097152")
     p.add_argument("--max-pixels", type=int, required=True)
     p.add_argument("--max-seq-len", type=int, required=True)
     p.add_argument("--seed", type=int, default=42)
@@ -103,6 +108,19 @@ class JsonlSamples:
                 "source_type": sample.source_type}
 
 
+def _parse_kind_pixels(raw: str | None) -> dict[str, int]:
+    """``line=262144,page=2097152`` -> ``{"line": 262144, "page": 2097152}``."""
+    if not raw:
+        return {}
+    out: dict[str, int] = {}
+    for part in raw.split(","):
+        kind, _, value = part.partition("=")
+        if not value.strip().isdigit():
+            raise SystemExit(f"--kind-pixels: {part!r} is not <kind>=<pixels>")
+        out[kind.strip()] = int(value)
+    return out
+
+
 class HTRCollator:
     """Builds one batch: chat template + processed images, loss on the answer only.
 
@@ -111,17 +129,21 @@ class HTRCollator:
     without this the loss is dominated by text that is identical in every sample.
     """
 
-    def __init__(self, processor, prompt: str, max_seq_len: int) -> None:
+    def __init__(self, processor, prompt: str, max_seq_len: int,
+                 kind_pixels: dict[str, int] | None = None) -> None:
         self.processor = processor
         self.prompt = prompt
         self.max_seq_len = max_seq_len
         self.ignore_index = -100
         #: Samples that tokenized past ``max_seq_len``. Counted, never truncated.
         self.over_budget = 0
-        # The visual-token budget is set once on the processor, not per sample:
-        # a job has a single granularity, so every sample in it is the same kind.
-        # (Samples still carry ``source_type``, which is what a mixed set would
-        # need and what keeps the JSONL readable next to lassberg's.)
+        # The processor's own budget is set once, to the largest kind in the job.
+        # With one granularity that is the whole story. In a mixed corpus (#59) it
+        # is not: a line crop must not arrive with a page's budget, or the mix
+        # trains at budgets nobody measured. So each sample is fitted to its own
+        # kind's budget *before* the processor sees it, by `source_type`, which
+        # every sample has carried since lassberg.
+        self.kind_pixels = dict(kind_pixels or {})
 
         # The assistant header — "<|im_start|>assistant\n" for Qwen — read off the
         # template rather than hardcoded, by diffing the same conversation with and
@@ -154,7 +176,9 @@ class HTRCollator:
 
         images, texts = [], []
         for sample in batch:
-            images.append(Image.open(sample["image"]).convert("RGB"))
+            image = Image.open(sample["image"]).convert("RGB")
+            budget = self.kind_pixels.get(sample.get("source_type"))
+            images.append(fit_pixels(image, budget) if budget else image)
             texts.append(self.processor.apply_chat_template(
                 chat_example(self.prompt, sample["text"]), tokenize=False,
                 add_generation_prompt=False, **CHAT_TEMPLATE_KWARGS,
@@ -589,7 +613,10 @@ def main(argv: list[str] | None = None) -> int:
           f"granularity={args.granularity} budget: {budget}", flush=True)
 
     model = build_model(args, processor)
-    collator = HTRCollator(processor, args.prompt, args.max_seq_len)
+    kind_pixels = _parse_kind_pixels(args.kind_pixels)
+    if kind_pixels:
+        print(f"per-kind visual budget: {kind_pixels}", flush=True)
+    collator = HTRCollator(processor, args.prompt, args.max_seq_len, kind_pixels)
 
     ceiling_epochs = max(args.epochs, args.max_epochs or args.epochs)
     steps_per_epoch = max(1, math.ceil(
