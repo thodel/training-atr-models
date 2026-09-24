@@ -1,12 +1,24 @@
 """Resource guards — refuse a job that cannot succeed instead of discovering it
 three hours in.
 
-Two hard limits on asterAIx (``docs/asteraix-environment.md``):
+These limits were written for the shared box, where a training run competed with
+the serving engines for one card. Since 16.09.2026 training has its own machine,
+and what they guard against on asteraix (``docs/INFRASTRUCTURE.md``) is this:
 
-* **GPU 1 is shared with the serving engines** (kraken/trocr/party ≈ 10 GB) and,
-  when a vLLM model is resident, with an 18 GB 8 B model. Training into whatever
-  is left is how both sides OOM.
-* **``/`` is ~80 % full**, ~356 GB free, and the ground-truth dataset is ~6.6 TB.
+* **The card.** Both A40s (46068 MiB each) are free for training and a job runs
+  on the one ``ATR_TRAIN_GPU`` names. The two machines share no card, and the
+  coordination between them was removed on both sides
+  (serving-atr-inference#139) — so this check is the only thing between a queued
+  job and an OOM. What it finds is one of ours: another run, or a process a
+  finished one left behind (``GET /gpu`` counts those as ``unaccounted_mib``).
+* **The disk.** The job store is on the CIFS share (12 T, ~1.3 T free); the
+  checkpoints, ``TMPDIR`` and the compiled corpora are on local disk (``/``:
+  1.8 T, 74 % used on 16.09.2026). A compiled corpus is tens of GB and the
+  ground truth it is cut from is ~6.6 TB, which is what the 50 GB of headroom
+  demanded at submit is for.
+* **CIFS semantics.** ``TMPDIR`` and the ``datasets`` Arrow cache must be on
+  local disk — the two checks at the bottom of this module say what happens when
+  they are not, and both were written after it had already happened.
 
 Disk is checked at submit (it will not fix itself); VRAM is checked at start,
 because a busy GPU is exactly what a queue is for.
@@ -104,7 +116,8 @@ def check_vram(gpu: int, min_free_mb: int, gpus: list[GpuInfo] | None = None) ->
     if info.free_mb < min_free_mb:
         raise PreflightError(
             f"GPU {gpu} has {info.free_mb} MB free, need {min_free_mb} MB. Something else "
-            "is resident — check the gateway's vLLM residency (/health) before training."
+            "is resident — GET /gpu names every process on the card and which job it "
+            "belongs to; memory nothing accounts for is a leftover of a finished run."
         )
     return info
 
