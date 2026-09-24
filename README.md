@@ -51,6 +51,67 @@ Share und die Werte, die auf beiden Maschinen übereinstimmen müssen — steht 
 Serving-Repo:
 [`docs/INFRASTRUCTURE.md`](https://github.com/thodel/serving-atr-inference/blob/main/docs/INFRASTRUCTURE.md).
 
+## Wie ein Lauf gedacht ist
+
+**Eine Hülle, drei Engines.** Ein Job ist `engine` + `dataset` + `params`
+(`contracts.py`) — bewusst engine-agnostisch. kraken, `vllm` (QLoRA auf einem
+Qwen3-VL-Modell) und `trocr` teilen sich den Job-Store, den Zustandsautomaten,
+die fünf Stufen `prepare → compile → train → test → register` und die
+**gesamte** prepare-Stufe: dieselben Seiten aus derselben HuggingFace-Auswahl,
+mit demselben Seed auf Seitenebene geteilt. Ein Backend liefert vier Stufenkörper
+und ein `params`-Modell, sonst nichts (`runner_base.py`, `backends.py`).
+
+**Ein Dienst, eine Queue, ein GPU-Guard.** `max_concurrent: 1`. Zwei Dienste
+würden jeweils gegen die eigene Job-Liste prüfen und zwei Läufe in dieselbe Karte
+starten. (Dass asteraix zwei Karten hat und ein Job sie noch nicht einzeln
+zugeteilt bekommt, ist #12.)
+
+**Ein venv pro Backend — und der Dienst importiert keines davon.** kraken 7.0.2
+und ein `transformers`, das Qwen3-VL kennt, haben keinen gemeinsamen
+Abhängigkeitsbaum. Der Launcher startet jeden Lauf stattdessen als
+**abgekoppeltes Kind** (`start_new_session`) des Interpreters, der zu dieser
+Engine gehört. Ein `systemctl --user restart atr-train` beendet damit keinen
+dreistündigen Lauf.
+
+**Zustand auf der Platte, nicht im Speicher.** Was ein Runner weiss, schreibt er
+ins Job-Verzeichnis, während er läuft; der Dienst liest es zurück. Ein Neustart
+kann deshalb über Läufe Auskunft geben, die er nicht gestartet hat — dieselbe
+Begründung, aus der der Bot auf tei sich wieder an einen laufenden Job hängen
+können muss.
+
+**Lieber vorher verweigern als drei Stunden später scheitern.** Der Datensatz
+wird vor dem Einreihen gegen den Hub geprüft (Repo, Revision, jedes genannte
+Projekt, Layout, Plattenbedarf *der Auswahl*), und `?verify_only=true` liefert
+denselben Bericht, ohne irgendetwas einzureihen — nachdem genau dieser Parameter
+einmal einen mehrtägigen Lauf gestartet hat (#59). Der Schrittzahl-Guard weist
+eine Konfiguration ab, deren Zeilen, Batchgrösse und Epochen zu wenige
+Optimizer-Schritte ergeben, **bevor** GPU-Zeit anfällt, und schreibt die
+Rechnung in die Fehlermeldung. Platte wird beim Einreichen geprüft, VRAM beim
+Start — denn eine belegte Karte ist genau das, wofür die Queue da ist
+(`preflight.py`).
+
+**Kein stiller Erfolg.** Ein Lauf ohne lesbares CER gilt als gescheitert, nicht
+als fertig. Ein kompiliertes Korpus wird über die *Auswahl* geschlüsselt
+wiederverwendet (Repo, Revision, Projekte, Split, Partition, Seed, Granularität
+— nie über Trainingsparameter), weil dasselbe 41-GB-Korpus zwischen dem 24.
+August und dem 5. September achtmal gebaut wurde (#109); ein Artefakt aus einer
+ungepinnten Revision verfällt nach sieben Tagen, weil „frisch kompiliert“ zu
+melden und Seiten vom letzten Monat auszuliefern schlimmer wäre als die
+Verschwendung.
+
+**Registriert heisst nicht ausgeliefert.** Ein trainiertes Modell wird
+`enabled: false` in die Registry auf dem Share geschrieben; erst eine **echte
+Seite durch die echte Engine** — eine zurückgehaltene Validierungsseite an
+`/ocr` des Gateways — schaltet es frei (`promote.py`). Nicht bestehen lässt den
+Job nicht scheitern: das Modell ist trainiert, gemessen und registriert, es wird
+nur nicht beworben.
+
+**Veröffentlichen entscheidet nicht der Lauf.** Ein Push auf den Hub ist nach
+aussen gerichtet und praktisch unumkehrbar, also ist die Auto-Publikation
+standardmässig aus und verweigert getrennt und nachlesbar (`autopublish.py`);
+ohne `metadata.json` — also ohne Herkunft und Fehlerrate — wird gar nichts
+hochgeladen.
+
 ## Warum getrennt
 
 Bis zum Split liefen Serving und Training auf **einer** Maschine und teilten sich
@@ -80,6 +141,23 @@ Drei HTTP-Kanten, keine geteilte Python-Abhängigkeit:
 
 Die **Gewichte** queren gar kein Netz: beide Maschinen mounten
 `/mnt/wbkolleg_dh_1`.
+
+Wer am Anfang der Kette steht, sieht von dieser Maschine nichts: der Bot in
+[`agentic_historian`](https://github.com/thodel/agentic_historian) spricht
+`/train/*` auf dem Gateway, mit dem Schlüssel, den er ohnehin für die Erkennung
+hält, und weiss nicht, auf welchem Host der Trainer läuft. Seine Seite ist
+heute lesend — `/atr_jobs`, `/atr_job`, `/atr_gpu` und ein Watcher, der einen
+gescheiterten Lauf und unerklärten Grafikspeicher je einmal meldet; Läufe zu
+starten ist dort entworfen und nicht gebaut. Der Trainer selbst bedient
+`/jobs`, `/health` und `/gpu` — das `/train`-Präfix setzt der Proxy davor.
+
+Der Rückweg eines fertigen Modells läuft ebenfalls nicht über Code, sondern
+über den Share: wir schreiben `registry/trained/ID.yaml` und die Gewichte
+dorthin, der Gateway liest die Registrierung (serving-atr-inference#138) und liefert das Modell ohne
+Neustart aus, und der nächste `GET /models` eines Clients zeigt es. Umgekehrt
+kommt die kuratierte `models.yaml` denselben Weg zu uns, als **Datei** statt als
+Python-Import — eine Kopie im Repo veraltet wortlos, und der Import quer über
+die Maschinengrenze gibt es seit dem Split nicht mehr (`shared_registry.py`).
 
 ## Zugriff auf den Trainer (#13)
 
