@@ -54,7 +54,7 @@ def test_check_vram_passes_when_the_card_is_free():
 
 
 def test_check_vram_refuses_a_busy_card():
-    """An 8B vLLM model resident on GPU 1 leaves no room to train beside it."""
+    """A card still holding another run's memory leaves no room to train beside it."""
     gpus = [GpuInfo(0, 35000, 46068), GpuInfo(1, 6000, 46068)]
     with pytest.raises(PreflightError, match="6000 MB free, need 12000"):
         check_vram(1, 12000, gpus)
