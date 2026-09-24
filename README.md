@@ -37,7 +37,7 @@ flowchart TB
   venvs -- "uploads: trained models, page datasets<br/>private · by hand or auto-publish" --> hf
 ```
 
-Beschrieben in zwei Dokumenten (englisch):
+Beschrieben in drei Dokumenten (englisch):
 
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — asteraix im Detail: der
   Dienst und sein Launcher, die drei venvs, der Lebenslauf eines Jobs, was
@@ -45,6 +45,10 @@ Beschrieben in zwei Dokumenten (englisch):
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — Deploy, Abbrechen und neu
   Einreichen, `.env` ändern, Logs, Registrierung von Hand, fremde Job-Einträge
   schliessen.
+- [`docs/BASE_MODEL_LADDER.md`](docs/BASE_MODEL_LADDER.md) — welches
+  Basismodell und welche Grösse als Nächstes: was gemessen ist, warum eine
+  Matrix bezahlbar ist (ein prepare, N Arme), die Kandidaten inklusive
+  Qwen3.8 und Gemma 4, und in welcher Reihenfolge gerechnet wird.
 
 Das **Gesamtbild** beider Maschinen — idhefix, die Clients, alle Kanten, das
 Share und die Werte, die auf beiden Maschinen übereinstimmen müssen — steht im
