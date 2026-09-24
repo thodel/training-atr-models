@@ -2,7 +2,7 @@
 
 There is **one** training service (``atr-train`` on :8204) supervising every
 backend, not one per engine. That is not tidiness — it is the GPU. Training and
-inference do not share a card politely (docs/TRAINING_PLAN.md §5), so exactly one
+inference do not share a card politely (serving-atr-inference/docs/TRAINING_PLAN.md §5), so exactly one
 training job may run at a time; two services would each enforce
 ``max_concurrent=1`` against their own job list and cheerfully start a kraken run
 and a VLM run into the same 45 GB. One supervisor, one queue, one guard.

@@ -1,6 +1,6 @@
 """Resolving ``TrainRequest.base_model`` — and refusing a bad one at submit (#76).
 
-`docs/TRAINING_PLAN.md` §4 promised that ``base_model`` accepts "a registry id or a
+`serving-atr-inference/docs/TRAINING_PLAN.md` §4 promised that ``base_model`` accepts "a registry id or a
 Zenodo DOI". It accepted only a DOI: the kraken runner handed the string straight to
 ``htrmopo.get_model``, so a perfectly reasonable request died in the **train** stage,
 after prepare and compile had already run —

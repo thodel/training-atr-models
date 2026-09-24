@@ -298,8 +298,13 @@ class TrainerSettings(BaseSettings):
 
     # ── the promotion gate (#36) ──────────────────────────────────────────
     #: The gate posts one held-out page here. Through the gateway, not straight
-    #: to the engine: "can this box serve it" is a question about the path real
-    #: clients take.
+    #: to the engine: "can the serving box serve it" is a question about the path
+    #: real clients take.
+    #:
+    #: The default below is the loopback of the shared box and is wrong on
+    #: asteraix, where the gateway is a second machine. ``.env`` sets
+    #: ``ATR_TRAIN_GATEWAY_URL=http://130.92.59.240:8200``; without it the gate
+    #: simply fails and the model stays registered-but-disabled.
     gateway_url: str = "http://127.0.0.1:8200"
     #: The gateway's own ``ATR_API_KEY`` on idhefix, under this name here — not
     #: ``api_key`` above, which guards the other direction (#9). Empty disables
@@ -318,8 +323,9 @@ class TrainerSettings(BaseSettings):
     gateway_registry_wait_s: float = Field(default=90.0, ge=0)
     gateway_registry_retry_s: float = Field(default=10.0, gt=0)
 
-    # ── guards (docs/TRAINING_PLAN.md §5) ─────────────────────────────────
-    #: PHYSICAL GPU index. GPU 0 is the shared RAG GPU and stays untouched;
+    # ── guards (serving-atr-inference/docs/TRAINING_PLAN.md §5) ─────────────────────────────────
+    #: PHYSICAL GPU index. Both of asteraix's cards are free for training and a
+    #: job takes this one by convention (#12 allocates a card per job);
     #: nvidia-smi enumerates physically and ignores CUDA_VISIBLE_DEVICES, so this
     #: is the number preflight queries. The child gets CUDA_VISIBLE_DEVICES=<gpu>,
     #: which makes it cuda:0 inside the process.
@@ -331,13 +337,13 @@ class TrainerSettings(BaseSettings):
     #: optimizer state. Checked instead of ``min_free_vram_mb`` for vllm jobs, so a
     #: VLM job queues rather than OOMing on a card that would have fit a kraken run.
     vlm_min_free_vram_mb: int = 24000
-    #: `/` is ~80 % full on asterAIx — never materialize a dataset into the last
-    #: of it.
+    #: Headroom demanded in the job store — on asteraix that is the research
+    #: share, not local disk. Never materialize a dataset into the last of it.
     min_free_disk_gb: int = 50
     #: Pages materialized before a chunk is compiled and deleted (#39). 0 = off,
     #: which materializes the whole selection first — right for the 238-page test
     #: case, impossible for the full corpus: 548,322 pages is ~6.96 TB of pages on
-    #: top of a ~6.6 TB hub cache, on a share with ~6.2 TB free. With chunking on,
+    #: top of a ~6.6 TB hub cache, on a share with ~1.3 TB free (16.09.2026). With chunking on,
     #: peak page-disk is one chunk instead of the whole selection.
     chunk_pages: int = 0
 

@@ -5,8 +5,10 @@ per-project parquet directories::
 
     data/<split>/<project_name>/<timestamp>-<shard>.parquet
 
-asterAIx has ~356 GB free, so a job that calls ``load_dataset(repo)`` without
-``data_files`` is not slow — it is a filled disk. Every selection therefore goes
+No filesystem here holds that: asteraix has ~470 GB on ``/`` and the shared HF
+cache it downloads into has ~1.3 TB left of the research share (16.09.2026,
+``docs/INFRASTRUCTURE.md``). A job that calls ``load_dataset(repo)`` without
+``data_files`` is therefore not slow — it is a filled disk. Every selection therefore goes
 through :func:`data_files_for`, which refuses an empty selection outright.
 
 The row helpers below know the column layout (``image`` is an
@@ -406,7 +408,7 @@ def data_files_for(spec: DatasetSpec) -> dict[str, list[str]]:
     resolved = expand_all_projects(spec) if spec.all_projects else spec
 
     if not resolved.train_projects:
-        # Restored guard (docs/TRAINING_PLAN.md §1): an empty selection must never
+        # Restored guard (serving-atr-inference/docs/TRAINING_PLAN.md §1): an empty selection must never
         # silently mean "everything". #40 made this the whole split, which is
         # inconsistent with its own `all_projects` — that path requires max_pages,
         # so the *explicit* way to ask for everything is capped while the implicit
@@ -481,7 +483,7 @@ def hub_cache_dir(hf_repo: str, hf_home=None):
     the hub itself uses, and the one ``lassberg/vlm_training`` checks with
     ``_repo_cache_dir`` — "same name = same dataset" is answered by the presence
     of that directory. We follow it rather than inventing a parallel copy: on
-    asterAIx ``~/.cache/huggingface/hub`` is a symlink to
+    asteraix ``~/.cache/huggingface/hub`` is a symlink to
     ``/mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub``, so a dataset another
     project already pulled is simply there.
     """

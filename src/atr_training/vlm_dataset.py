@@ -501,7 +501,7 @@ def chat_example(prompt: str, text: str | None = None,
 
     ``system`` is for models trained with an instruction in the system turn and
     nothing but the image in the user turn — CHURRO's template is exactly that
-    (docs/CHURRO_PLAN.md §1.1). An empty ``prompt`` then means *no* text part in
+    (serving-atr-inference/docs/CHURRO_PLAN.md §1.1). An empty ``prompt`` then means *no* text part in
     the user turn, not an empty one: a stray empty string is still a token
     sequence the model never saw in training.
     """

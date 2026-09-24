@@ -64,7 +64,7 @@ __all__ = [
     "record_publication",
 ]
 
-#: Where the group publishes its HTR work (docs/TRAINING_PLAN.md §1).
+#: Where the group publishes its HTR work (serving-atr-inference/docs/TRAINING_PLAN.md §1).
 DEFAULT_ORG = "dh-unibe"
 
 #: Linked from every card, so a reader can find how the weights were produced.

@@ -145,7 +145,7 @@ def check_convergence(
             f"over {budget.epochs} epochs that is {budget.total_steps:,} optimizer "
             f"steps, {start}, against a floor of {floor:,}. A run this short does not "
             f"converge — it was 400 steps that produced CER 0.98 on the Thun set "
-            f"(see docs/TRAINING_PLAN.md §9a). Either {remedy}, lower batch_size to "
+            f"(see serving-atr-inference/docs/TRAINING_PLAN.md §9a). Either {remedy}, lower batch_size to "
             f"~{suggested_batch} (≈{plan_steps(budget.train_lines, suggested_batch, budget.epochs).total_steps:,} "
             f"steps), or raise epochs to ~{needed_epochs}. Submit with "
             f'"force": true to run it anyway.'

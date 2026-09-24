@@ -1511,7 +1511,7 @@ def run_job(pipeline_cls: type[BasePipeline], description: str,
     logger.add(store.paths(args.job_id).logs / "runner.log", level="INFO")
 
     # Set by the batch script on a preemptable queue. Off by default, so the
-    # asterAIx service keeps treating SIGTERM as "stop this job".
+    # asteraix service keeps treating SIGTERM as "stop this job".
     preemptable = os.environ.get("ATR_TRAIN_PREEMPTABLE", "") not in ("", "0", "false")
     install_cancel_handler(preemptable=preemptable)
 
