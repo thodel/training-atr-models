@@ -51,6 +51,7 @@ def _common(params: VlmTrainParams, base_model: str, data_root: Path | str) -> l
         "--prompt", params.prompt,
         "--granularity", params.granularity,
         "--max-pixels", str(params.pixel_budget()),
+        "--kind-pixels", ",".join(f"{k}={v}" for k, v in sorted(params.kind_budgets().items())),
         "--max-seq-len", str(params.sequence_budget()),
         "--seed", str(params.seed),
         "--device", params.device,

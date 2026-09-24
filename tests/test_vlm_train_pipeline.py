@@ -741,6 +741,24 @@ def test_block_lines_is_part_of_the_key_at_block_granularity_only(store, setting
     assert line_other.digest == line.digest
 
 
+def test_a_mix_is_part_of_the_key_and_registers_at_page_level(store, settings):
+    """Two mixes are two corpora; and a mixed model that saw pages can serve them."""
+    from atr_training.contracts import VlmTrainParams
+    from vlm_train_svc.runner import Pipeline, _sample_char_cap
+
+    pipeline = Pipeline(store, settings, runner=FakeRunner(),
+                        source=FakeSource({"train": 4, "eval": 2}))
+    half = pipeline._cache_key(store.create(request_with(
+        params=VlmTrainParams(granularity="mixed", granularity_mix={"line": 1, "page": 1}))))
+    other = pipeline._cache_key(store.create(request_with(
+        params=VlmTrainParams(granularity="mixed", granularity_mix={"line": 3, "page": 1}))))
+    assert half.digest != other.digest
+    assert half.describes["extra"]["granularity_mix"] == {"line": 0.5, "page": 0.5}
+    # the cap has to admit the longest kind, or compile drops every page
+    assert _sample_char_cap(VlmTrainParams(granularity="mixed")) == 8000
+    assert _sample_char_cap(VlmTrainParams()) == 1000
+
+
 # ── which code ran (#147) ───────────────────────────────────────────────────
 def _pin_code(monkeypatch, created: str, running: str) -> None:
     from atr_training import codeversion, runner_base

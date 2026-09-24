@@ -62,6 +62,16 @@ from atr_training.vlm_dataset import (
 __all__ = ["Pipeline", "main"]
 
 
+def _sample_char_cap(params) -> int:
+    """The longest transcription compile keeps, over the kinds this job trains on.
+
+    At a mix that is the largest of them: a page sample legitimately carries what
+    a line sample never would, and capping a mix at the line's 1000 would silently
+    drop every page.
+    """
+    return max(VLM_MAX_SAMPLE_CHARS[k] for k in params.kinds())
+
+
 class Pipeline(BasePipeline):
     """Executes one VLM QLoRA job."""
 
@@ -120,13 +130,16 @@ class Pipeline(BasePipeline):
         params = job.request.params
         extra = {
             "granularity": params.granularity,
-            "max_sample_chars": VLM_MAX_SAMPLE_CHARS[params.granularity],
+            "max_sample_chars": _sample_char_cap(params),
             "min_train_chars": params.min_train_chars,
         }
-        # Only at block granularity, so every existing line and page key -- and
-        # the cache entries behind them -- stays exactly what it was.
-        if params.granularity == "block":
+        # Only where they change the corpus, so every existing line and page key --
+        # and the cache entries behind them -- stays exactly what it was.
+        if "block" in params.kinds():
             extra["block_lines"] = params.block_lines
+        if params.granularity == "mixed":
+            extra["granularity_mix"] = params.mix()
+            extra["seed"] = params.seed
         return key_for_specs(job.request.datasets, self.engine, extra=extra)
 
     def _adopt_cached(self, job: TrainJob, entry) -> tuple[Path, Path]:
@@ -186,13 +199,14 @@ class Pipeline(BasePipeline):
         out: list[Path] = []
         total = 0
 
-        cap = VLM_MAX_SAMPLE_CHARS[params.granularity]
+        cap = _sample_char_cap(params)
         floor = params.min_train_chars
         dropped_total = longest = short_total = 0
 
         for name, manifest in (("train", pages_train), ("val", pages_val)):
             samples = samples_for(read_manifest(manifest), params.granularity, root=paths.root,
-                                  block_lines=params.block_lines)
+                                  block_lines=params.block_lines,
+                                  mix=params.granularity_mix, seed=params.seed)
             # Before cropping: a sample too long to afford is dropped whether or
             # not its image would have cropped cleanly, and cropping it first
             # would be work thrown away. The *validation* side matters as much as
@@ -221,7 +235,9 @@ class Pipeline(BasePipeline):
                         "floor is longer than the longest line in the corpus."
                     )
 
-            if params.granularity != "page":        # line and block are cut out
+            if params.granularity != "page":        # line and block are cut out;
+                # page samples in a mix pass through untouched (bbox=None), so the
+                # one call handles all three kinds.
                 samples = write_crops(samples, paths.root, paths.data / "crops" / name)
             jsonl = paths.data / f"{name}.jsonl"
             written = write_jsonl(jsonl, samples)
@@ -505,7 +521,7 @@ class Pipeline(BasePipeline):
             # The serving registry knows `line` and `page` only. A block model
             # reads crops of several lines, which serving does not cut yet (#57),
             # so it is registered at the level it can be served at today.
-            "level": "page" if params.granularity == "page" else "line",
+            "level": "page" if "page" in params.kinds() else "line",
             # The prompt travels with the model: serving it with different
             # wording than it was tuned on is a silent distribution shift.
             "prompt": params.prompt,

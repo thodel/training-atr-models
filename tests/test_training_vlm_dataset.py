@@ -4,11 +4,13 @@ All pure logic, so it runs in the repo venv with no torch, no GPU and no images
 beyond the tiny JPEGs the tests write themselves.
 """
 
+import collections
 import json
 
 import pytest
 
 from atr_training.contracts import (
+    DEFAULT_GRANULARITY_MIX,
     VLM_MAX_NEW_TOKENS,
     VLM_MAX_SAMPLE_CHARS,
     VLM_MAX_SEQ_LEN,
@@ -22,6 +24,8 @@ from atr_training.vlm_dataset import (
     VlmDatasetError,
     block_samples,
     chat_example,
+    fit_pixels,
+    mix_samples,
     drop_long_samples,
     drop_short_samples,
     line_samples,
@@ -639,3 +643,90 @@ def test_the_nineteenth_century_corpus_is_barely_touched():
     # same code, prompt and evaluator that gave medieval 0.53.
     corpus = [_sample(n) for n in (23, 27, 30, 30, 32, 35, 28, 31)]
     assert drop_short_samples(corpus, 4).dropped == 0
+
+
+# ── granularity: mixed (#59) ────────────────────────────────────────────────
+def _samples(kind: str, n: int) -> list[Sample]:
+    return [Sample(image=f"{kind}/{i}.jpg", text=f"{kind} {i}", source_type=kind) for i in range(n)]
+
+
+def test_a_mix_is_drawn_in_the_asked_shares():
+    by_kind = {"line": _samples("line", 1000), "block": _samples("block", 200),
+               "page": _samples("page", 100)}
+    got = mix_samples(by_kind, {"line": 0.5, "block": 0.3, "page": 0.2}, seed=1)
+    counts = collections.Counter(s.source_type for s in got)
+    assert counts["page"] == 100                      # the scarcest kind, used in full
+    assert counts["line"] == 250 and counts["block"] == 150
+    assert len(got) == 500
+
+
+def test_the_scarcest_kind_bounds_the_total_so_nothing_repeats():
+    by_kind = {"line": _samples("line", 10), "page": _samples("page", 1)}
+    got = mix_samples(by_kind, {"line": 0.9, "page": 0.1}, seed=1)
+    assert len(got) == len(set(s.image for s in got))
+    assert collections.Counter(s.source_type for s in got) == {"line": 9, "page": 1}
+
+
+def test_the_same_seed_draws_the_same_corpus():
+    by_kind = {"line": _samples("line", 100), "page": _samples("page", 20)}
+    mix = {"line": 0.5, "page": 0.5}
+    assert [s.image for s in mix_samples(by_kind, mix, 7)] == [
+        s.image for s in mix_samples(by_kind, mix, 7)]
+    assert [s.image for s in mix_samples(by_kind, mix, 7)] != [
+        s.image for s in mix_samples(by_kind, mix, 8)]
+
+
+def test_a_kind_the_corpus_cannot_supply_is_an_error():
+    with pytest.raises(VlmDatasetError, match="no such samples"):
+        mix_samples({"line": _samples("line", 5)}, {"line": 0.5, "page": 0.5}, seed=1)
+
+
+def test_samples_for_mixed_builds_every_kind(page, tmp_path):
+    got = samples_for([page], "mixed", root=tmp_path, mix={"line": 0.5, "page": 0.5}, seed=3)
+    assert {s.source_type for s in got} == {"line", "page"}
+
+
+def test_mixed_params_budget_by_kind():
+    params = VlmTrainParams(granularity="mixed")
+    assert params.mix() == DEFAULT_GRANULARITY_MIX
+    assert params.kinds() == ("line", "block", "page")
+    # the processor ceiling is the largest kind; each kind keeps its own budget
+    assert params.pixel_budget() == VLM_PIXEL_BUDGET["page"]
+    assert params.kind_budgets() == {k: VLM_PIXEL_BUDGET[k] for k in ("line", "block", "page")}
+    assert params.sequence_budget() == VLM_MAX_SEQ_LEN["page"]
+    assert params.generation_budget() == VLM_MAX_NEW_TOKENS["page"]
+
+
+def test_a_mix_is_normalised_and_may_leave_a_kind_out():
+    params = VlmTrainParams(granularity="mixed", granularity_mix={"line": 3, "page": 1})
+    assert params.mix() == {"line": 0.75, "page": 0.25}
+    assert params.kinds() == ("line", "page")
+    assert params.pixel_budget() == VLM_PIXEL_BUDGET["page"]
+
+
+def test_a_mix_on_a_single_granularity_is_refused():
+    """Silently ignoring it would train something other than what was written."""
+    with pytest.raises(ValueError, match="only meaningful at granularity: mixed"):
+        VlmTrainParams(granularity="line", granularity_mix={"line": 1.0})
+    with pytest.raises(ValueError, match="unknown kind"):
+        VlmTrainParams(granularity="mixed", granularity_mix={"paragraph": 1.0})
+    with pytest.raises(ValueError, match="greater than 0"):
+        VlmTrainParams(granularity="mixed", granularity_mix={"line": 1.0, "page": 0})
+
+
+def test_a_single_granularity_is_its_own_mix():
+    params = VlmTrainParams(granularity="block")
+    assert params.mix() == {"block": 1.0} and params.kinds() == ("block",)
+    assert params.kind_budgets() == {"block": VLM_PIXEL_BUDGET["block"]}
+
+
+class _Image:
+    def __init__(self, size): self.size = size
+    def resize(self, size): return _Image(size)
+
+
+def test_fit_pixels_shrinks_and_never_grows():
+    assert fit_pixels(_Image((2000, 1500)), 2000 * 1500).size == (2000, 1500)
+    assert fit_pixels(_Image((100, 100)), 10_000_000).size == (100, 100)
+    out = fit_pixels(_Image((4000, 3000)), 1_000_000).size
+    assert out[0] * out[1] <= 1_000_000 and abs(out[0] / out[1] - 4 / 3) < 0.01

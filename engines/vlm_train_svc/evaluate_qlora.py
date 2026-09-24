@@ -33,6 +33,7 @@ from atr_training.textmetrics import score_pairs
 from atr_training.vlm_dataset import (
     CHAT_TEMPLATE_KWARGS,
     apply_visual_budget,
+    fit_pixels,
     chat_example,
     read_jsonl,
 )
@@ -56,7 +57,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "churro-xml: CHURRO's own system message, an image-only user "
                         "turn, HistoricalDocument XML flattened by CHURRO's rule before "
                         "scoring (docs/CHURRO_PLAN.md §1.1)")
-    p.add_argument("--granularity", default="line", choices=["line", "block", "page"])
+    p.add_argument("--granularity", default="line",
+                   choices=["line", "block", "page", "mixed"])
+    p.add_argument("--kind-pixels", default=None,
+                   help="per-kind visual budget, e.g. line=262144,page=2097152; each "
+                        "sample is fitted to its own kind's budget, as in training")
     p.add_argument("--max-pixels", type=int, required=True,
                    help="visual budget in pixels; 0 keeps the processor's own default, "
                         "which is what CHURRO's inference uses and so the only fair "
@@ -179,13 +184,31 @@ def stop_token_ids(tokenizer) -> list[int]:
     return ids
 
 
+def _parse_kind_pixels(raw: str | None) -> dict[str, int]:
+    """``line=262144,page=2097152`` -> ``{"line": 262144, "page": 2097152}``."""
+    if not raw:
+        return {}
+    out: dict[str, int] = {}
+    for part in raw.split(","):
+        kind, _, value = part.partition("=")
+        if not value.strip().isdigit():
+            raise SystemExit(f"--kind-pixels: {part!r} is not <kind>=<pixels>")
+        out[kind.strip()] = int(value)
+    return out
+
+
 def transcribe(model, processor, image_path: Path, prompt: str, max_new_tokens: int,
-               system: str | None = None) -> str:
+               system: str | None = None, max_pixels: int | None = None) -> str:
     import torch
     from PIL import Image
 
     with Image.open(image_path) as raw:
         image = raw.convert("RGB")
+        # The same fit the collator applies: in a mixed corpus the processor's own
+        # budget is the largest kind's, so scoring a line crop without this would
+        # measure it at a budget it never trained at (#59).
+        if max_pixels:
+            image = fit_pixels(image, max_pixels)
         text = processor.apply_chat_template(
             chat_example(prompt, system=system), tokenize=False,
             add_generation_prompt=True, **CHAT_TEMPLATE_KWARGS)
@@ -242,9 +265,13 @@ def main(argv: list[str] | None = None) -> int:
     unparsed = 0
     #: CHURRO outputs with no HistoricalDocument in them — the model ignored the format.
     not_xml = 0
+    kind_pixels = _parse_kind_pixels(args.kind_pixels)
+    if kind_pixels:
+        print(f"per-kind visual budget: {kind_pixels}", flush=True)
     for index, sample in enumerate(samples, 1):
         raw = transcribe(model, processor, root / sample.image,
-                         args.prompt, args.max_new_tokens, system=system)
+                         args.prompt, args.max_new_tokens, system=system,
+                         max_pixels=kind_pixels.get(sample.source_type or "line"))
         if _looks_truncated(raw, processor, args.max_new_tokens):
             at_cap += 1
         prediction = raw
@@ -275,6 +302,17 @@ def main(argv: list[str] | None = None) -> int:
         name: {k: v for k, v in score_pairs(rows).as_report().items() if k != "examples"}
         for name, rows in sorted(by_source.items())
     } or None
+    # Per sample kind, which is the number a mixed run (#59) is actually about: one
+    # CER over lines, blocks and pages together describes none of them, and the
+    # failure modes differ by kind — a line-trained model collapses on a page, a
+    # page-trained one over-generates on a line (#60).
+    by_kind: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for sample, pair in zip(samples, pairs):
+        by_kind[sample.source_type or "line"].append(pair)
+    report["by_kind"] = {
+        kind: {k: v for k, v in score_pairs(rows).as_report().items() if k != "examples"}
+        for kind, rows in sorted(by_kind.items())
+    } if len(by_kind) > 1 else None
     # Layout-free, notation kept: line breaks in our ground truth are partly a
     # segmentation artefact (78 % one-word "lines" in the Rats- und Richtebücher),
     # and a model writing real lines pays CER ~0.13 for that alone.
