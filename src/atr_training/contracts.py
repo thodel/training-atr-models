@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# ── the default architecture (docs/TRAINING_PLAN.md §3a) ─────────────────────
+# ── the default architecture (serving-atr-inference/docs/TRAINING_PLAN.md §3a) ─────────────────────
 # "kraken+". Input block = batch 256, line height 64, variable width, grayscale.
 # NOTE: kraken parses the leading 256 only into ``example_input_array`` — the real
 # batch size comes from ``-B``. KrakenTrainParams keeps the two in sync.
@@ -32,11 +32,11 @@ KRAKEN_PLUS_SPEC = (
 )
 
 # ── the VLM defaults ─────────────────────────────────────────────────────────
-# Qwen3-VL-8B is what this box already *serves* (three fine-tunes of it are in
-# config/models.yaml at 18 GB resident), and what scripts/merge_loras.py knows how
-# to bake an adapter into. Training the model we can serve keeps the loop closed;
-# the 30B-A3B MoE that lassberg/vlm_training targets is selectable but has nowhere
-# to run here — vLLM 0.11 would need the whole card.
+# Qwen3-VL-8B is what the serving box already *serves* (three fine-tunes of it are
+# in its config/models.yaml at 18 GB resident), and what its scripts/merge_loras.py
+# knows how to bake an adapter into. Training the model that machine can serve keeps
+# the loop closed; the 30B-A3B MoE that lassberg/vlm_training targets is selectable
+# but has nowhere to be served — vLLM 0.11 would need a whole card there.
 VLM_BASE_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 
 #: TrOCR fine-tunes always start from a pretrained encoder-decoder; there is no
@@ -178,7 +178,8 @@ class DatasetSpec(BaseModel):
     ``dh-unibe/image-text_medieval-scripts_xiv-xv-xvi`` is ~6.6 TB laid out as
     ``data/<split>/<project>/*.parquet`` over 694 projects. Resolving this to
     explicit ``data_files`` globs (see :mod:`atr_training.hf_source`) is
-    what keeps a job from pulling the whole repo onto a box with ~356 GB free.
+    what keeps a job from pulling the whole repo onto a disk that cannot hold it
+    — neither asteraix's ``/`` nor the share the HF cache lives on.
     """
 
     model_config = ConfigDict(validator=False)
@@ -319,8 +320,10 @@ class VlmTrainParams(BaseModel):
     """Hyperparameters for a QLoRA fine-tune of a Qwen3-VL base.
 
     Defaults follow ``lassberg/vlm_training`` (the pipeline these numbers were
-    tuned in) except where asterAIx forces a different choice — each such
-    deviation is noted on the field.
+    tuned in) except where this machine forces a different choice — each such
+    deviation is noted on the field. The memory arguments below were made when
+    training shared a card with the serving engines; since 16.09.2026 a run owns
+    its card, and none of them has been re-measured.
     """
 
     model_config = ConfigDict(protected_namespaces=())
@@ -349,8 +352,9 @@ class VlmTrainParams(BaseModel):
     prompt: str = VLM_PROMPT
 
     # ── QLoRA ────────────────────────────────────────────────────────────────
-    #: 4-bit NF4 + double quant. False = LoRA on a bf16 base, which does not fit
-    #: an 8B alongside the serving engines on this box.
+    #: 4-bit NF4 + double quant. False = LoRA on a bf16 base, which did not fit an
+    #: 8B beside the serving engines on the shared box. Not re-measured on a card
+    #: this run owns alone.
     load_in_4bit: bool = True
     lora_r: int = Field(default=64, ge=1)
     lora_alpha: int = Field(default=128, ge=1)
@@ -362,8 +366,9 @@ class VlmTrainParams(BaseModel):
     #: lassberg trains ``lm_head`` as well, which helps when the ground truth has
     #: characters the tokenizer rarely saw. It is off here by default: at Qwen3-VL's
     #: 151 k vocab that single module is ~620 M trainable parameters, whose fp32
-    #: master weights and optimizer state add several GB on a card we share with
-    #: the serving engines. Turn it on for a run that owns the GPU.
+    #: master weights and optimizer state add several GB. That was decisive on the
+    #: shared card; on asteraix a run owns its card, so this is now a question about
+    #: the run's own budget — worth trying when the ground truth has such characters.
     modules_to_save: list[str] = Field(default_factory=list)
 
     # ── optimisation ─────────────────────────────────────────────────────────

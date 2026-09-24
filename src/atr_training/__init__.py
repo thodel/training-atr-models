@@ -16,7 +16,7 @@ names, the resource guards and the whole prepare stage. What differs is
 ``params`` and the commands each ``compile``/``train``/``test`` stage issues
 (:mod:`~atr_training.ketos_cmd` vs :mod:`~atr_training.vlm_cmd`).
 
-Design: `docs/TRAINING_PLAN.md`; the VLM backend, `docs/VLM_TRAINING.md`.
+Design: `serving-atr-inference/docs/TRAINING_PLAN.md`; the VLM backend, `serving-atr-inference/docs/VLM_TRAINING.md`.
 """
 
 from atr_training.backends import BACKENDS, Backend, backend_for  # noqa: F401

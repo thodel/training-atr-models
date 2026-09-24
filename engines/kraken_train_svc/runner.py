@@ -252,7 +252,7 @@ class Pipeline(BasePipeline):
         """A local weights file, a registry id, or a Zenodo DOI.
 
         Registry ids resolve through :func:`resolve_base_model` to the entry's
-        ``zenodo_id`` — which is what docs/TRAINING_PLAN.md §4 always described,
+        ``zenodo_id`` — which is what serving-atr-inference/docs/TRAINING_PLAN.md §4 always described,
         and what a run lost an hour to when it did not (#76). The reference is
         already validated at submit, so reaching here with a bad one means the
         registry changed under a queued job; it still fails with the same message

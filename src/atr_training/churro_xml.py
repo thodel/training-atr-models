@@ -5,7 +5,7 @@
 and what it emits is a ``HistoricalDocument``: metadata, then pages divided into
 ``Header``/``Body``/``Footer`` with ``<Line>`` elements and inline editorial
 markup. Scored against our plain-text ground truth as it stands, every tag would
-count as an error. See docs/CHURRO_PLAN.md §1.1.
+count as an error. See serving-atr-inference/docs/CHURRO_PLAN.md §1.1.
 
 Three things live here:
 

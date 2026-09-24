@@ -9,12 +9,13 @@
 # torch is PINNED and installed from the cu128 index by make_venvs.sh BEFORE this
 # file. Do not loosen:
 #   * `torch>=2.2.0` resolves to the newest release (2.13 at time of writing),
-#     which drags in CUDA 12.9 wheels — multiple GB of download on a box whose
-#     root partition is the binding constraint, and an untested CUDA level for
-#     driver 565 / CUDA 12.7.
-#   * 2.8.0+cu128 is the build proven on this driver by the vLLM venv
-#     (docs/asteraix-environment.md), so the trainer reuses it.
-# The runner executes the SHARED BasePipeline (atr_serving.training.runner_base),
+#     which drags in CUDA 12.9 wheels — multiple GB of download, and an untested
+#     CUDA level. The pin was chosen against the serving box's driver 565 /
+#     CUDA 12.7; asteraix runs 580.95.05 (docs/INFRASTRUCTURE.md), which accepts
+#     the same cu128 wheels.
+#   * 2.8.0+cu128 is the build proven on that driver by the gateway's vLLM venv
+#     (serving-atr-inference/docs/idhefix-environment.md), so the trainer reuses it.
+# The runner executes the SHARED BasePipeline (atr_training.runner_base),
 # so this venv needs the same core as every other backend — not just the model
 # stack. Missing pydantic-settings made `python -m trocr_train_svc.runner` fail
 # at import in a venv that otherwise looked complete.

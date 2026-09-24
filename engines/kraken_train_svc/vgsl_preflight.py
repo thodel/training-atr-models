@@ -5,7 +5,7 @@ the dataset and loading the data module, so a spec problem surfaces late. This
 takes seconds and needs no data.
 
 It is worth reading the output for the ``kraken+`` default (see
-``docs/TRAINING_PLAN.md`` §3a):
+``serving-atr-inference/docs/TRAINING_PLAN.md`` §3a):
 
 * the stride chain ``(4,2)·(4,2)·(1,2)`` should take height 64 → 4 and width → ⅛,
   so ``S1(1x0)1,3`` folds 4 × 64 = 256 features into the ``Lbx256`` that follows;

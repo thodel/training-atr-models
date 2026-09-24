@@ -75,9 +75,11 @@ class Process:
     #: The systemd unit the process belongs to, from its cgroup. Answers the
     #: question a bare command line does not: whose process is this.
     service: str | None = None
-    #: One of *our* services rather than someone else's. An engine holding memory
-    #: is expected; the RAG box's gunicorn on the same card is not, and the two
-    #: must not be summed into one number.
+    #: One of *our* services rather than someone else's. A run of ours holding
+    #: memory is expected; anyone else's process on the card is not, and the two
+    #: must not be summed into one number. (The case this was written for was the
+    #: neighbours' RAG service on the serving box; asteraix has no such tenant
+    #: today, which is why unaccounted memory here is a leftover of our own run.)
     own_service: bool = False
     user: str | None = None
     age_s: float | None = None

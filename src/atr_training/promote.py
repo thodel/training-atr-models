@@ -14,7 +14,7 @@ Four properties worth stating, because each is a decision:
   material the model was scored on, and it is already on disk.
 * **A failed gate does not fail the job.** The model trained, it scored, it is
   registered — it simply is not servable yet, which is a fact about the serving
-  side. `docs/TRAINING_PLAN.md` §5 originally said a job completes only with a
+  side. `serving-atr-inference/docs/TRAINING_PLAN.md` §5 originally said a job completes only with a
   passing smoke recognition; that reads well until the VLM backend, whose
   adapters *cannot* be served until ``scripts/merge_loras.py`` bakes them in.
   Failing those jobs would call a good training run a failure. The job completes,

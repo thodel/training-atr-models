@@ -56,7 +56,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="plain: our prompt in the user turn, plain-text output. "
                         "churro-xml: CHURRO's own system message, an image-only user "
                         "turn, HistoricalDocument XML flattened by CHURRO's rule before "
-                        "scoring (docs/CHURRO_PLAN.md §1.1)")
+                        "scoring (serving-atr-inference/docs/CHURRO_PLAN.md §1.1)")
     p.add_argument("--granularity", default="line",
                    choices=["line", "block", "page", "mixed"])
     p.add_argument("--kind-pixels", default=None,
@@ -321,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         k: v for k, v in flat.as_report().items() if k != "examples"}
     # Diagnostic, never the headline: the same notation-free mapping on both sides
     # separates "could it read the page" from "did it write our notation"
-    # (docs/CHURRO_PLAN.md §2). Reported for every template, so arms compare.
+    # (serving-atr-inference/docs/CHURRO_PLAN.md §2). Reported for every template, so arms compare.
     normalized = score_pairs([(normalize_convention(h), normalize_convention(r))
                               for h, r in pairs])
     report["convention_normalized"] = {
