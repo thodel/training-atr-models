@@ -44,6 +44,7 @@ __all__ = [
     "AppliedBudget",
     "FALLBACK_CELL_PX",
     "apply_visual_budget",
+    "has_stepped_budget",
     "fit_pixels",
     "Sample",
     "DEFAULT_LINE_PAD",
@@ -521,6 +522,12 @@ def chat_example(prompt: str, text: str | None = None,
 #: Area of one merged patch when a processor will not say: Qwen3-VL's 16 x 2.
 FALLBACK_CELL_PX = 32
 
+#: Gemma 4 takes its budget in soft tokens and accepts only these five values;
+#: ``image_processing_gemma4.py`` raises ``ValueError`` for anything else
+#: (measured against transformers 5.17.0 on 2026-09-25). There is no continuous
+#: knob to round to, so a request lands on a step or it does not run at all.
+SOFT_TOKEN_STEPS = (70, 140, 280, 560, 1120)
+
 
 class VisualBudgetError(VlmDatasetError):
     """The visual-token budget could not be applied to this processor."""
@@ -536,11 +543,75 @@ class AppliedBudget:
     visual_tokens: int
     #: True when the grid was read off the processor rather than assumed.
     grid_known: bool
+    #: The budget this processor offers comes in steps, not as a number: what
+    #: was asked for was rounded **up** to the next one it accepts. Callers that
+    #: pre-scale images per sample have to stop doing so — see
+    #: :func:`fit_pixels` and the note in ``train_qlora.main``.
+    stepped: bool = False
+    #: What the caller asked for, when that is not what it got.
+    asked_pixels: int | None = None
 
     def __str__(self) -> str:
         grid = f"{self.cell_px}px cell" + ("" if self.grid_known else ", ASSUMED")
+        asked = ""
+        if self.asked_pixels is not None and self.asked_pixels != self.max_pixels:
+            asked = f" (asked for {self.asked_pixels}, rounded up to a step)"
         return (f"{self.knob}={self.max_pixels} -> ~{self.visual_tokens} visual "
-                f"tokens ({grid})")
+                f"tokens ({grid}){asked}")
+
+
+def has_stepped_budget(processor) -> bool:
+    """True when this processor charges a fixed step per image, Gemma-style.
+
+    The predicate rather than the :class:`AppliedBudget` flag, for the one caller
+    that has a processor but no budget object in hand (``evaluate_qlora.main``).
+    Tolerates ``None`` so a test that stubs the model loader does not have to
+    build a processor to ask.
+    """
+    image_processor = getattr(processor, "image_processor", None)
+    return getattr(image_processor, "max_soft_tokens", None) is not None
+
+
+def _stepped_budget(image_processor, max_pixels: int) -> AppliedBudget:
+    """Set a Gemma-style budget: soft tokens, on five fixed steps.
+
+    Qwen bounds an image and lets a small one cost less; Gemma fills its grid
+    whatever the image is. Measured on transformers 5.17.0: at
+    ``max_soft_tokens=280`` a 2000x120 line strip costs 272 soft tokens and a
+    2400x3400 page costs 266, and the patch count before pooling is exactly
+    2520 either way. So the step is not a ceiling, it is the price, and the
+    aspect ratio changes only how the grid is shaped.
+
+    That fixes the conversion. A step of ``n`` tokens carries
+    ``n * (patch_size * pooling_kernel_size) ** 2`` pixels of the resized image,
+    and the step to pick is the cheapest one that carries the pixels the caller
+    asked for. Matching on pixels rather than on tokens is the honest
+    comparison: both models are shown the same detail, and Gemma spending fewer
+    tokens on it is a property of the architecture under test, not a handicap
+    imposed here.
+    """
+    patch = getattr(image_processor, "patch_size", None)
+    pool = getattr(image_processor, "pooling_kernel_size", None)
+    if not patch or not pool:
+        raise VisualBudgetError(
+            f"{type(image_processor).__name__} takes its budget in soft tokens but "
+            "does not say its patch_size and pooling_kernel_size, so the step that "
+            "carries the requested pixels cannot be worked out")
+    cell = int(patch) * int(pool)
+    carried = {tokens: tokens * cell * cell for tokens in SOFT_TOKEN_STEPS}
+    step = next((t for t in SOFT_TOKEN_STEPS if carried[t] >= max_pixels),
+                SOFT_TOKEN_STEPS[-1])
+
+    image_processor.max_soft_tokens = step
+    read_back = getattr(image_processor, "max_soft_tokens", None)
+    if read_back != step:
+        raise VisualBudgetError(
+            f"set max_soft_tokens={step} but it reads back as {read_back!r} — the "
+            "budget did not take, and training would run at the model's default")
+
+    return AppliedBudget(knob="max_soft_tokens", max_pixels=carried[step],
+                         cell_px=cell, visual_tokens=step, grid_known=True,
+                         stepped=True, asked_pixels=max_pixels)
 
 
 def fit_pixels(image, max_pixels: int):
@@ -589,6 +660,14 @@ def apply_visual_budget(processor, max_pixels: int) -> AppliedBudget:
             "Qwen3-VL is 16384 tokens per image"
         )
 
+    # Gemma 4 has neither knob and is not therefore budget-less: it has a
+    # different one. Handled first, because the checks below would report "no
+    # knob here" for a processor that has a perfectly good one (#86 taught us
+    # to refuse rather than proceed; it did not teach us to refuse a family we
+    # simply had not looked at).
+    if getattr(image_processor, "max_soft_tokens", None) is not None:
+        return _stepped_budget(image_processor, max_pixels)
+
     # Set **every** knob this processor has, not the first one found. Qwen2.5-VL
     # carries both: ``size={"longest_edge", "shortest_edge"}`` *and* a
     # ``max_pixels`` attribute — and ``smart_resize`` consults ``max_pixels``. So
@@ -619,8 +698,9 @@ def apply_visual_budget(processor, max_pixels: int) -> AppliedBudget:
 
     if not set_knobs:
         raise VisualBudgetError(
-            f"{type(image_processor).__name__} has neither size['longest_edge'] nor "
-            "max_pixels; there is no knob here to bound visual tokens with"
+            f"{type(image_processor).__name__} has none of size['longest_edge'], "
+            "max_pixels or max_soft_tokens; there is no knob here to bound visual "
+            "tokens with"
         )
 
     for name in set_knobs:

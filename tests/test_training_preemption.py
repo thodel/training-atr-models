@@ -342,6 +342,64 @@ def test_a_fanned_out_arm_trains_without_re_preparing(store, settings):
     assert cmd[cmd.index("--base-model") + 1] == "Qwen/Qwen3.5-4B"
 
 
+def test_an_arm_may_override_a_training_parameter(store, settings):
+    """A size ladder cannot share one quantisation: 27B does not fit where 4B did.
+
+    The corpus is what the arms share; ``load_in_4bit`` is a train-stage input and
+    has to be settable per arm, or the ladder measures size and quantisation
+    together and can never separate them again.
+    """
+    prepared = store.create(request_with(model_id="qwen3vl-corpus-3"))
+    Pipeline(store, settings, runner=FakeRunner(),
+             source=FakeSource({"train": 4, "eval": 2})).execute(
+        prepared.id, stop_after="compile")
+    assert prepared.request.params.load_in_4bit is True, "fixture assumption"
+
+    bf16, nf4 = _fanout().fan_out(str(settings.jobs_root), prepared.id, [
+        ("arm-bf16", "Qwen/Qwen3.5-4B", {"load_in_4bit": False}),
+        ("arm-nf4", "Qwen/Qwen3.5-27B", {}),
+    ])
+    assert store.load(bf16).request.params.load_in_4bit is False
+    assert store.load(nf4).request.params.load_in_4bit is True
+    # Everything not overridden is the source's, or the arms are not comparable.
+    assert (store.load(bf16).request.params.granularity
+            == prepared.request.params.granularity)
+
+
+def test_an_override_is_refused_at_fanout_not_twelve_hours_later(store, settings):
+    prepared = store.create(request_with(model_id="qwen3vl-corpus-4"))
+    Pipeline(store, settings, runner=FakeRunner(),
+             source=FakeSource({"train": 4, "eval": 2})).execute(
+        prepared.id, stop_after="compile")
+    with pytest.raises(Exception):
+        _fanout().fan_out(str(settings.jobs_root), prepared.id,
+                          [("arm-bad", "Qwen/Qwen3.5-4B", {"lora_r": 0})])
+
+
+class TestParseArm:
+    """The command line a ladder is submitted with."""
+
+    def test_a_bare_arm_has_no_overrides(self):
+        assert _fanout().parse_arm("id=Qwen/Qwen3.5-9B") == ("id", "Qwen/Qwen3.5-9B", {})
+
+    def test_a_base_model_with_dots_and_dashes_survives(self):
+        model_id, base, _ = _fanout().parse_arm("ladder-27b=Qwen/Qwen3.8-27B")
+        assert (model_id, base) == ("ladder-27b", "Qwen/Qwen3.8-27B")
+
+    def test_values_are_typed_the_only_way_a_command_line_can(self):
+        _, _, over = _fanout().parse_arm(
+            "id=google/gemma-4-12B-it,load_in_4bit=true,lora_r=32,optim=adamw_torch")
+        assert over == {"load_in_4bit": True, "lora_r": 32, "optim": "adamw_torch"}
+
+    def test_a_missing_base_is_refused(self):
+        with pytest.raises(SystemExit, match="model_id"):
+            _fanout().parse_arm("justanid")
+
+    def test_an_override_without_a_value_is_refused(self):
+        with pytest.raises(SystemExit, match="param"):
+            _fanout().parse_arm("id=Qwen/Qwen3.5-9B,load_in_4bit")
+
+
 def test_fanout_refuses_a_job_that_is_not_a_finished_corpus(store, settings):
     job = store.create(request_with(model_id="qwen3vl-not-prepared"))
     with pytest.raises(SystemExit):

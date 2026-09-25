@@ -614,7 +614,19 @@ def main(argv: list[str] | None = None) -> int:
 
     model = build_model(args, processor)
     kind_pixels = _parse_kind_pixels(args.kind_pixels)
-    if kind_pixels:
+    if kind_pixels and budget.stepped:
+        # Pre-scaling per kind is how a line crop and a page share one batch on a
+        # processor whose budget is set once (#59). It is the wrong move on a
+        # stepped budget: that processor resizes every image to its own grid and
+        # charges the step whatever arrives, so shrinking a crop first removes
+        # detail and saves nothing. Every sample costs the step — which is why a
+        # Gemma arm belongs on one granularity rather than in a mixed corpus.
+        print(f"per-kind visual budget {kind_pixels} NOT applied: {budget.knob} "
+              "is charged per image whatever its size, so pre-scaling would only "
+              "lose detail; every sample costs "
+              f"~{budget.visual_tokens} visual tokens", flush=True)
+        kind_pixels = {}
+    elif kind_pixels:
         print(f"per-kind visual budget: {kind_pixels}", flush=True)
     collator = HTRCollator(processor, args.prompt, args.max_seq_len, kind_pixels)
 

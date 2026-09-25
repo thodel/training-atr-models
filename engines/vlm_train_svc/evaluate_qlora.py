@@ -33,6 +33,7 @@ from atr_training.textmetrics import score_pairs
 from atr_training.vlm_dataset import (
     CHAT_TEMPLATE_KWARGS,
     apply_visual_budget,
+    has_stepped_budget,
     fit_pixels,
     chat_example,
     read_jsonl,
@@ -266,7 +267,15 @@ def main(argv: list[str] | None = None) -> int:
     #: CHURRO outputs with no HistoricalDocument in them — the model ignored the format.
     not_xml = 0
     kind_pixels = _parse_kind_pixels(args.kind_pixels)
-    if kind_pixels:
+    if kind_pixels and has_stepped_budget(processor):
+        # Mirrors train_qlora: a stepped budget is charged per image whatever the
+        # image is, so fitting a crop to its kind first only loses detail. A model
+        # trained that way has to be scored that way, or the CER is measured at a
+        # budget it never saw (#86).
+        print(f"per-kind visual budget {kind_pixels} NOT applied: this processor "
+              "charges a fixed step per image, as in training", flush=True)
+        kind_pixels = {}
+    elif kind_pixels:
         print(f"per-kind visual budget: {kind_pixels}", flush=True)
     for index, sample in enumerate(samples, 1):
         raw = transcribe(model, processor, root / sample.image,

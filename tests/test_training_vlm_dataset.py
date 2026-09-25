@@ -326,8 +326,10 @@ def test_score_with_no_characters_reports_no_rate():
 
 # ── apply_visual_budget (#86) ───────────────────────────────────────────────
 from atr_training.vlm_dataset import (  # noqa: E402
+    SOFT_TOKEN_STEPS,
     VisualBudgetError,
     apply_visual_budget,
+    has_stepped_budget,
 )
 
 
@@ -416,7 +418,7 @@ class TestApplyVisualBudget:
 
     def test_a_processor_with_no_knob_is_refused(self):
         processor = FakeProcessor(FakeImageProcessor(patch_size=16, merge_size=2))
-        with pytest.raises(VisualBudgetError, match="neither"):
+        with pytest.raises(VisualBudgetError, match="no knob here"):
             apply_visual_budget(processor, 4096)
 
     def test_a_processor_with_no_image_processor_is_refused(self):
@@ -447,6 +449,100 @@ class TestApplyVisualBudget:
     def test_str_is_readable_because_it_is_printed_into_the_job_log(self):
         assert str(apply_visual_budget(qwen3(), 256 * 32 * 32)) == (
             "size.longest_edge=262144 -> ~256 visual tokens (32px cell)")
+
+
+# ── Gemma 4: a budget in soft tokens, on five steps ─────────────────────────
+class FakeGemmaImageProcessor:
+    """What google/gemma-4-31B-it's processor_config.json declares, and what a
+    real ``AutoProcessor.from_pretrained`` reported on transformers 5.17.0:
+    ``max_soft_tokens`` and no ``size``/``max_pixels`` at all."""
+
+    def __init__(self, max_soft_tokens=280, patch_size=16, pooling_kernel_size=3):
+        self.max_soft_tokens = max_soft_tokens
+        self.image_processor_type = "Gemma4ImageProcessor"
+        if patch_size is not None:
+            self.patch_size = patch_size
+        if pooling_kernel_size is not None:
+            self.pooling_kernel_size = pooling_kernel_size
+
+
+def gemma4() -> FakeProcessor:
+    return FakeProcessor(FakeGemmaImageProcessor())
+
+
+class TestSteppedVisualBudget:
+    """Gemma 4 is not budget-less, it is budgeted differently (#86 follow-up).
+
+    The five steps and the 48px cell are measured, not assumed: transformers
+    5.17.0 raises ``ValueError: `max_soft_tokens` must be one of (70, 140, 280,
+    560, 1120)`` for anything else, and at step 280 the patch count before
+    pooling is 2520 = 280 x 3 x 3 with patch_size 16.
+    """
+
+    def test_a_request_lands_on_the_cheapest_step_that_carries_it(self):
+        # 48px cell: a step of n tokens carries n * 48 * 48 pixels.
+        for asked, step in ((262144, 140), (1048576, 560), (2097152, 1120)):
+            applied = apply_visual_budget(gemma4(), asked)
+            assert applied.visual_tokens == step, (asked, applied)
+            assert applied.max_pixels == step * 48 * 48
+            assert applied.max_pixels >= asked, "a step below the request starves it"
+
+    def test_the_step_is_written_onto_the_processor(self):
+        processor = gemma4()
+        apply_visual_budget(processor, 262144)
+        assert processor.image_processor.max_soft_tokens == 140
+
+    def test_the_line_budget_does_not_land_on_the_default(self):
+        """280 is the processor's default, so a line landing there would look
+        applied and be untouched — the #86 failure in a new shape."""
+        assert apply_visual_budget(gemma4(), VLM_PIXEL_BUDGET["line"]).visual_tokens != 280
+
+    def test_a_request_above_every_step_takes_the_largest(self):
+        applied = apply_visual_budget(gemma4(), 99_000_000)
+        assert applied.visual_tokens == max(SOFT_TOKEN_STEPS)
+
+    def test_every_chosen_step_is_one_the_processor_accepts(self):
+        for asked in (1, 262144, 1048576, 2097152, 10**9):
+            assert apply_visual_budget(gemma4(), asked).visual_tokens in SOFT_TOKEN_STEPS
+
+    def test_it_says_what_was_asked_for_when_that_is_not_what_it_got(self):
+        applied = apply_visual_budget(gemma4(), 262144)
+        assert applied.stepped is True
+        assert applied.asked_pixels == 262144
+        assert str(applied) == (
+            "max_soft_tokens=322560 -> ~140 visual tokens (48px cell) "
+            "(asked for 262144, rounded up to a step)")
+
+    def test_a_processor_that_will_not_say_its_grid_is_refused(self):
+        """Without patch_size x pooling_kernel_size there is no way to know which
+        step carries the pixels, and guessing is what #86 was about."""
+        processor = FakeProcessor(FakeGemmaImageProcessor(pooling_kernel_size=None))
+        with pytest.raises(VisualBudgetError, match="patch_size and pooling_kernel_size"):
+            apply_visual_budget(processor, 262144)
+
+    def test_a_step_that_does_not_stick_is_refused(self):
+        class Stubborn(FakeGemmaImageProcessor):
+            @property
+            def max_soft_tokens(self):
+                return 280
+
+            @max_soft_tokens.setter
+            def max_soft_tokens(self, value):
+                pass
+
+        with pytest.raises(VisualBudgetError, match="did not take"):
+            apply_visual_budget(FakeProcessor(Stubborn()), 262144)
+
+    def test_the_predicate_separates_the_two_families(self):
+        """``evaluate_qlora`` has a processor and no budget object; it asks this."""
+        assert has_stepped_budget(gemma4()) is True
+        assert has_stepped_budget(qwen3()) is False
+        assert has_stepped_budget(None) is False
+
+    def test_qwen_is_not_stepped_and_still_reports_the_budget_it_was_given(self):
+        applied = apply_visual_budget(qwen3(), VLM_PIXEL_BUDGET["line"])
+        assert applied.stepped is False
+        assert applied.asked_pixels is None
 
 # ── dropping samples too long to afford (#110) ──────────────────────────────
 def _sample(chars: int, name: str = "p") -> Sample:
