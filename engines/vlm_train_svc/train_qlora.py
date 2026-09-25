@@ -255,8 +255,15 @@ class HTRCollator:
         # which is what killed 20260814T192904Z at step 2 of 774 (#86). With the
         # visual budget actually applied these fit; when one does not, say so and
         # let the processor see the whole thing.
+        # One list of images per text, not one flat list for the batch. Qwen
+        # accepts either and produces byte-identical output both ways (measured:
+        # 2x81 ids for Qwen3-VL-4B, 2x85 for Qwen3.5-4B); Gemma 4 reads a flat
+        # list as a single sample's images and refuses the batch —
+        #   ValueError: Received inconsistently sized batches of images (1) and text (2)
+        # — so the nested form is the one that is right everywhere.
         inputs = self.processor(
-            text=texts, images=images, return_tensors="pt", padding=True,
+            text=texts, images=[[image] for image in images],
+            return_tensors="pt", padding=True,
         )
         for image in images:
             image.close()
