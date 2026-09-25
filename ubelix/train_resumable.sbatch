@@ -41,6 +41,7 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 SIF=$HOME/ubelix/vlm-train.sif
 SPEC=${SPEC:-$HOME/ubelix/specs/resumable.json}
+# Only consulted when JOB_ID is unset; see the id block below.
 STATE=$S/runs/slurm-$SLURM_JOB_ID.jobid
 
 export HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub
@@ -69,9 +70,20 @@ run() {
 }
 
 # The stable id. Written on the first attempt, read on every later one.
+#
+# JOB_ID in the environment takes precedence over SPEC, for a job whose record
+# already exists: a stage-1 prepare, or an arm of a fan-out. Those are the runs
+# that most want this queue — twelve ladder arms over one corpus (#91) are
+# exactly what four preemptable H100s are for — and without this the batch file
+# would create a thirteenth job from the default spec and train the wrong thing.
+# It is still written to STATE, so a requeue resumes the same id whichever way
+# the first attempt got it.
 if [ -f "$STATE" ]; then
   JOB_ID=$(cat "$STATE")
   echo "== attempt $((SLURM_RESTART_COUNT + 1)) — resuming training job $JOB_ID"
+elif [ -n "${JOB_ID:-}" ]; then
+  echo "$JOB_ID" > "$STATE"
+  echo "== attempt 1 — resuming the existing training job $JOB_ID (JOB_ID was set)"
 else
   JOB_ID=$(run python "$REPO/ubelix/submit_job.py" "$SPEC") || exit 1
   echo "$JOB_ID" > "$STATE"
