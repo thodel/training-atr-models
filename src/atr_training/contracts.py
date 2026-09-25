@@ -316,6 +316,12 @@ class KrakenTrainParams(BaseModel):
         return self.batch_size * self.accumulate_grad_batches
 
 
+#: Never adapt the vision or audio encoder. A regex, because peft matches an
+#: exclusion *list* by suffix and would silently exclude nothing; see
+#: :attr:`VlmTrainParams.exclude_modules`.
+DEFAULT_EXCLUDE_MODULES = r".*\.(vision_tower|audio_tower)\..*"
+
+
 class VlmTrainParams(BaseModel):
     """Hyperparameters for a QLoRA fine-tune of a Qwen3-VL base.
 
@@ -363,6 +369,22 @@ class VlmTrainParams(BaseModel):
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj",
                                  "gate_proj", "up_proj", "down_proj"]
     )
+    #: Modules the adapters must not touch, as a **regular expression** matched
+    #: against the full module path. A list would be the obvious type and is the
+    #: wrong one: peft matches a list by suffix, so ``["vision_tower"]`` excludes
+    #: nothing at all and does it silently (measured against peft 0.20.0) — the
+    #: same shape of failure as the visual budget that looked set and was not
+    #: (#86). A regex is the only form that can name a subtree.
+    #:
+    #: The default freezes the vision and audio encoders, which is what every run
+    #: so far has done without saying so: ``target_modules`` matches by suffix
+    #: too, and in Qwen3-VL-4B and Qwen3.5-4B all 252 and 128 matches are inside
+    #: ``model.language_model`` — their towers do not use these names. Gemma 4's
+    #: do: E4B has 112 in ``model.vision_tower`` and 36 in ``model.audio_tower``,
+    #: wrapped in ``Gemma4ClippableLinear``, which peft refuses outright
+    #: (training-atr-models#95). So this default changes nothing for any measured
+    #: run and makes the families comparable rather than accidentally different.
+    exclude_modules: str = DEFAULT_EXCLUDE_MODULES
     #: lassberg trains ``lm_head`` as well, which helps when the ground truth has
     #: characters the tokenizer rarely saw. It is off here by default: at Qwen3-VL's
     #: 151 k vocab that single module is ~620 M trainable parameters, whose fp32

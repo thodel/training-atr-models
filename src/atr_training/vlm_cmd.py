@@ -105,6 +105,8 @@ def train_cmd(
            "--workers", str(params.workers)]
     if params.modules_to_save:
         cmd += ["--modules-to-save", ",".join(params.modules_to_save)]
+    if params.exclude_modules:
+        cmd += ["--exclude-modules", params.exclude_modules]
     cmd.append("--load-in-4bit" if params.load_in_4bit else "--no-load-in-4bit")
     cmd.append("--gradient-checkpointing" if params.gradient_checkpointing
                else "--no-gradient-checkpointing")
