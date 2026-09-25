@@ -287,8 +287,15 @@ fits on an A40.
 - **`load_in_4bit` at 27 B is untested in this repo.** Every measured run is
   bf16. The 4 B arm in §5 is the control that turns that from an assumption into
   a number.
-- **Gemma has never been trained here at all.** §4 establishes that the budget
-  can be set; it does not establish that the chat template yields a derivable
-  assistant header, that the LoRA target modules are the right ones, or that
-  training converges. The first medieval Gemma arm is as much a smoke test as a
-  measurement, and should be read that way if it fails.
+- **Gemma has never been trained here at all.** Two of the three things that
+  could have stopped it are now settled off the GPU: the budget can be set (§4),
+  and the assistant header is derivable — after a fix. Asked for a generation
+  prompt, Gemma 4 emits `<|turn>model\n<|channel>thought\n<channel|>`, an empty
+  thinking channel that vanishes once the assistant turn has content, so the
+  header the collator looked for occurred in no training sample and the guard
+  would have refused the first batch of a queued 12B job. `assistant_header_ids`
+  now derives it from the render the loss is computed over instead; verified
+  against five bases, and the Qwen headers are byte-identical to what the old
+  code produced. What is still untested is convergence, and whether the default
+  LoRA targets are the right modules for this family. The first medieval Gemma
+  arm remains as much a smoke test as a measurement.

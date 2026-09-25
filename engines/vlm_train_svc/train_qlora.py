@@ -121,6 +121,64 @@ def _parse_kind_pixels(raw: str | None) -> dict[str, int]:
     return out
 
 
+#: Stands in for a transcription while the assistant header is being located. Any
+#: string works as long as a template cannot produce it by itself and a tokenizer
+#: does not split it away — this one is neither a word nor markup.
+_ANSWER_SENTINEL = "ZZQQXX"
+
+
+def assistant_header_ids(processor, prompt: str) -> list[int]:
+    """The tokens that sit between the instruction and the transcription.
+
+    Everything up to and including them is prompt, and the collator masks it out
+    of the loss. Read off the template rather than hardcoded, because it is
+    "<|im_start|>assistant\n<think>\n\n</think>\n\n" for Qwen3.5 and
+    "<|turn>model\n" for Gemma 4.
+
+    **Derived from the render training actually uses**, which is the conversation
+    *with* the answer in it — not from ``add_generation_prompt=True``. The two are
+    not the same string, and on Gemma 4 they are not even close: asked for a
+    generation prompt it emits ``<|turn>model\n<|channel>thought\n<channel|>``,
+    an empty thinking channel that never appears once the assistant turn has
+    content. A header taken from there is absent from every training sample, and
+    the collator's guard fires on the first batch — correctly, but after the job
+    has been queued, scheduled and loaded a 12B base. (``enable_thinking`` is
+    read by that template and inverted relative to Qwen's: False is what *adds*
+    the empty channel. Left alone here; what matters is that the header comes
+    from the same render the loss is computed over, whatever the flag does.)
+
+    Compared as tokens rather than as strings: the common prefix cancels
+    whatever the image placeholder and the instruction tokenize to, so what is
+    left is exactly the tokens the sequence carries before the answer.
+    """
+    tokenizer = processor.tokenizer
+    without = processor.apply_chat_template(
+        chat_example(prompt), tokenize=False, add_generation_prompt=False,
+        **CHAT_TEMPLATE_KWARGS)
+    with_answer = processor.apply_chat_template(
+        chat_example(prompt, _ANSWER_SENTINEL), tokenize=False,
+        add_generation_prompt=False, **CHAT_TEMPLATE_KWARGS)
+    cut = with_answer.find(_ANSWER_SENTINEL)
+    if cut < 0:
+        raise SystemExit(
+            "the chat template did not render the assistant's text, so the point "
+            "where the transcription starts cannot be found; without it the loss "
+            "would cover the instruction as well, which trains the wrong thing")
+
+    before = tokenizer(with_answer[:cut], add_special_tokens=False).input_ids
+    shared = tokenizer(without, add_special_tokens=False).input_ids
+    common = 0
+    while common < len(before) and common < len(shared) and before[common] == shared[common]:
+        common += 1
+    header_ids = before[common:]
+    if not header_ids:
+        raise SystemExit(
+            "could not derive the assistant header from the chat template; without "
+            "it the loss would be computed over the instruction as well as the "
+            "transcription, which trains the wrong thing")
+    return header_ids
+
+
 class HTRCollator:
     """Builds one batch: chat template + processed images, loss on the answer only.
 
@@ -145,23 +203,7 @@ class HTRCollator:
         # every sample has carried since lassberg.
         self.kind_pixels = dict(kind_pixels or {})
 
-        # The assistant header — "<|im_start|>assistant\n" for Qwen — read off the
-        # template rather than hardcoded, by diffing the same conversation with and
-        # without a generation prompt. Everything up to and including it is prompt.
-        without = processor.apply_chat_template(
-            chat_example(prompt), tokenize=False, add_generation_prompt=False,
-            **CHAT_TEMPLATE_KWARGS)
-        with_gen = processor.apply_chat_template(
-            chat_example(prompt), tokenize=False, add_generation_prompt=True,
-            **CHAT_TEMPLATE_KWARGS)
-        header = with_gen[len(without):] if with_gen.startswith(without) else with_gen
-        self.header_ids = processor.tokenizer(header, add_special_tokens=False).input_ids
-        if not self.header_ids:
-            raise SystemExit(
-                "could not derive the assistant header from the chat template; without "
-                "it the loss would be computed over the instruction as well as the "
-                "transcription, which trains the wrong thing"
-            )
+        self.header_ids = assistant_header_ids(processor, prompt)
 
     def _answer_start(self, ids: list[int]) -> int:
         """Index just past the last assistant header in ``ids``."""
