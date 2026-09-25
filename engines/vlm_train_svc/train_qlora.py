@@ -73,6 +73,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--lora-dropout", type=float, default=0.05)
     p.add_argument("--target-modules", default="")
     p.add_argument("--modules-to-save", default="")
+    p.add_argument("--exclude-modules", default="",
+                   help="regex of module paths the adapters must not touch; a "
+                        "list would be matched by suffix and exclude nothing")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--wandb-run", default=None)
 
@@ -119,6 +122,26 @@ def _parse_kind_pixels(raw: str | None) -> dict[str, int]:
             raise SystemExit(f"--kind-pixels: {part!r} is not <kind>=<pixels>")
         out[kind.strip()] = int(value)
     return out
+
+
+def modules_matching(model, targets: list[str], pattern: str) -> list[str]:
+    """Module paths that ``targets`` would hit and ``pattern`` takes back.
+
+    Only so the job log can say how many, and name one. An exclusion that
+    silently excludes nothing is the failure this whole argument exists to avoid,
+    and a number in the log is what makes it visible — peft itself only complains
+    when *every* module was excluded, never when none was.
+    """
+    import re
+
+    if not pattern:
+        return []
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        raise SystemExit(f"--exclude-modules is not a valid regex: {exc}") from None
+    return [name for name, _ in model.named_modules()
+            if name.rsplit(".", 1)[-1] in set(targets) and rx.match(name)]
 
 
 #: Stands in for a transcription while the assistant header is being located. Any
@@ -550,6 +573,9 @@ def build_model(args, processor):
 
     targets = [m for m in args.target_modules.split(",") if m]
     save = [m for m in args.modules_to_save.split(",") if m]
+    # Counted before the adapters go in, because afterwards the module tree has
+    # been rewritten and "how many did this spare" is no longer answerable.
+    would_match = modules_matching(model, targets, args.exclude_modules)
     model = get_peft_model(model, LoraConfig(
         task_type="CAUSAL_LM",
         r=args.lora_r,
@@ -558,7 +584,16 @@ def build_model(args, processor):
         bias="none",
         target_modules=targets or None,
         modules_to_save=save or None,
+        # A string is a regex here; a list would be matched by suffix. See
+        # contracts.DEFAULT_EXCLUDE_MODULES.
+        exclude_modules=args.exclude_modules or None,
     ))
+    if args.exclude_modules:
+        print(f"excluded from adaptation: {len(would_match)} modules matching "
+              f"{args.exclude_modules!r}"
+              + (f" (e.g. {would_match[0]})" if would_match else " — none in this "
+                 "model, which is expected for a base whose encoder does not "
+                 "reuse the projection names"), flush=True)
     model.print_trainable_parameters()
     return model
 
