@@ -39,7 +39,13 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 # Run the commit this job was submitted with (#147): REPO becomes a worktree of it.
 # shellcheck source=pin_code.sh
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
-SIF=$HOME/ubelix/vlm-train.sif
+# Overridable, like train.sbatch's. Hardcoded, this file silently ran the
+# transformers 4.x image for every base that needs 5.x — Qwen3.5 and Gemma 4 —
+# and the only visible sign was a deprecation notice naming v4.52 beside a
+# "Unrecognized processing class" for a model that loads fine by hand:
+#
+#   SIF=$HOME/ubelix/vlm-train-tf5.sif JOB_ID=… submit.sh train_resumable.sbatch
+SIF=${SIF:-$HOME/ubelix/vlm-train.sif}
 SPEC=${SPEC:-$HOME/ubelix/specs/resumable.json}
 # Only consulted when JOB_ID is unset; see the id block below.
 STATE=$S/runs/slurm-$SLURM_JOB_ID.jobid
