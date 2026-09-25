@@ -165,6 +165,28 @@ arm belongs on a single granularity first. `train_qlora` now says so and stops
 pre-scaling per kind when the budget is stepped: shrinking a crop before a
 processor that resizes to its own grid anyway only removes detail.
 
+**And half the token count does not buy half the cost.** Measured on two idle
+RTX 4090s in the same fifteen minutes, same corpus, same split, same effective
+batch of 16 as micro-batch 2 × accumulate 8, line granularity, 4-bit:
+
+| | 200 optimizer steps | s/step | GPU memory |
+|---|---:|---:|---:|
+| `Qwen/Qwen3.5-4B` (4.66 B) | 873 s | **4.37** | 9 876 MiB |
+| `google/gemma-4-E4B-it` (8.00 B) | 903 s | **4.52** | 21 624 MiB |
+
+Gemma is 3.4 % *slower*, not faster. At nearly double the parameters that is
+still a good showing and consistent with 140 visual tokens against 256 — but the
+efficiency claim above is about tokens, and it does not carry over to wall-clock.
+
+The number to plan with is the third column: **2.2× the memory at an identical
+micro-batch.** A Gemma arm at micro-batch 16 on an 80 GB H100 is not obviously
+safe, and that has to be measured before thirty GPU-hours are booked against it.
+
+(An earlier reading of these runs had Gemma *faster* per sample. It compared
+micro-batch 2 against micro-batch 16, and the batch-16 figure came from a run
+that died of OOM seconds later — almost certainly already thrashing. Both numbers
+are discarded.)
+
 ## 5. The confound to avoid before it is created
 
 `VlmTrainParams.load_in_4bit` defaults to `True`, but both corpora's specs set it
@@ -275,6 +297,19 @@ fits on an A40.
 - **The 19th-century benchmark is 2 751 isolated lines.** A base that is better
   at holding a page together would show nothing there. §6's last step exists for
   that, but the selection is still made on a line-level number.
+- **The micro-batch is a free variable nobody has pinned.** The measured
+  baselines ran at batch 16 × accumulate 1; the mixed run and the arms above run
+  at 2 × 8. The effective batch is the same, so the *result* should be, but the
+  cost is not: 4.37 s/step at micro-batch 2 is better per sample than the batch-16
+  figure it replaced — on a card where batch 16 did not fit, so the comparison is
+  not clean. On an H100 both fit, and one 200-step probe would settle it for the
+  whole ladder. Worth doing before the big arms, not after.
+- **Watching a run needs the checkpoint directory, not the log.**
+  `logs/train.log` is only flushed when the subprocess ends, so a running job is
+  invisible in it — six minutes of silence looks like a hang and is not.
+  `runs/checkpoints/<job>/checkpoint-*/trainer_state.json` carries `global_step`,
+  `max_steps` and the loss history, and the timestamps of two checkpoint
+  directories are the cheapest honest throughput measurement available.
 - **One seed, one epoch, no error bar.** This project has never measured its own
   run-to-run variance, and the differences at the top of the ladder may be
   smaller than it. Before reading a 9 B-vs-27 B gap as real, repeat one 4 B arm
@@ -287,9 +322,14 @@ fits on an A40.
 - **`load_in_4bit` at 27 B is untested in this repo.** Every measured run is
   bf16. The 4 B arm in §5 is the control that turns that from an assumption into
   a number.
-- **Gemma has never been trained here at all.** Two of the three things that
-  could have stopped it are now settled off the GPU: the budget can be set (§4),
-  and the assistant header is derivable — after a fix. Asked for a generation
+- **Gemma trains.** As of 2026-09-25 the first arm is at step 1 200 of 19 162 on
+  the medieval corpus, loss 6.26 → 4.44 → 2.3 over the first 1 200 steps. Four
+  things had to be fixed to get there, and each of them was invisible until the
+  one before it was out of the way (#92, #94, #97, #98). What is still open is
+  whether it *converges* to something competitive, which only the run answers.
+- **The earlier form of this caveat, kept because the order was the lesson.**
+  Two of the three things that could have stopped Gemma were settled off the GPU:
+  the budget can be set (§4), and the assistant header is derivable — after a fix. Asked for a generation
   prompt, Gemma 4 emits `<|turn>model\n<|channel>thought\n<channel|>`, an empty
   thinking channel that vanishes once the assistant turn has content, so the
   header the collator looked for occurred in no training sample and the guard
