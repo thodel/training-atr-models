@@ -19,13 +19,17 @@ with a toy model:
 
 from __future__ import annotations
 
+import pathlib
 import re
+import tempfile
 
 import pytest
 
 from atr_training.contracts import DEFAULT_EXCLUDE_MODULES, VlmTrainParams
 from atr_training.vlm_cmd import train_cmd
 from vlm_train_svc.train_qlora import modules_matching
+
+_TMP = pathlib.Path(tempfile.mkdtemp(prefix="atr-collator-"))
 
 #: Module paths as the three families actually spell them (measured).
 QWEN3VL = ["model.language_model.layers.0.self_attn.q_proj",
@@ -117,3 +121,61 @@ class TestItReachesTheTrainer:
 
     def test_it_can_be_turned_off(self):
         assert "--exclude-modules" not in self._cmd(exclude_modules="")
+
+
+# ── one list of images per text (#95, second blocker) ───────────────────────
+class RecordingProcessor:
+    """Enough of a processor to see what the collator hands it."""
+
+    class _Tok:
+        pad_token_id = 0
+
+        def __call__(self, text, add_special_tokens=True):
+            # One id per character, so the header derivation has a real diff.
+            return type("E", (), {"input_ids": [ord(c) for c in text]})()
+
+    def __init__(self) -> None:
+        self.tokenizer = self._Tok()
+        self.seen = None
+
+    def apply_chat_template(self, messages, tokenize=False,
+                            add_generation_prompt=False, **kwargs):
+        answer = next((m["content"][0]["text"] for m in messages
+                       if m["role"] == "assistant"), None)
+        # The assistant marker appears only when there is an assistant turn —
+        # as a real template does, and as the header derivation relies on.
+        return "<u>T." + (f"<a>{answer}" if answer is not None else "")
+
+    def __call__(self, text, images, return_tensors=None, padding=None):
+        self.seen = images
+        raise _Stop
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_the_collator_passes_one_image_list_per_text():
+    """Gemma 4 reads a flat list as one sample's images and refuses the batch:
+
+        ValueError: Received inconsistently sized batches of images (1) and text (2)
+
+    Qwen accepts either form and produces byte-identical output — measured, 2x81
+    ids for Qwen3-VL-4B and 2x85 for Qwen3.5-4B — so nested is right everywhere.
+    """
+    from PIL import Image
+
+    from vlm_train_svc.train_qlora import HTRCollator
+
+    processor = RecordingProcessor()
+    collator = HTRCollator(processor, "T.", max_seq_len=1024)
+    batch = []
+    for name in ("a.jpg", "b.jpg"):
+        path = _TMP / name
+        Image.new("RGB", (40, 12)).save(path)
+        batch.append({"image": str(path), "text": "x", "source_type": "line"})
+
+    with pytest.raises(_Stop):
+        collator(batch)
+    assert processor.seen == [[processor.seen[0][0]], [processor.seen[1][0]]]
+    assert len(processor.seen) == 2 and all(len(g) == 1 for g in processor.seen)
