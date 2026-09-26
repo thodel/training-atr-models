@@ -31,6 +31,7 @@ submits jobs and records scores; this module only decides who continues.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
@@ -168,15 +169,18 @@ def iqr_anomaly_cutoff(scores: Mapping[str, float], factor: float = 1.5
     ``Q1 - factor * IQR``. Any config whose score is below the lower fence is
     flagged as a likely training collapse (not merely a poor configuration).
 
-    Returns ``(float('-inf'), nan, nan)`` when fewer than 4 configs are present —
-    IQR needs at least a Q1 and Q3, which requires 4+ values to define non-
-    trivially. Returns ``(float('inf'), nan, nan)`` when all scores are identical
-    (zero IQR means the fence is above every score).
+    **No fence, no flags** in the two cases where the statistic cannot say
+    anything, and in both the fence is ``-inf`` so that nothing falls below it:
+
+    * fewer than 4 configs — Q1 and Q3 need four values to be distinct
+      positions; the return is ``(-inf, nan, nan)``;
+    * a zero IQR, i.e. every score in the interquartile range identical — the
+      return is ``(-inf, q1, 0.0)``, because a fence at Q1 itself would flag
+      every score at the bottom of a perfectly tight cluster as a collapse.
     """
     values = sorted(v for v in scores.values())
     n = len(values)
     if n < 4:
-        import math
         return (float("-inf"), math.nan, math.nan)
 
     # Q1 = value at index floor(n/4), Q3 = value at index floor(3n/4)
@@ -187,7 +191,6 @@ def iqr_anomaly_cutoff(scores: Mapping[str, float], factor: float = 1.5
     iqr = q3 - q1
 
     if iqr == 0:
-        import math
         return (float("-inf"), q1, 0.0)
 
     lower_fence = q1 - factor * iqr
