@@ -7,10 +7,14 @@ six-day training would never finish. These tests pin the three pieces that make
 a requeue transparent — the lifecycle edge, the signal, and the resume path.
 """
 
+import json
 import shutil
 import signal
+import time
 
 import pytest
+
+from atr_training.artefact_cache import ArtefactCache, UNPINNED_MAX_AGE_DAYS
 
 from atr_training.contracts import VlmTrainParams
 from atr_training.jobstore import TRANSITIONS, IllegalTransition
@@ -219,6 +223,46 @@ def test_a_resume_continues_from_the_cached_corpus(store, settings):
 
     assert done.status == "completed"
     assert source.calls == prepared, "the resumed attempt re-streamed the corpus"
+
+
+def test_a_waiting_job_keeps_its_corpus_past_the_expiry_window(store, settings):
+    """Stage 2 runs even when the seven days ran out while it queued (#96).
+
+    16191742 adopted an entry with five days left on it and was scheduled to
+    start in three — an estimate that slipped a day at a time. An unpinned entry
+    expires because "whatever the dataset is today" may have moved; that is a
+    reason to stop a run from *choosing* it, not to take it away from a run that
+    chose it a week ago and has nothing else to resume from. Adopting claims the
+    entry, and the claim outlasts the queue.
+    """
+    key = None
+    source = FakeSource({"train": 4, "eval": 2})
+    job = store.create(request_with(model_id="qwen3vl-expired-while-queued"))
+    pipeline = Pipeline(store, settings, runner=PreemptingRunner(), source=source)
+    with pytest.raises(Preempted):
+        pipeline.execute(job.id)
+    key = pipeline._cache_key(store.load(job.id))
+    prepared = list(source.calls)
+
+    # An adopted corpus leaves nothing in the job directory ...
+    data = store.paths(job.id).data
+    (data / "train.jsonl").unlink()
+    (data / "val.jsonl").unlink()
+    # ... and the window closed while the job sat in the queue.
+    cache = ArtefactCache(settings.artefact_cache_root)
+    manifest = cache._dir(key) / ArtefactCache.MANIFEST
+    record = json.loads(manifest.read_text())
+    record["built_at"] = time.time() - (UNPINNED_MAX_AGE_DAYS + 2) * 86400
+    manifest.write_text(json.dumps(record))
+    assert cache.lookup(key, for_job="somebody-else")[0] is None, "still expired"
+
+    done = Pipeline(store, settings, runner=FakeRunner(),
+                    source=source).execute(job.id)
+
+    assert done.status == "completed"
+    assert source.calls == prepared, "the resumed attempt re-streamed the corpus"
+    # And once the job is done, the entry goes back to the ordinary deadline.
+    assert cache.entry(key).claims == {}
 
 
 def test_the_job_directory_still_wins_over_the_cache(store, settings, monkeypatch):

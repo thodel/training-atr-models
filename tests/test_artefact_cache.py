@@ -18,6 +18,7 @@ import pytest
 from atr_training.artefact_cache import (
     ArtefactCache,
     ArtefactCacheError,
+    CLAIM_MAX_AGE_DAYS,
     UNPINNED_MAX_AGE_DAYS,
     key_for,
     key_for_specs,
@@ -373,3 +374,119 @@ def test_fresh_cache_root_falls_back_to_copy(monkeypatch, tmp_path):
     entry = cache.put(key, [source / "train.arrow"], move=False)
     assert (source / "train.arrow").exists(), "copied: originals must stay"
     assert (entry.path / "train.arrow").exists()
+
+
+# ── a claim outranks the deadline, for the job that made it (#96) ────────────
+#
+# The two-stage UBELIX flow: stage 1 adopts an entry in eight seconds, stage 2
+# waits days in the queue and resolves the same key again in a fresh process. Job
+# 16191742 was submitted with five days left on its corpus and an estimated start
+# that slipped a day at a time — and a job that adopted has nothing in its own
+# directory to fall back on, so an expired entry is not a slow start, it is a
+# refusal after three days of waiting.
+
+
+def _claim_age(cache, key, job_id, days):
+    """Backdate a claim, the way :func:`_age` backdates the build."""
+    manifest = cache._dir(key) / ArtefactCache.MANIFEST
+    data = json.loads(manifest.read_text())
+    data["claims"][job_id] = time.time() - days * 86400
+    manifest.write_text(json.dumps(data))
+
+
+def test_the_job_that_claimed_an_entry_keeps_it_past_the_deadline(tmp_path):
+    cache = ArtefactCache(tmp_path / "cache")
+    key = key_for(spec(), "kraken")
+    cache.put(key, artefact(tmp_path))
+    cache.claim(key, "20260925T051051Z-page-v1")
+
+    _age(cache, key, UNPINNED_MAX_AGE_DAYS + 3)
+
+    found, why = cache.lookup(key, for_job="20260925T051051Z-page-v1")
+    assert found is not None, why
+    assert "claimed it before it expired" in why
+
+
+def test_the_deadline_still_holds_for_every_other_job(tmp_path):
+    """The caution is about *choosing* data that may have moved. A new run is
+    still choosing; the claimant chose days ago."""
+    cache = ArtefactCache(tmp_path / "cache")
+    key = key_for(spec(), "kraken")
+    cache.put(key, artefact(tmp_path))
+    cache.claim(key, "the-job-that-waits")
+    _age(cache, key, UNPINNED_MAX_AGE_DAYS + 3)
+
+    assert cache.lookup(key, for_job="somebody-else")[0] is None
+    assert cache.lookup(key)[0] is None
+
+
+def test_a_released_claim_stops_holding_the_entry(tmp_path):
+    """Released on a terminal state, so an entry goes back to the ordinary
+    deadline as soon as nothing needs it."""
+    cache = ArtefactCache(tmp_path / "cache")
+    key = key_for(spec(), "kraken")
+    cache.put(key, artefact(tmp_path))
+    cache.claim(key, "job-a")
+    _age(cache, key, UNPINNED_MAX_AGE_DAYS + 1)
+    cache.release(key, "job-a")
+
+    assert cache.lookup(key, for_job="job-a")[0] is None
+    assert cache.entry(key).claims == {}
+
+
+def test_a_claim_nobody_released_expires_too(tmp_path):
+    """A job killed with SIGKILL, or a host that went away, must not pin 40 GB
+    for ever — and no Slurm queue is a month long."""
+    cache = ArtefactCache(tmp_path / "cache")
+    key = key_for(spec(), "kraken")
+    cache.put(key, artefact(tmp_path))
+    cache.claim(key, "job-that-died")
+    _age(cache, key, UNPINNED_MAX_AGE_DAYS + 1)
+    _claim_age(cache, key, "job-that-died", CLAIM_MAX_AGE_DAYS + 1)
+
+    assert cache.lookup(key, for_job="job-that-died")[0] is None
+
+
+def test_eviction_leaves_an_expired_entry_a_job_still_holds(tmp_path):
+    """Idle time cannot see a queued job: it opens nothing while it waits."""
+    cache = ArtefactCache(tmp_path / "cache")
+    key = key_for(spec(), "kraken")
+    cache.put(key, artefact(tmp_path))
+    cache.claim(key, "job-in-the-queue")
+    _age(cache, key, UNPINNED_MAX_AGE_DAYS + 5)
+
+    removed, note = cache.evict()
+    assert removed == []
+    assert "expired but claimed" in note
+    assert cache.entry(key) is not None
+
+
+def test_eviction_removes_an_expired_entry_nobody_holds(tmp_path):
+    cache = ArtefactCache(tmp_path / "cache")
+    key = key_for(spec(), "kraken")
+    cache.put(key, artefact(tmp_path))
+    _age(cache, key, UNPINNED_MAX_AGE_DAYS + 5)
+
+    removed, _ = cache.evict()
+    assert [e.key for e in removed] == [key.digest]
+
+
+def test_the_size_budget_takes_the_unclaimed_entry_and_leaves_the_claimed_one(tmp_path):
+    """Over budget, both idle, both old: the one a job is holding survives.
+
+    Deleting it would turn the cache hit a queued job was promised into a failed
+    training run — the trade the idle-time rule already refuses to make, for a
+    case idle time cannot see.
+    """
+    cache = ArtefactCache(tmp_path / "cache", max_bytes=10)
+    held = key_for(spec(revision="held"), "kraken")
+    free = key_for(spec(revision="free"), "kraken")
+    cache.put(held, artefact(tmp_path, name="held", size=10**6))
+    cache.put(free, artefact(tmp_path, name="free", size=10**6))
+    cache.claim(held, "job-in-the-queue")
+    _age(cache, held, 5)
+    _age(cache, free, 5)
+
+    removed, _ = cache.evict()
+    assert [e.key for e in removed] == [free.digest]
+    assert cache.entry(held) is not None

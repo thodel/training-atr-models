@@ -442,7 +442,17 @@ shared cache already holds again (1.8 T on 16.09.2026).
   2 h. It is keyed on what the corpus is built from (repo, revision, projects,
   split, partition, seed, page cap, engine, and the engine's compile options),
   never on the job id. kraken and vllm jobs use it; trocr jobs do not. An entry
-  built from a spec without a pinned revision is reused for 7 days at most.
+  built from a spec without a pinned revision is reused for 7 days at most —
+  **except by a job that has already taken it**. Building or adopting an entry
+  *claims* it (#96): that job keeps reusing it however old it gets, eviction
+  leaves it alone even when it has expired, and the claim is dropped when the job
+  completes, fails or is cancelled. Every other job still faces the 7 days. The
+  case is the two-stage UBELIX path, where stage 1 adopts an entry in seconds and
+  stage 2 resolves the same key days later in a fresh process, with nothing in the
+  job directory to fall back on: job 16191742 was submitted with five days left
+  and a start estimate that slipped a day at a time. A claim nobody released
+  stops holding after 30 days, so a job killed outright cannot pin 40 GB for
+  ever.
 - **`.env` and its backups.** They hold keys. `.env.*` is ignored by git,
   except `.env.example`.
 

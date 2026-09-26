@@ -29,6 +29,16 @@ is today", and a cache that ignores that would serve last month's pages while
 reporting a fresh compile — worse than the waste it replaces. Entries built from
 an unpinned spec are reusable only within :data:`UNPINNED_MAX_AGE_DAYS`; a spec
 that names a revision is reusable indefinitely, because it cannot have moved.
+
+**But the deadline is for new runs, not for a run already under way.** A job that
+adopted an entry **claims** it, and from then on that one job may keep reusing it
+however old it has become, while every other job still faces the deadline. The
+case is the two-stage UBELIX flow: stage 1 adopts an entry in eight seconds,
+stage 2 waits days in the Slurm queue and resolves the same key again in a fresh
+process — and a job that adopted has nothing in its own directory to fall back
+on. Job 16191742 was submitted with five days left on its corpus and an estimated
+start that slipped a day at a time (#96). The caution behind the deadline is about
+choosing data that may have moved; this job chose already.
 """
 
 from __future__ import annotations
@@ -64,6 +74,11 @@ class ArtefactCacheError(RuntimeError):
 #: — the case this exists for is minutes apart — without letting a corpus drift
 #: silently across a month of work.
 UNPINNED_MAX_AGE_DAYS = 7
+
+#: How long a claim holds. A job that dies without releasing its claim — killed
+#: with SIGKILL, or a host that went away — must not pin 40 GB for ever, and no
+#: Slurm queue is a month long.
+CLAIM_MAX_AGE_DAYS = 30.0
 
 #: An entry used more recently than this is never evicted, whatever the budget
 #: says. A cached arrow is read throughout training, not just at the start, so
@@ -191,6 +206,10 @@ class CacheEntry:
     #: line and page counts the guards read, and the geometry measurement, none of
     #: which can be recomputed once the pages that produced them are gone.
     payload: dict[str, Any] = field(default_factory=dict)
+    #: ``job_id -> when it adopted this entry``. A claim is a job saying "I am
+    #: training against this", which outranks the expiry deadline for that job
+    #: and keeps eviction off the entry entirely (#96).
+    claims: dict[str, float] = field(default_factory=dict)
 
     @property
     def age_days(self) -> float:
@@ -200,17 +219,38 @@ class CacheEntry:
     def idle_hours(self) -> float:
         return max(0.0, (time.time() - max(self.last_used, self.built_at)) / 3600.0)
 
-    def usable(self, max_age_days: float = UNPINNED_MAX_AGE_DAYS) -> tuple[bool, str]:
+    def open_claims(self, max_age_days: float = CLAIM_MAX_AGE_DAYS) -> list[str]:
+        """Jobs still holding this entry, newest claim first."""
+        cutoff = time.time() - max_age_days * 86400.0
+        fresh = {job: at for job, at in self.claims.items() if at >= cutoff}
+        return sorted(fresh, key=lambda job: fresh[job], reverse=True)
+
+    def claimed_by(self, job_id: str | None,
+                   max_age_days: float = CLAIM_MAX_AGE_DAYS) -> bool:
+        return bool(job_id) and job_id in self.open_claims(max_age_days)
+
+    def usable(self, max_age_days: float = UNPINNED_MAX_AGE_DAYS,
+               *, for_job: str | None = None) -> tuple[bool, str]:
         """Whether this entry may be served, and why not when it may not.
 
         Existence is not checked here: :meth:`ArtefactCache.entry` only builds one
         of these from a readable manifest, and ``put`` writes the manifest last
         and then renames into place — so a directory that has a manifest is a
         complete artefact, and one that does not is simply not an entry.
+
+        ``for_job`` is the job asking. A job that has claimed this entry is served
+        past the deadline, and only that job: the deadline protects a run from
+        *choosing* data that may have moved, and this one chose it days ago. Said
+        out loud in the reason, because knowingly training on an expired corpus
+        belongs in the log.
         """
         if self.pinned:
             return True, "revision is pinned"
         if self.age_days > max_age_days:
+            if self.claimed_by(for_job):
+                return True, (f"built {self.age_days:.1f} days ago, past the "
+                              f"{max_age_days:.0f}-day limit, but {for_job} claimed it "
+                              f"before it expired and is still running")
             return False, (f"built {self.age_days:.1f} days ago from an unpinned "
                            f"revision (limit {max_age_days:.0f}) — the dataset may "
                            f"have moved since")
@@ -255,21 +295,61 @@ class ArtefactCache:
             job_id=data.get("job_id"),
             last_used=float(data.get("last_used", 0.0)),
             payload=dict(data.get("payload") or {}),
+            claims={str(job): float(at)
+                    for job, at in (data.get("claims") or {}).items()},
         )
 
-    def lookup(self, key: ArtefactKey) -> tuple[CacheEntry | None, str]:
+    def lookup(self, key: ArtefactKey, *, for_job: str | None = None
+               ) -> tuple[CacheEntry | None, str]:
         """The entry to reuse, and a sentence saying why it was or was not.
 
         A hit stamps ``last_used``, which is what keeps eviction from removing an
-        artefact a running job is still reading.
+        artefact a running job is still reading. ``for_job`` lets the job that
+        already claimed this entry have it past the deadline (see
+        :meth:`CacheEntry.usable`).
         """
         found = self.entry(key)
         if found is None:
             return None, "not cached"
-        ok, why = found.usable(self.max_age_days)
+        ok, why = found.usable(self.max_age_days, for_job=for_job)
         if ok:
             self.touch(key)
         return (found if ok else None), why
+
+    def claim(self, key: ArtefactKey | str, job_id: str) -> None:
+        """Record that ``job_id`` is training against this entry (#96).
+
+        Best-effort, like :meth:`touch`: a cache is an optimisation, and a job
+        must not fail because a manifest could not be rewritten. The cost of a
+        lost claim is the old behaviour — a refusal after the queue wait.
+        """
+        self._amend(key, lambda data: data.setdefault("claims", {}).update(
+            {job_id: time.time()}))
+
+    def release(self, key: ArtefactKey | str, job_id: str) -> None:
+        """Drop ``job_id``'s claim: it is finished, failed or cancelled.
+
+        Called on a terminal state rather than trusted to expire, so an entry
+        goes back to the ordinary deadline as soon as nothing needs it.
+        """
+        self._amend(key, lambda data: data.get("claims", {}).pop(job_id, None))
+
+    def _amend(self, key: ArtefactKey | str, change) -> None:
+        """Read the manifest, apply ``change``, write it back. Never raises.
+
+        Read-modify-write without a lock, like :meth:`touch`, and for the same
+        reason it is safe enough: the cache root is local disk on one host, and
+        the worst a lost race can cost is one claim or one ``last_used`` stamp.
+        """
+        manifest = self._dir(key) / self.MANIFEST
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            data.setdefault("claims", {})
+            change(data)
+            manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                                encoding="utf-8")
+        except (OSError, ValueError):
+            pass
 
     def touch(self, key: ArtefactKey | str) -> None:
         """Record that this entry is in use. Best-effort: never fails a job."""
@@ -346,6 +426,7 @@ class ArtefactCache:
             "last_used": time.time(),
             "job_id": job_id,
             "payload": dict(payload or {}),
+            "claims": {},
             "describes": key.describes,
         }, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -375,30 +456,45 @@ class ArtefactCache:
         """Drop expired entries, then the least recently used, to meet the budget.
 
         These are ~40 GB each, so an unbounded cache trades one way of filling the
-        share for another. Two rules the size budget does not get to override:
+        share for another. Three rules the size budget does not get to override:
 
-        An entry used within ``min_idle_hours`` is never removed. Nothing here
-        tracks which job holds which artefact, and a kraken run reads its arrow
-        for its whole length — deleting one mid-run would turn a cache miss into a
-        failed training run, which is far worse than the disk it saves.
+        An entry used within ``min_idle_hours`` is never removed. A kraken run
+        reads its arrow for its whole length, so "nothing has opened it in three
+        days" is the cheap evidence that no run depends on it.
+
+        **A claimed entry is never removed, expired or not** (#96). A claim is a
+        job saying it is training against this corpus, and a job waiting days in a
+        Slurm queue opens nothing in the meantime — idle time cannot see it, which
+        is what made the deletion of a corpus a queued job still needed possible.
+        Claims older than :data:`CLAIM_MAX_AGE_DAYS` do not hold, so a job that
+        died without releasing cannot pin 40 GB for ever.
 
         And what was removed is returned, with a sentence on where it stopped,
         because a cache that quietly deletes 40 GB is its own kind of problem.
         """
         removed: list[CacheEntry] = []
+        held = 0
         for entry in self.entries():
             ok, _ = entry.usable(self.max_age_days)
-            if not ok:
-                shutil.rmtree(entry.path, ignore_errors=True)
-                removed.append(entry)
+            if ok:
+                continue
+            if entry.open_claims():
+                held += 1
+                continue
+            shutil.rmtree(entry.path, ignore_errors=True)
+            removed.append(entry)
 
+        note_held = f", {held} expired but claimed" if held else ""
         if self.max_bytes is None:
-            return removed, f"no size budget; removed {len(removed)} expired"
+            return removed, f"no size budget; removed {len(removed)} expired{note_held}"
 
-        remaining = sorted(self.entries(), key=lambda e: max(e.last_used, e.built_at))
-        total = sum(e.bytes_ for e in remaining)
-        while total > self.max_bytes and remaining:
-            oldest = remaining.pop(0)
+        surviving = sorted(self.entries(), key=lambda e: max(e.last_used, e.built_at))
+        # The budget counts every byte on disk, claimed or not — that is what the
+        # disk holds. Only the unclaimed ones may be deleted to get under it.
+        total = sum(e.bytes_ for e in surviving)
+        candidates = [e for e in surviving if not e.open_claims()]
+        while total > self.max_bytes and candidates:
+            oldest = candidates.pop(0)
             if oldest.idle_hours < min_idle_hours:
                 return removed, (
                     f"over budget by {(total - self.max_bytes) / 1e9:.1f} GB, but the "
@@ -408,4 +504,5 @@ class ArtefactCache:
             shutil.rmtree(oldest.path, ignore_errors=True)
             removed.append(oldest)
             total -= oldest.bytes_
-        return removed, f"removed {len(removed)} entry(s), {total / 1e9:.1f} GB remain"
+        return removed, (f"removed {len(removed)} entry(s), {total / 1e9:.1f} GB "
+                         f"remain{note_held}")
