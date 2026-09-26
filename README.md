@@ -37,7 +37,7 @@ flowchart TB
   venvs -- "uploads: trained models, page datasets<br/>private · by hand or auto-publish" --> hf
 ```
 
-Beschrieben in drei Dokumenten (englisch):
+Beschrieben in vier Dokumenten (englisch):
 
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — asteraix im Detail: der
   Dienst und sein Launcher, die drei venvs, der Lebenslauf eines Jobs, was
@@ -49,6 +49,11 @@ Beschrieben in drei Dokumenten (englisch):
   Basismodell und welche Grösse als Nächstes: was gemessen ist, warum eine
   Matrix bezahlbar ist (ein prepare, N Arme), die Kandidaten inklusive
   Qwen3.8 und Gemma 4, und in welcher Reihenfolge gerechnet wird.
+- [`docs/GEMMA_TUNING.md`](docs/GEMMA_TUNING.md) — Gemma liest 3.2 Punkte
+  schlechter als Qwen; was davon an unseren eigenen Einstellungen liegt (halbes
+  Token-Budget, ein Prompt-Block, den das Training nie sah), was die offizielle
+  Empfehlung anders macht, und die Experimente in der Reihenfolge Wirkung pro
+  Kosten — je eine Änderung, Signifikanzschwelle 0.6 Punkte.
 
 Das **Gesamtbild** beider Maschinen — idhefix, die Clients, alle Kanten, das
 Share und die Werte, die auf beiden Maschinen übereinstimmen müssen — steht im
