@@ -1120,26 +1120,26 @@ class BasePipeline(ABC):
     def _resume_artifacts(self, job: TrainJob) -> tuple[Any, Any] | None:
         """The artefacts a requeued job should carry on training against.
 
-        **Not the same question as ``_reuse_artefact``.** That one asks whether
-        some *other* job's compiled corpus can be adopted, and answers None for
-        any backend whose output is not relocatable — the VLM backend's JSONL
-        names image paths inside its own job directory, so it deliberately stays
-        out of the cache. But that is exactly the property that makes a resume
-        easy: the files are in this job's directory and the requeue did not
-        delete it. A backend that cannot answer returns None and the job is
+        The default is the content-addressed lookup: the same key the job's own
+        compile used, so what comes back is the corpus this run started with and
+        not a recompiled one — which is what the refusal in :meth:`execute`
+        exists to protect. A backend that can answer from the job directory
+        overrides this and falls back here; the VLM backend does both, because a
+        run that adopted a cached corpus has nothing in its own directory to
+        resume from (#100). When neither has it, this returns None and the job is
         refused rather than silently restarted.
         """
-        reused = self._reuse_artefact(job)
-        return reused
+        return self._reuse_artefact(job)
 
     def _cache_key(self, job: TrainJob):
         """The content key for this job's compiled corpus, or None to not cache.
 
         None is the default and means "this backend does not reuse artefacts",
         not "caching is off". A backend may only override this if what its
-        ``_compile`` writes is *relocatable*: the VLM backend's JSONL samples name
-        image paths inside the job directory, so they are not, and it stays out
-        until that is addressed.
+        ``_compile`` writes is *relocatable*. The VLM backend's samples were not,
+        until #117 gave the trainer an explicit ``--data-root``: they have named
+        ``data/pages/<file>.jpg`` relative to that root ever since, and the whole
+        of ``data/`` moves as a unit, so it overrides this (see its ``_cache_key``).
         """
         return None
 
