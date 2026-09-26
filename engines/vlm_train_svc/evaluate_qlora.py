@@ -151,13 +151,18 @@ def _looks_truncated(text: str, processor, cap: int) -> bool:
     return n >= cap - 2
 
 
-#: The tokens that end an assistant turn in the Qwen chat format. Looked up by
-#: NAME in each model's own tokenizer, never by id: the two families disagree
-#: completely (`<|im_end|>` is 151645 in Qwen3-VL and 248046 in Qwen3.5).
-STOP_TOKENS = ("<|im_end|>", "<|endoftext|>")
+#: Tokens that end an assistant turn, across the families trained here. Looked up
+#: by NAME in each model's own tokenizer, never by id: the families disagree
+#: completely (`<|im_end|>` is 151645 in Qwen3-VL and 248046 in Qwen3.5; Gemma 4
+#: has no such token at all and ends a turn with `<turn|>`, id 106).
+#:
+#: Only **end** markers belong here. Gemma's opener is `<|turn>`, one character
+#: different from its terminator `<turn|>`, and stopping on the opener would end
+#: every generation at zero tokens.
+STOP_TOKENS = ("<|im_end|>", "<|endoftext|>", "<turn|>", "<end_of_turn>")
 
 
-def stop_token_ids(tokenizer) -> list[int]:
+def stop_token_ids(tokenizer, processor=None) -> list[int]:
     """The ids ``generate`` must stop on, from this model's tokenizer.
 
     Qwen3-VL ships a ``generation_config.json`` with ``eos_token_id = [151645,
@@ -171,18 +176,74 @@ def stop_token_ids(tokenizer) -> list[int]:
 
     Passing the ids explicitly makes the stop condition a property of this code
     rather than of whichever checkpoint happens to ship a config file.
+
+    Three sources, in order of how much they prove:
+
+    1. **The chat template**, when a processor is given: the token that follows the
+       assistant's text in a training render is by construction the one the model
+       was taught to emit. Derived the same way as the assistant header, and for
+       the same reason — a list of names known to this file cannot keep up with a
+       new family. Gemma 4 was that new family: it has neither of the two Qwen
+       tokens, so the hardcoded list refused it outright and a completed run
+       (19,162 of 19,162 steps, final loss 1.117) died in its test stage.
+    2. **The tokenizer's own ``eos_token``**, which every model here has.
+    3. :data:`STOP_TOKENS`, as a net for a template this code cannot render.
     """
     unk = getattr(tokenizer, "unk_token_id", None)
-    ids = []
-    for name in STOP_TOKENS:
-        tid = tokenizer.convert_tokens_to_ids(name)
+    ids: list[int] = []
+
+    def add(tid) -> None:
         if isinstance(tid, int) and tid >= 0 and tid != unk and tid not in ids:
             ids.append(tid)
+
+    for tid in turn_end_ids(processor, tokenizer):
+        add(tid)
+    add(getattr(tokenizer, "eos_token_id", None))
+    for name in STOP_TOKENS:
+        add(tokenizer.convert_tokens_to_ids(name))
     if not ids:
         raise RuntimeError(
-            f"none of {STOP_TOKENS} exist in this tokenizer — generation would have "
-            "no stop condition and every prediction would run to max_new_tokens")
+            f"this tokenizer has no eos_token and none of {STOP_TOKENS}, and the "
+            "chat template yielded no terminator — generation would have no stop "
+            "condition and every prediction would run to max_new_tokens")
     return ids
+
+
+#: Stands in for a transcription while the turn terminator is being located.
+_ANSWER_SENTINEL = "ZZQQXX"
+
+
+def turn_end_ids(processor, tokenizer) -> list[int]:
+    """The tokens a training render puts after the assistant's text, if any.
+
+    Never raises: this is the best of three sources in :func:`stop_token_ids`, not
+    a requirement. A processor without a usable chat template simply contributes
+    nothing.
+    """
+    if processor is None or not hasattr(processor, "apply_chat_template"):
+        return []
+    try:
+        rendered = processor.apply_chat_template(
+            chat_example("Transcribe.", _ANSWER_SENTINEL), tokenize=False,
+            add_generation_prompt=False, **CHAT_TEMPLATE_KWARGS)
+        cut = rendered.find(_ANSWER_SENTINEL)
+        if cut < 0:
+            return []
+        tail = rendered[cut + len(_ANSWER_SENTINEL):]
+        ids = list(tokenizer(tail, add_special_tokens=False).input_ids)
+        if not ids:
+            return []
+        # ONLY the first token, and only if it is a special or added one. The
+        # tail is "<|im_end|>\n" for Qwen and "<turn|>\n" for Gemma, so taking
+        # the whole thing would make a bare newline a stop token — and a page or
+        # block transcription is newlines. That would have truncated every
+        # multi-line prediction at its first line break, and scored it as a model
+        # that cannot read past one line.
+        special = set(getattr(tokenizer, "all_special_ids", None) or [])
+        special |= set((getattr(tokenizer, "get_added_vocab", dict)() or {}).values())
+        return [ids[0]] if ids[0] in special else []
+    except Exception:  # noqa: BLE001 — a better guess must never fail the run
+        return []
 
 
 def _parse_kind_pixels(raw: str | None) -> dict[str, int]:
@@ -216,7 +277,7 @@ def transcribe(model, processor, image_path: Path, prompt: str, max_new_tokens: 
         inputs = processor(text=[text], images=[image], return_tensors="pt")
     inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
     with torch.no_grad():
-        stops = stop_token_ids(processor.tokenizer)
+        stops = stop_token_ids(processor.tokenizer, processor)
         generated = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False,
                                    eos_token_id=stops, pad_token_id=stops[0])
     # Strip the prompt: decoding the whole sequence would score the instruction
