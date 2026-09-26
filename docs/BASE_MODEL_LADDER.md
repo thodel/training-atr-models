@@ -187,6 +187,46 @@ micro-batch 2 against micro-batch 16, and the batch-16 figure came from a run
 that died of OOM seconds later — almost certainly already thrashing. Both numbers
 are discarded.)
 
+## 4a. The first cross-family number: Qwen wins, and by more than the noise
+
+Both models trained on the same medieval corpus, the same seeded split, one epoch,
+line granularity, 4-bit, effective batch 16, and were then scored on **the same
+200 stratified samples** — fifty per source (measured 2026-09-26):
+
+| | overall | aaeb | bullinger | koenigsfelden | rats-u.-richteb. |
+|---|---:|---:|---:|---:|---:|
+| `Qwen/Qwen3-VL-4B-Instruct` (4.44 B) | **13.65 %** | 12.72 | 13.98 | 14.62 | 12.61 |
+| `google/gemma-4-E4B-it` (8.00 B) | 16.88 % | 14.81 | 19.27 | 18.73 | 12.90 |
+
+Qwen is better by **3.2 points overall and on every one of the four sources**, at
+55 % of the parameters. Gemma's gap is widest on bullinger (+5.3) and
+koenigsfelden (+4.1) and almost absent on rats-und-richtebücher (+0.3).
+
+Gemma is not failing: length ratio 0.9915, `truncated_at_cap` **0**, so it stops
+where it should and writes the right quantity of text. It simply reads less well.
+
+**And we now know how much of that is noise.** These two numbers nearly were not
+comparable at all: each run's test stage draws its own 200-sample evaluation
+subset, and the two draws — `val_stratified.jsonl` from 15.09 and `val_eval.jsonl`
+from 25.09 — **overlap in 4 of 200**. The table above exists because the Qwen
+adapter was re-scored on Gemma's subset. Doing so also produced the error bar this
+document listed as missing:
+
+| `qwen3vl-medieval-german-v3`, same model, same pool | CER |
+|---|---:|
+| its own 200-sample draw | 14.27 % |
+| Gemma's 200-sample draw | 13.65 % |
+
+**Selection variance on 200 stratified samples is about 0.6 points.** Any gap
+below that is a draw, not a result — and the 3.2-point gap here is roughly five
+times it.
+
+What this does *not* establish: that Gemma cannot do better. Every
+hyperparameter in both runs was tuned for Qwen — LoRA rank 64 on
+`q_proj…down_proj`, lr 2e-4, one epoch — and the family-specific question of what
+Gemma wants has not been asked. It establishes that Gemma is not better *as a drop-in*,
+which is what the ladder asked.
+
 ## 5. The confound to avoid before it is created
 
 `VlmTrainParams.load_in_4bit` defaults to `True`, but both corpora's specs set it
@@ -310,11 +350,12 @@ fits on an A40.
   `runs/checkpoints/<job>/checkpoint-*/trainer_state.json` carries `global_step`,
   `max_steps` and the loss history, and the timestamps of two checkpoint
   directories are the cheapest honest throughput measurement available.
-- **One seed, one epoch, no error bar.** This project has never measured its own
-  run-to-run variance, and the differences at the top of the ladder may be
-  smaller than it. Before reading a 9 B-vs-27 B gap as real, repeat one 4 B arm
-  at a second seed. Roughly 6 GPU-hours for the right to interpret everything
-  above it.
+- **One seed, one epoch, and only half an error bar.** §4a measured *selection*
+  variance — the same model on two draws from the same pool differs by 0.6 points
+  — so gaps under that are noise. What is still unmeasured is *training* variance:
+  two runs of the same arm at different seeds. Before reading a 9 B-vs-27 B gap as
+  real, repeat one 4 B arm at a second seed. Roughly 6 GPU-hours for the right to
+  interpret everything above it.
 - **The extrapolation in §1 is a straight line through three points on a log
   axis.** Scaling curves bend. If 9 B lands at 6.5 % rather than 5.7 %, the
   honest conclusion is that this corpus saturates around 4–9 B and the ladder
