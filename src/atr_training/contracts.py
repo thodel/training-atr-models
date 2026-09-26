@@ -611,6 +611,17 @@ PARAMS_BY_ENGINE: dict[str, type[BaseModel]] = {
 class TrainRequest(BaseModel):
     """A submitted training job."""
 
+    #: Store this run's compiled corpus in the artefact cache? None = whatever
+    #: the box is set to (``TrainerSettings.artefact_cache``); set is set (#22).
+    #:
+    #: A per-run answer because the cost and the benefit are per run. Storing the
+    #: corpus of ``qwen3vl-german-xix-v2`` took **14 of the job's 16.5 hours** on
+    #: GPFS — 966,748 files, one metadata operation each — for a copy no run has
+    #: ever read, and which that corpus will very likely never need again. The
+    #: global switch could not say that: it is the box's policy, and a box serves
+    #: runs that want the cache and runs that do not.
+    artefact_cache: bool | None = None
+
     model_config = ConfigDict(protected_namespaces=())
 
     engine: TrainEngine = "kraken"
