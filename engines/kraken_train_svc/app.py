@@ -654,98 +654,97 @@ async def gpu() -> dict:
     return {"host": socket.gethostname(), "cards": rows,
             "job_attribution_available": attribution, "known_job_pids": len(job_pids)}
 # ════════════════════════════════════════════════════════════════════════════
-#  §9c base model discovery (#39) — script match outranks century match
+#  Base-model discovery (#39) — script class outranks century
 # ════════════════════════════════════════════════════════════════════════════
 #
-#  Measured 2026-09-17 against real kraken data (§4 TRAINING_PLAN):
+#  The evidence is two fine-tunes of the same 1,898 Thun lines, one variable
+#  apart (serving-atr-inference/docs/TRAINING_PLAN.md §9c, measured 13.08.2026):
 #
-#    base                    script               century  CER
-#    kraken-late_medieval_german  Textura            14-16   0.3921
-#    kraken-early_modern_german   Kurrent (chancery) 16-17   0.2350
+#    model              base's script        base's century  CER
+#    thun-finetune-v1   Textura              14-16           0.3921
+#    thun-kurrent-v1    Kurrent (chancery)   16-17           0.2350
 #
-#  Script class beats century by ~40 % relative. A CTC network transfers
-#  letterforms, and Textura shares few with cursive however close the dates.
-#  The right base is one trained on the same script class, not the closest dates.
+#  The Kurrent base is a century *later* than the material and still beat the
+#  Textura base of the right period by 40 % relative. A CTC network transfers
+#  letterforms, and a formal book hand shares few with chancery cursive however
+#  close the dates. §9c's rule: match the hand first, the century second.
 #
-#  Filtering: script IS a match (any overlap); century is a soft bonus.
-#  When nothing matches the script, return the best available anyway (empty
-#  result is worse than a wild guess a user can read and correct).
+#  So `script` is the primary key here and century proximity only orders within
+#  it. When nothing matches the script the result is still not empty — the
+#  closest centuries are returned, because a list a caller can read and correct
+#  beats a bare `[]` that cannot be distinguished from "no registry".
 # ─────────────────────────────────────────────────────────────────────────────
+
+#: Any script match outranks any century distance, and 20 caps the century term
+#: at more than a card's worth of centuries, so the product can never cross over.
+SCRIPT_WEIGHT = 100
+CENTURY_SPAN = 20
+
+
+def _script_matches(entry: BaseEntry, script: str) -> bool:
+    """Either name contains the other, case-insensitively.
+
+    The registry writes "Caroline minuscule" and "Kurrent (chancery)"; a caller
+    types "caroline" or "kurrent". Substring both ways is what makes those meet
+    without a synonym table nobody maintains.
+    """
+    wanted = script.lower()
+    return any(wanted in label.lower() or label.lower() in wanted
+               for label in entry.scripts)
+
+
+def _century_proximity(entry: BaseEntry, century: int | None) -> int:
+    """``CENTURY_SPAN`` minus the distance to the nearest century the base covers."""
+    if century is None or not entry.centuries:
+        return 0
+    return max(0, CENTURY_SPAN - min(abs(century - c) for c in entry.centuries))
+
+
+def _base_rank(entry: BaseEntry, script: str | None, century: int | None) -> int:
+    script_term = SCRIPT_WEIGHT if script and _script_matches(entry, script) else 0
+    return script_term + _century_proximity(entry, century)
+
+
+def _base_dict(entry: BaseEntry) -> dict:
+    return {
+        "id": entry.id,
+        "engine": entry.engine,
+        "zenodo_id": entry.zenodo_id,
+        "local_path": entry.local_path,
+        "scripts": entry.scripts,
+        "languages": entry.languages,
+        "centuries": entry.centuries,
+    }
+
 
 @app.get("/bases")
 async def list_bases(
-    request: Request,
     script: str | None = Query(None, description="Script class, e.g. Kurrent, Textura"),
     language: str | None = Query(None, description="BCP-47 language tag, e.g. de, la"),
-    century: int | None = Query(None, description="Century midpoint, e.g. 15"),
+    century: int | None = Query(None, description="Century, e.g. 15"),
 ) -> dict:
-    """List available base models, optionally filtered by script/language/century.
+    """The kraken bases, ranked for this material and filtered by language.
 
-    ``script`` is the primary filter (see §9c: script class outranks century).
-    When no entry matches the script filter the result is not empty — the closest
-    century match is returned so a user can always see what is available.
+    ``script`` and ``century`` **rank**; only ``language`` removes an entry,
+    because a base that cannot read the language is not a candidate at all,
+    while a base of another script class is merely a worse one. Ties are broken
+    by id, so two calls return the same order.
 
-    Returns the full BaseEntry fields so the caller can rank locally if needed.
+    ``matched_script`` says whether anything matched the script filter: without
+    it a caller cannot tell a ranked answer from the fallback described above.
     """
     registry, _ = _registry()
     if registry is None:
         raise HTTPException(status_code=503, detail="registry unavailable")
 
-    entries = registry.by_engine("kraken")
-    if not script and not language and not century:
-        return {"bases": [_base_dict(e) for e in _rank_bases(entries, None, None, None)]}
-
-    # script match: any overlap between query script and entry scripts
-    def script_score(e: BaseEntry) -> int:
-        if not script:
-            return 0
-        # script string appears in any of the entry's script labels (case-insensitive)
-        sl = script.lower()
-        return int(any(sl in s.lower() or s.lower() in sl for s in (e.scripts or [])))
-
-    # century proximity bonus — how close is the requested century to the entry's range
-    def century_proximity(e: BaseEntry) -> int:
-        if century is None or not e.centuries:
-            return 0
-        return max(0, 20 - min(abs(century - c) for c in e.centuries))
-
-    def language_match(e: BaseEntry) -> bool:
-        if language is None:
-            return True
-        return language.lower() in (_l.lower() for _l in (e.languages or []))
-
-    scored = [(script_score(e) * 100 + century_proximity(e), e) for e in entries]
-    if script:
-        # when a script filter is given, sort scored by score desc, then keep all
-        scored = sorted(scored, key=lambda x: x[0], reverse=True)
-        if scored and scored[0][0] == 0:
-            # nothing matched the script — still return the best century matches
-            # (§9c: empty is worse than a readable fallback)
-            pass
-    else:
-        # no script filter: sort by century proximity only
-        scored = sorted(scored, key=lambda x: x[0], reverse=True)
-
-    ranked = [e for score, e in scored if language_match(e)]
-    return {"bases": [_base_dict(e) for e in ranked]}
-
-
-def _base_dict(e: BaseEntry) -> dict:
+    entries = [e for e in registry.by_engine("kraken")
+               if language is None
+               or language.lower() in (tag.lower() for tag in e.languages)]
+    ranked = sorted(entries, key=lambda e: (-_base_rank(e, script, century), e.id))
     return {
-        "id": e.id,
-        "engine": e.engine,
-        "zenodo_id": e.zenodo_id,
-        "local_path": e.local_path,
-        "scripts": e.scripts,
-        "languages": e.languages,
-        "centuries": e.centuries,
+        "bases": [_base_dict(e) for e in ranked],
+        "matched_script": bool(script) and any(_script_matches(e, script) for e in ranked),
     }
-
-
-def _rank_bases(entries: list[BaseEntry], script: str | None,
-                language: str | None, century: int | None) -> list[BaseEntry]:
-    """Stub kept for the no-filter path — returns entries in engine order."""
-    return list(entries)
 
 
 
