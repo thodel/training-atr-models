@@ -978,3 +978,231 @@ def test_a_benchmark_that_yields_no_page_fails_the_run_rather_than_scoring_nothi
 
     assert job.status == "failed"
     assert "produced no pages" in job.error
+
+
+# ── a benchmark the model trained on is not a benchmark (#23) ────────────────
+#
+# `BenchmarkSpec` said the held-out registration handled this. It does not:
+# `_reserve_eval_documents` drops only the docIds hand-written into
+# config/heldout_eval_documents.json, and a benchmark named in the request never
+# reaches that file. So the second evaluation ran unconditionally and
+# `measured_on` was set regardless of whether the same documents were in
+# training — and that number is printed first on the model card.
+#
+# The unit is the document, not the page: pages of one manuscript share a hand,
+# an ink and a layout, so an overlap caught only at page level has already
+# leaked the hand. The fixtures below therefore use real materialised page names,
+# `<pool>_<docId>_<folio>_<image>`, which is the only form `document_of` reads.
+
+class NamedSource(SourceWithBenchmark):
+    """Pages named the way a materialised corpus names them.
+
+    `materialize` prepends the pool index itself (`hf_source.page_stem`), so the
+    filename a source yields is `<docId>_<folio>_<image>` and the materialised
+    page is `<pool>_<docId>_<folio>_<image>` — the one form `document_of` reads.
+
+    The fixtures elsewhere in this file use `train_0.jpg`, which materialises to
+    `000000_train_0` and so resolves to the document "train": disjoint from the
+    benchmark's "bench" by accident rather than by design, and no test of an
+    overlap.
+    """
+
+    def __init__(self, per_role, train_doc: str = "1627569",
+                 bench_doc: str = "9900001", **kw) -> None:
+        super().__init__(per_role, **kw)
+        self.train_doc = train_doc
+        self.bench_doc = bench_doc
+
+    def stream(self, hf_repo, data_files, revision=None):
+        if hf_repo == BENCH_REPO:
+            self.calls.append((hf_repo, list(data_files)))
+            for i in range(self.bench_pages):
+                name = f"{self.bench_doc}_{i:04d}_8{i:07d}"
+                yield {"image": {"bytes": _jpeg_bytes(), "path": f"{name}.jpg"},
+                       "xml_content": self.BENCH_XML,
+                       "filename": f"{name}.jpg",
+                       "project_name": BENCH_PROJECT}
+            return
+        role = "eval" if any(THUN_TEST in f for f in data_files) else "train"
+        self.calls.append((hf_repo, list(data_files)))
+        for i in range(self.per_role.get(role, 0)):
+            name = f"{self.train_doc}_{i:04d}_6{i:07d}"
+            yield {"image": {"bytes": _jpeg_bytes(), "path": f"{name}.jpg"},
+                   "xml_content": PAGE_XML,
+                   "filename": f"{name}.jpg",
+                   "project_name": THUN_TRAIN if role == "train" else THUN_TEST}
+
+
+def _warnings_during(fn):
+    """Run ``fn`` collecting loguru WARNINGs — the guard's skip has to be audible."""
+    from loguru import logger
+    seen: list[str] = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="WARNING")
+    try:
+        return fn(), seen
+    finally:
+        logger.remove(sink)
+
+
+def test_a_benchmark_sharing_a_document_with_training_is_not_scored(store, settings):
+    """Acceptance 3. The run fails; no number reaches the job record, because a
+    contaminated CER in `benchmark_cer` is one the next reader takes as held out."""
+    source = NamedSource({"train": 4, "eval": 2}, train_doc="1627569",
+                         bench_doc="1627569")
+    job = run_pipeline(store, settings, source, FakeRunner(), _benchmark_request())
+
+    assert job.status == "failed"
+    assert job.metrics is None or job.metrics.benchmark_cer is None
+    assert job.metrics is None or job.metrics.measured_on is None
+
+
+def test_the_refusal_names_how_many_documents_and_which(store, settings):
+    """"They overlap" sends somebody to compare two manifests by hand."""
+    source = NamedSource({"train": 4, "eval": 2}, train_doc="1627569",
+                         bench_doc="1627569")
+    job = run_pipeline(store, settings, source, FakeRunner(), _benchmark_request())
+
+    assert "1 document(s)" in job.error
+    assert "1627569" in job.error
+
+
+def test_a_disjoint_benchmark_is_scored_exactly_as_before(store, settings):
+    """Acceptance 2. The guard must cost the good case nothing."""
+    source = NamedSource({"train": 4, "eval": 2}, train_doc="1627569",
+                         bench_doc="9900001")
+    job = run_pipeline(store, settings, source, FakeRunner(), _benchmark_request())
+
+    assert job.status == "completed", job.error
+    assert job.metrics.benchmark_cer == REPORT["cer"]
+    assert job.metrics.measured_on == "Federal minutes 1848-1903"
+
+
+def _guard_over(store, settings, bench_lines: list[str], train_lines: list[str]):
+    """Run the guard alone, over manifests written by hand.
+
+    At pipeline level every manifest resolves: `materialize` names each page
+    `<pool>_<original stem>`, so `document_of` always finds a field 1. The case
+    this guards against is the other kind of manifest — line crops, whose names
+    are a bare counter (`0000000.jpg`) — and a missing one. Neither can be
+    produced by driving the pipeline, so the guard is called directly.
+    """
+    from atr_training.contracts import BenchmarkSpec
+
+    job = store.create(_benchmark_request())
+    pipeline = Pipeline(store, settings, runner=FakeRunner(),
+                        source=FakeSource({"train": 4, "eval": 2}))
+    data = store.paths(job.id).data
+    data.mkdir(parents=True, exist_ok=True)
+    if bench_lines is not None:
+        (data / f"pages_benchmark_{BENCH_PROJECT}.lst").write_text(
+            "\n".join(bench_lines) + "\n", encoding="utf-8")
+    if train_lines is not None:
+        (data / "pages_train.lst").write_text(
+            "\n".join(train_lines) + "\n", encoding="utf-8")
+    spec = BenchmarkSpec(hf_repo=BENCH_REPO, project=BENCH_PROJECT)
+    return pipeline._refuse_contaminated_benchmark(job, spec)
+
+
+def test_line_crop_names_skip_the_check_out_loud(store, settings):
+    """Acceptance 4. `document_of` returns None for a line crop. A guard that
+    reported green there would attach a reassurance nobody checked — so it skips,
+    and says which manifest defeated it."""
+    _, warnings = _warnings_during(lambda: _guard_over(
+        store, settings,
+        bench_lines=["/d/crops/0000000.jpg", "/d/crops/0000001.jpg"],
+        train_lines=["/d/pages/000000_1627569_0001_6000000.xml"]))
+
+    assert any("overlap check is SKIPPED" in w for w in warnings), warnings
+
+
+def test_the_skip_says_how_many_names_it_could_read(store, settings):
+    """The counts are what tells a reader whether this is a line-granularity run
+    or a naming scheme nobody has taught the resolver."""
+    _, warnings = _warnings_during(lambda: _guard_over(
+        store, settings,
+        bench_lines=["/d/crops/0000000.jpg", "/d/crops/0000001.jpg"],
+        train_lines=["/d/pages/000000_1627569_0001_6000000.xml"]))
+
+    skip = next(w for w in warnings if "overlap check is SKIPPED" in w)
+    assert "0 of 2 benchmark pages" in skip
+
+
+def test_a_missing_manifest_skips_out_loud_rather_than_passing(store, settings):
+    """Nothing to compare is not "nothing in common"."""
+    _, warnings = _warnings_during(lambda: _guard_over(
+        store, settings, bench_lines=None,
+        train_lines=["/d/pages/000000_1627569_0001_6000000.xml"]))
+
+    assert any("cannot check for training overlap" in w for w in warnings), warnings
+
+
+def test_the_guard_passes_disjoint_documents_without_a_warning(store, settings):
+    _, warnings = _warnings_during(lambda: _guard_over(
+        store, settings,
+        bench_lines=["/d/pages/000000_9900001_0001_8000000.xml"],
+        train_lines=["/d/pages/000000_1627569_0001_6000000.xml"]))
+
+    assert warnings == []
+
+
+def test_the_guard_refuses_when_one_document_is_on_both_sides(store, settings):
+    """The same page stem on both sides — the unit test of the refusal itself,
+    without a pipeline around it."""
+    from atr_training.runner_base import StageFailed
+
+    with pytest.raises(StageFailed, match="1 document"):
+        _guard_over(store, settings,
+                    bench_lines=["/d/pages/000000_1627569_0009_8000000.xml"],
+                    train_lines=["/d/pages/000000_1627569_0001_6000000.xml"])
+
+
+def test_the_refusal_lists_at_most_five_documents(store, settings):
+    """A refusal that prints two hundred ids is a refusal nobody reads to the
+    end; the count carries the scale, five ids carry the shape."""
+    from atr_training.runner_base import StageFailed
+
+    shared = [f"/d/pages/000000_{1600000 + i}_0001_6000000.xml" for i in range(8)]
+    with pytest.raises(StageFailed) as exc:
+        _guard_over(store, settings, bench_lines=shared, train_lines=shared)
+
+    assert "8 document(s)" in str(exc.value)
+    assert "and 3 more" in str(exc.value)
+
+
+def test_a_clean_run_records_the_comparison_it_made(store, settings):
+    """Silence on the good path would leave "was it even checked?" unanswerable
+    from the log — the question this issue is about."""
+    from loguru import logger
+    seen: list[str] = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="INFO")
+    try:
+        run_pipeline(store, settings, NamedSource({"train": 4, "eval": 2}),
+                     FakeRunner(), _benchmark_request())
+    finally:
+        logger.remove(sink)
+
+    assert any("no overlap" in m for m in seen), seen
+
+
+def test_the_check_runs_before_the_benchmark_evaluation(store, settings):
+    """Not after. A contaminated benchmark must produce no number at all, rather
+    than one that is produced and then explained away."""
+    runner = FakeRunner()
+    source = NamedSource({"train": 4, "eval": 2}, train_doc="1627569",
+                         bench_doc="1627569")
+    run_pipeline(store, settings, source, runner, _benchmark_request())
+
+    scored = [Path(c[c.index("--val-jsonl") + 1]).name
+              for c in runner.commands if runner._kind(c) == "test"]
+    assert f"benchmark_{BENCH_PROJECT}.jsonl" not in scored, scored
+
+
+def test_the_split_evaluation_still_happened_before_the_refusal(store, settings):
+    """The refusal is about the benchmark. Losing the split score with it would
+    throw away a measurement that is not in question."""
+    runner = FakeRunner()
+    source = NamedSource({"train": 4, "eval": 2}, train_doc="1627569",
+                         bench_doc="1627569")
+    run_pipeline(store, settings, source, runner, _benchmark_request())
+
+    assert len([c for c in runner.commands if runner._kind(c) == "test"]) == 1

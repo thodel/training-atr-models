@@ -416,6 +416,78 @@ class Pipeline(BasePipeline):
                     benchmark.project, prepared.pages_written, jsonl)
         return jsonl
 
+    def _refuse_contaminated_benchmark(self, job: TrainJob, benchmark) -> None:
+        """Do not score a benchmark whose documents the model trained on (#23).
+
+        ``BenchmarkSpec`` claimed the held-out registration took care of this. It
+        does not: ``_reserve_eval_documents`` drops only the ``docId``s written
+        into ``config/heldout_eval_documents.json`` by hand, and a benchmark named
+        in the request never reaches that file. So the evaluation ran
+        unconditionally and ``measured_on`` was set regardless — and a CER
+        measured on documents the model trained on is not an error rate but a
+        feat of memory, printed first on the model card.
+
+        **Documents, not pages.** Pages of one manuscript share a hand, ink and
+        layout, so an overlap at page level would already have leaked the hand.
+        The unit is the Transkribus ``docId``, resolved by
+        :func:`atr_training.heldout.document_of` — the one place in the repo that
+        takes a materialised page name apart, and not re-implemented here.
+
+        **A name it cannot resolve is not a clean bill.** ``document_of`` returns
+        None for a line crop and for any naming scheme it does not know. Where
+        nothing on either side resolves, the check is skipped and **says so**: a
+        guard that reports green on an unfamiliar format is worse than no guard,
+        because the number then carries a reassurance nobody checked.
+
+        Refusing rather than downgrading is deliberate. The alternative — score
+        it, leave ``measured_on`` unset — puts a contaminated CER in
+        ``benchmark_cer`` where the next reader takes it for a held-out number.
+        """
+        from atr_training.heldout import document_of
+
+        paths = self.store.paths(job.id)
+        bench_manifest = paths.data / f"pages_benchmark_{benchmark.project}.lst"
+        train_manifest = paths.data / "pages_train.lst"
+        label = f"{benchmark.hf_repo}/{benchmark.project}"
+
+        if not bench_manifest.is_file() or not train_manifest.is_file():
+            logger.warning(
+                "benchmark {}: cannot check for training overlap — {} is missing; "
+                "the score is reported without that check",
+                label,
+                bench_manifest.name if not bench_manifest.is_file() else train_manifest.name)
+            return
+
+        bench_pages = read_manifest(bench_manifest)
+        train_pages = read_manifest(train_manifest)
+        bench_docs = {d for d in map(document_of, bench_pages) if d}
+        train_docs = {d for d in map(document_of, train_pages) if d}
+
+        if not bench_docs or not train_docs:
+            unresolved = "benchmark" if not bench_docs else "training"
+            logger.warning(
+                "benchmark {}: no document id could be read from the {} manifest "
+                "({} of {} benchmark pages, {} of {} training pages resolved) — "
+                "the overlap check is SKIPPED, and the score below is not known to "
+                "be held out",
+                label, unresolved, len(bench_docs), len(bench_pages),
+                len(train_docs), len(train_pages))
+            return
+
+        shared = sorted(bench_docs & train_docs)
+        if shared:
+            named = ", ".join(shared[:5])
+            more = f" and {len(shared) - 5} more" if len(shared) > 5 else ""
+            raise StageFailed(
+                f"benchmark {label} shares {len(shared)} document(s) with the "
+                f"training set: {named}{more}. A CER measured there is a memory "
+                "test, not an error rate, so it is not measured at all. Remove "
+                "those documents from the training corpus, or name a benchmark "
+                "that does not overlap it.")
+
+        logger.info("benchmark {}: {} document(s) against {} in training, no overlap",
+                    label, len(bench_docs), len(train_docs))
+
     def _test(self, job: TrainJob, adapter: Path, val_jsonl: Path,
               record: StageRecord) -> Metrics:
         paths = self.store.paths(job.id)
@@ -449,6 +521,9 @@ class Pipeline(BasePipeline):
             first = params.benchmarks[0]
             label = first.label or f"{first.hf_repo} / {first.project}"
             bm_jsonl = self._benchmark_jsonl(job, first)
+            # Before the evaluation, not after: a contaminated benchmark must
+            # produce no number at all, rather than one that is then explained.
+            self._refuse_contaminated_benchmark(job, first)
             bm_report = paths.data / "eval_report_benchmark.json"
             self._run(job, "test (benchmark)",
                       evaluate_cmd(self.settings.runner_python(self.engine),
