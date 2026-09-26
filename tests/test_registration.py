@@ -58,6 +58,9 @@ EVERY_FIELD = {
     "languages": ["de"], "scripts": ["Kurrent"], "centuries": [16], "vram_mb": 500,
     "max_new_tokens": 2048, "max_pixels": 1_605_632, "residency": "pinned",
     "gpu_affinity": 1, "prompt": "Transcribe the page.",
+    #: vLLM-only (the gateway refuses them on another engine), which is why the
+    #: tests that use EVERY_FIELD register a vllm model.
+    "vllm_venv": "vllm-next", "max_num_seqs": 4,
     "training_datasets": ["10.5281/zenodo.1234567"],
 }
 
@@ -295,13 +298,13 @@ def test_promotion_keeps_every_field_the_gateway_knows(root):
     ``max_pixels`` was added here, a hand-set pixel budget made set_enabled
     refuse the file ("Extra inputs are not permitted") and the kraken gate
     report "not promoted" for a model that had served."""
-    everything = spec("kraken-a-v1", **EVERY_FIELD)
+    everything = spec("vllm-a-v1", engine="vllm", **EVERY_FIELD)
     assert set(everything) == set(gateway_fields()), "EVERY_FIELD is behind the fixture"
-    path = registration_path(root, "kraken-a-v1")
+    path = registration_path(root, "vllm-a-v1")
     trained_dir(root).mkdir()
     path.write_text(yaml.safe_dump(everything), encoding="utf-8")
 
-    assert set_enabled(root, "kraken-a-v1", True) is True
+    assert set_enabled(root, "vllm-a-v1", True) is True
     promoted = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert promoted == {**{k: v for k, v in everything.items() if v is not None},
                         "enabled": True}
@@ -426,10 +429,12 @@ def test_the_manual_command_registers_what_it_is_given(root, monkeypatch, capsys
 
 
 def test_the_manual_command_takes_every_field_the_gateway_knows(root, monkeypatch, capsys):
-    everything = spec("kraken-a-v1", **EVERY_FIELD)
+    everything = spec("vllm-a-v1", engine="vllm", **EVERY_FIELD)
     monkeypatch.setattr("sys.stdin", io.StringIO(yaml.safe_dump(everything)))
     assert registration.main(["--root", str(root)]) == 0, capsys.readouterr().err
-    assert read_registration(root, "kraken-a-v1").max_pixels == 1_605_632
+    written = read_registration(root, "vllm-a-v1")
+    assert written.max_pixels == 1_605_632
+    assert (written.vllm_venv, written.max_num_seqs) == ("vllm-next", 4)
 
 
 def test_the_manual_command_refuses_what_the_trainer_would(root, monkeypatch, capsys):
@@ -533,3 +538,66 @@ def test_the_example_env_keeps_weights_and_registry_on_one_mount_and_counts_righ
                if ">>> SHARED <<<" in line and "They are marked" not in line]
     words = {3: "three", 4: "four", 5: "five", 6: "six"}
     assert f"{words[len(markers)]} values have to agree" in text.replace("\n# ", " ")
+
+
+# ── the two vLLM launch fields (#80) ────────────────────────────────────────
+#
+# The gateway gained `vllm_venv` and `max_num_seqs` on 21.09.2026 (serving
+# 58f678a) and this schema refuses what it does not know, so for three days a
+# model needing a second vLLM venv could not be registered at all — and a
+# registration an operator had added one to by hand could not be enabled either,
+# because set_enabled re-validates before writing back. The rules travel with
+# the fields: the gateway refuses the same values, and a registration this repo
+# writes must not be one the gateway then skips.
+
+def test_a_vllm_registration_carries_its_venv_and_batch_size():
+    reg = Registration(id="gemma3-medieval-german-v1", engine="vllm",
+                       local_path="/mnt/share/trained/g/g.safetensors",
+                       vllm_venv="vllm-next", max_num_seqs=4)
+    assert reg.vllm_venv == "vllm-next"
+    assert reg.max_num_seqs == 4
+
+
+@pytest.mark.parametrize("field,value", [("vllm_venv", "vllm-next"), ("max_num_seqs", 4)])
+def test_the_launch_fields_are_refused_for_another_engine(root: Path, field, value):
+    """The gateway's rule: only a vLLM launch has a venv or a batch size."""
+    with pytest.raises(RegistrationError, match="only meaningful for engine vllm"):
+        write_registration(root, spec("trocr-kurrent-v1", engine="trocr", **{field: value}))
+
+
+@pytest.mark.parametrize("name", ["../etc", "vllm/next", ".", "..", "", "vllm next"])
+def test_a_venv_that_could_climb_out_of_venvs_is_refused(root: Path, name):
+    """It is a directory name under the gateway's .venvs/, not a path."""
+    with pytest.raises(RegistrationError, match="must be a directory name"):
+        write_registration(root, spec("vllm-x-v1", engine="vllm", vllm_venv=name))
+
+
+def test_max_num_seqs_must_be_at_least_one(root: Path):
+    with pytest.raises(RegistrationError, match="max_num_seqs"):
+        write_registration(root, spec("vllm-x-v1", engine="vllm", max_num_seqs=0))
+
+
+def test_a_registration_with_a_venv_can_be_written_and_then_enabled(root: Path):
+    """The path out of OPERATIONS.md, end to end: this is what broke.
+
+    write_registration → read_registration → set_enabled all validate the same
+    schema, so a field missing here fails on the way in *or* on the way back.
+    """
+    model_id = "gemma3-medieval-german-v1"
+    written = write_registration(root, spec(model_id, engine="vllm",
+                                           local_path=f"/mnt/share/trained/{model_id}",
+                                           vllm_venv="vllm-next", max_num_seqs=4))
+    assert gateway_problems(Path(written)) == []
+    set_enabled(root, model_id, True)
+    reread = read_registration(root, model_id)
+    assert reread.enabled is True
+    assert (reread.vllm_venv, reread.max_num_seqs) == ("vllm-next", 4)
+
+
+def test_the_pinned_field_list_is_the_one_the_gateway_has_today():
+    """Both sides at 22 fields, and the fixture says which commit it was copied
+    from — the failure mode this pin exists for is two stale copies agreeing."""
+    fields = gateway_fields()
+    assert len(fields) == 22
+    assert fields[fields.index("prompt") + 1:fields.index("training_datasets")] == [
+        "vllm_venv", "max_num_seqs"]
