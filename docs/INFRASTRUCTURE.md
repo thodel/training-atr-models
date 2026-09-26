@@ -594,6 +594,35 @@ UBELIX job no longer stays live. The three decisions taken on 16.09.2026:
    Jobs that need more go to `job_gpu_preemptable`, and only if they can
    resume.
 
+## Choosing a base: the hand before the century
+
+Two fine-tunes of the same 1,898 Thun lines, one variable apart
+([serving-atr-inference `docs/TRAINING_PLAN.md`](https://github.com/thodel/serving-atr-inference/blob/main/docs/TRAINING_PLAN.md)
+§9c, measured 13.08.2026):
+
+| model | the base it started from | base's century | CER |
+|---|---|---|---:|
+| `thun-finetune-v1` | Textura | 14–16 | 0.3921 |
+| `thun-kurrent-v1` | Kurrent (chancery) | 16–17 | **0.2350** |
+
+The Kurrent base is a century **later** than the material and still beat the
+Textura base of the right period by 40 % relative. A CTC network transfers
+letterforms, and a formal book hand shares few with chancery cursive however
+close the dates. §9c's rule, in its own words: *match the hand first, the
+century second.*
+
+**So:** prefer a base whose `scripts` overlap the material's script class, and
+use century proximity only to order within that. The numbers above are two runs
+on one corpus, not a law — what they rule out is choosing a base by date alone.
+
+`GET /bases?script=&language=&century=` on the trainer ranks the kraken bases
+that way: script and century rank, `language` filters (a base that cannot read
+the language is not a candidate), ties break by id, and `matched_script` says
+whether the script filter matched anything or the answer is the closest-century
+fallback. `registry/models.yaml` carries `scripts`, `languages` and `centuries`
+per entry, which is what makes the query answerable. The gateway proxy is
+serving-atr-inference#78.
+
 ## Deploying and restarting
 
 The commands are in [OPERATIONS.md](OPERATIONS.md). What a newcomer needs to

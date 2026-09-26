@@ -1061,3 +1061,108 @@ def test_every_route_is_registered_once(client):
                    for method in getattr(route, "methods", ()) or ())
     duplicates = {key: n for key, n in seen.items() if n > 1}
     assert not duplicates, f"registered more than once: {duplicates}"
+
+
+# ── GET /bases (#39): the hand before the century ───────────────────────────
+#
+# The route ranks rather than filters on script, which is the part worth testing:
+# a caller asking for Kurrent must not be handed an empty list when the registry
+# has none, because "[]" and "no registry" would then look the same.
+
+BASES = [
+    {"id": "kraken-catmus_caroline", "engine": "kraken",
+     "zenodo_id": "10.5281/zenodo.5468665",
+     "scripts": ["Caroline minuscule"], "languages": ["la"],
+     "centuries": [9, 10, 11, 12]},
+    {"id": "kraken-catmus_medieval", "engine": "kraken",
+     "zenodo_id": "10.5281/zenodo.7516057",
+     "scripts": ["Caroline minuscule"], "languages": ["la"],
+     "centuries": [14, 15, 16]},
+    {"id": "kraken-kurrent_early_modern", "engine": "kraken",
+     "zenodo_id": "10.5281/zenodo.1",
+     "scripts": ["Kurrent (chancery)"], "languages": ["de"],
+     "centuries": [16, 17]},
+    {"id": "kraken-textura_late_medieval", "engine": "kraken",
+     "zenodo_id": "10.5281/zenodo.2",
+     "scripts": ["Textura"], "languages": ["de"], "centuries": [14, 15, 16]},
+    {"id": "vllm-qwen3vl", "engine": "vllm", "local_path": "/models/qwen",
+     "scripts": [], "languages": ["de"], "centuries": []},
+]
+
+
+@pytest.fixture
+def bases_client(client, app):
+    from atr_training.shared_registry import BaseEntry, SharedRegistry
+    app.state.registry = SharedRegistry([BaseEntry(**entry) for entry in BASES])
+    yield client
+    del app.state.registry
+
+
+def ids_of(resp) -> list[str]:
+    return [base["id"] for base in resp.json()["bases"]]
+
+
+def test_bases_lists_only_kraken_entries(bases_client):
+    """A vLLM entry is not a kraken fine-tuning base, whatever its metadata says."""
+    assert "vllm-qwen3vl" not in ids_of(bases_client.get("/bases"))
+
+
+def test_a_script_match_outranks_a_closer_century(bases_client):
+    """§9c, as a test: Kurrent (16-17) beats Textura (14-16) for 15th-century
+    material, because the hand outranks the date."""
+    resp = bases_client.get("/bases", params={"script": "kurrent", "century": 15})
+    assert ids_of(resp)[0] == "kraken-kurrent_early_modern"
+    assert resp.json()["matched_script"] is True
+
+
+def test_the_century_orders_within_the_script(bases_client):
+    """Both Caroline bases match the script, so the century decides between them."""
+    ids = ids_of(bases_client.get("/bases", params={"script": "caroline", "century": 15}))
+    assert ids[:2] == ["kraken-catmus_medieval", "kraken-catmus_caroline"]
+
+
+def test_a_script_nothing_matches_falls_back_to_the_closest_centuries(bases_client):
+    """Not empty, and it says so: an empty list is indistinguishable from a
+    registry that could not be read."""
+    resp = bases_client.get("/bases", params={"script": "Beneventan", "century": 17})
+    assert resp.json()["matched_script"] is False
+    assert ids_of(resp)[0] == "kraken-kurrent_early_modern"   # 16-17 is nearest
+
+
+def test_language_removes_a_base_rather_than_ranking_it(bases_client):
+    """A base that cannot read the language is not a candidate at all."""
+    ids = ids_of(bases_client.get("/bases", params={"language": "DE"}))
+    assert ids == ["kraken-kurrent_early_modern", "kraken-textura_late_medieval"]
+
+
+def test_the_order_is_the_same_on_every_call(bases_client):
+    """Ties break by id, so a caller (or a diff) sees one order, not dict order."""
+    first = ids_of(bases_client.get("/bases"))
+    second = ids_of(bases_client.get("/bases"))
+    assert first == second == sorted(first)
+
+
+def test_bases_carries_the_fields_a_caller_ranks_on(bases_client):
+    entry = next(b for b in bases_client.get("/bases").json()["bases"]
+                 if b["id"] == "kraken-kurrent_early_modern")
+    assert entry["scripts"] == ["Kurrent (chancery)"]
+    assert entry["languages"] == ["de"]
+    assert entry["centuries"] == [16, 17]
+    assert entry["zenodo_id"] == "10.5281/zenodo.1"
+
+
+def test_bases_without_a_registry_is_503_not_an_empty_list(client, app):
+    """The one case where empty would be a lie about the registry."""
+    if hasattr(app.state, "registry"):
+        del app.state.registry
+    resp = client.get("/bases")
+    assert resp.status_code == 503
+    assert "registry" in resp.json()["detail"]
+
+
+def test_bases_needs_the_key(settings, app, spawn):
+    """The access middleware covers this route like every other one but /health."""
+    app.state.settings = settings
+    app.state.store = JobStore(settings.jobs_root, host_id=settings.host_id)
+    with TestClient(app, client=LOOPBACK) as unauthenticated:
+        assert unauthenticated.get("/bases").status_code in (401, 403)

@@ -46,7 +46,12 @@ class RegistryUnavailable(RuntimeError):
 
 
 class BaseEntry(BaseModel):
-    """The four fields a base-model lookup needs, and nothing else."""
+    """The four fields a base-model lookup needs, plus script/class/century metadata.
+
+    ``scripts``, ``languages`` and ``centuries`` are carried from the registry file
+    (directly from ``config/models.yaml``) so that a ``GET /bases`` query can filter
+    and rank by them. They are not used by :func:`atr_training.base_models.resolve_base_model`.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -56,6 +61,12 @@ class BaseEntry(BaseModel):
     local_path: str | None = None
     #: Carried, not filtered on. A disabled model is still a valid base.
     enabled: bool = True
+    #: Script class labels, e.g. ``["Textura", "Kurrent"]``.
+    scripts: list[str] = []
+    #: BCP-47 language tags, e.g. ``["de", "la"]``.
+    languages: list[str] = []
+    #: Approximate century midpoints, e.g. ``[14, 15, 16]`` for the 14th–16th range.
+    centuries: list[int] = []
 
 
 class SharedRegistry:
