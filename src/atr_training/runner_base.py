@@ -1117,6 +1117,31 @@ class BasePipeline(ABC):
         return ArtefactCache(self.settings.artefact_cache_root,
                              max_bytes=int(budget * 1e9) if budget > 0 else None)
 
+    def _store_cache(self, job: TrainJob) -> ArtefactCache | None:
+        """The cache to **write** to, or None when this run does not store (#22).
+
+        Separate from :meth:`_cache` because the request's switch is about
+        paying, not about reading. A run that says ``artefact_cache: false``
+        still *reuses* an entry that is already there — refusing that would make
+        it recompile a corpus somebody else already built, which costs more than
+        the storing it was trying to avoid. What it declines is producing one:
+        for ``qwen3vl-german-xix-v2`` that was 14 of the job's 16.5 hours, for a
+        copy nothing has ever read.
+
+        Unset means the box decides, which is what every request written before
+        this field says.
+        """
+        wanted = getattr(job.request, "artefact_cache", None)
+        if wanted is False:
+            logger.info("job {}: artefact cache off for this run — the compiled "
+                        "corpus will not be stored", job.id)
+            return None
+        cache = self._cache()
+        if cache is None and wanted is True:
+            logger.warning("job {}: asked for the artefact cache, but this box has "
+                           "it switched off; nothing will be stored", job.id)
+        return cache
+
     def _resume_artifacts(self, job: TrainJob) -> tuple[Any, Any] | None:
         """The artefacts a requeued job should carry on training against.
 
@@ -1225,7 +1250,7 @@ class BasePipeline(ABC):
         optimisation, and a run that fails because of one is strictly worse than a
         run that was slow.
         """
-        cache = self._cache()
+        cache = self._store_cache(job)
         key = self._cache_key(job) if cache else None
         if cache is None or key is None:
             return train_artifact, val_artifact
@@ -1371,6 +1396,12 @@ class BasePipeline(ABC):
                     train_artifact, val_artifact = self._compile(
                         job, pages_train, pages_val, rec)
 
+                # Before the store, not after. The store is minutes to hours on
+                # a network filesystem, and a job that spends them in `compiling`
+                # ends as TIMEOUT with a corpus that was finished the whole time
+                # — which is what happened to xix-v2's 14-hour store (#22). The
+                # corpus exists at this point; the status should say so.
+                self.store.advance(job, "training")
                 train_artifact, val_artifact = self._store_artefact(
                     job, train_artifact, val_artifact)
 

@@ -1,0 +1,103 @@
+{
+  "_comment": [
+    "Defects in the training corpus itself, and which models carry their",
+    "consequences. Read by src/atr_training/corpus_defects.py; stamped onto the",
+    "model card by publish.py; checked by tests/test_corpus_defects.py.",
+    "",
+    "A defect belongs here when the fix cannot end it: the code is corrected and",
+    "the weights trained before it are still on a share, still in an overlay,",
+    "still being cited. Until #35 that state lived in an issue table and in",
+    "hand-written `notes` on four HuggingFace cards, which is why a model could",
+    "be marked in one place and quoted in another.",
+    "",
+    "status is one of:",
+    "  retrain_pending - affected, no replacement exists yet. The open work.",
+    "  superseded      - a retrain on the corrected corpus exists; name it in",
+    "                    `successor`, so the card points somewhere.",
+    "  withdrawn       - the weights are gone or were never published; nothing",
+    "                    to replace and nothing to warn about downstream."
+  ],
+  "defects": [
+    {
+      "id": "word-segmentation-truncation",
+      "issue": "training-atr-models#35",
+      "title": "Ground truth truncated to the first word of each line",
+      "fixed_by": {
+        "repo": "serving-atr-inference",
+        "commit": "33f55fc",
+        "date": "2026-09-14"
+      },
+      "what": [
+        "`pagexml.line_texts()` searched a TextLine's *descendants* for the first",
+        "Unicode element. Transkribus writes word segmentation as <Word> children,",
+        "each with its own TextEquiv/Unicode, and those precede the line's own",
+        "TextEquiv in document order — so word 1 came back and the rest of the line",
+        "was dropped. The same loop stood a second time in `line_boxes()`, which",
+        "labels the line crops for kraken and TrOCR.",
+        "",
+        "The fix reads the line's own TextEquiv as a *direct child*, so a <Word>",
+        "can never take its place; the word texts are joined only when a line has",
+        "no TextEquiv of its own."
+      ],
+      "evidence": [
+        "Re-preparing the same five datasets across the fix: 12,227,788 characters",
+        "before, 16,318,787 after, +33.5% — with page and line counts unchanged.",
+        "Per source: Rats- und Richtebücher +170.8%, AAEB +48.5%, Bullinger +5.5%,",
+        "Königsfelden +2.6%, St. Galler Missiven ±0.0%.",
+        "",
+        "The 19th-century corpus was affected too: parlamentsdienste-protokolle",
+        "4.54x and nr-sr-vereinigte-bundesversammlung-xix 6.35x more characters",
+        "after the fix — those two carried 10 and 6 characters per line before it.",
+        "",
+        "In the models the symptom is a transcription that stops: on the Federal",
+        "Council test set (doi:10.5281/zenodo.4746342) the three 19th-century v1",
+        "models write only the first word on 18.4% / 22.2% / 29.3% of lines, and",
+        "289 lines break in all three with the same first word."
+      ],
+      "models": {
+        "qwen3vl-german-xix-v1": {
+          "status": "superseded",
+          "successor": "qwen3vl-german-xix-v2",
+          "where": "HuggingFace (private), share",
+          "note": "v2 is the retrain on the corrected corpus."
+        },
+        "qwen3.5-4b-german-xix-v1": {
+          "status": "retrain_pending",
+          "where": "HuggingFace (private), share",
+          "note": "Benchmark CER 35.96%, 29.3% of lines truncated."
+        },
+        "qwen3.5-2b-german-xix-v1": {
+          "status": "retrain_pending",
+          "where": "HuggingFace (private), share",
+          "note": "Benchmark CER 29.37%, 22.2% of lines truncated."
+        },
+        "qwen3vl-medieval-german-v1": {
+          "status": "superseded",
+          "successor": "qwen3vl-medieval-german-v3",
+          "where": "share, idhefix overlay (disabled)",
+          "note": "v3 on the corrected corpus: CER 0.5322 -> 0.1120 against the same references, length_ratio 0.479 -> 1.001."
+        },
+        "qwen3vl-medieval-german-v2": {
+          "status": "withdrawn",
+          "where": "scratch only, never published",
+          "note": "Its min_train_chars=4 filter treated a symptom of this defect."
+        },
+        "qwen3.5-4b-medieval-german-v1": {
+          "status": "superseded",
+          "successor": "qwen3vl-medieval-german-v3",
+          "where": "share"
+        },
+        "qwen3.5-2b-medieval-german-v1": {
+          "status": "superseded",
+          "successor": "qwen3vl-medieval-german-v3",
+          "where": "share"
+        },
+        "qwen3.5-0.8b-medieval-german-v1": {
+          "status": "superseded",
+          "successor": "qwen3vl-medieval-german-v3",
+          "where": "share"
+        }
+      }
+    }
+  ]
+}
