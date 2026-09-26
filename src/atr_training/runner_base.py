@@ -1164,7 +1164,9 @@ class BasePipeline(ABC):
         if cache is None or key is None:
             return None
         try:
-            entry, why = cache.lookup(key)
+            # With the job id: an entry this job claimed in an earlier stage is
+            # served past the expiry deadline, and only to this job (#96).
+            entry, why = cache.lookup(key, for_job=job.id)
         except OSError as exc:
             logger.warning("artefact cache unreadable ({}), compiling", exc)
             return None
@@ -1187,9 +1189,26 @@ class BasePipeline(ABC):
             f"{entry.key[:12]} reused, built by "
             f"{entry.payload.get('job_id') or entry.job_id}")
         self.store.save(job)
+        # This job now depends on the entry: it is training against the corpus
+        # where it lies, and on the two-stage path it will come back for it in a
+        # fresh process, days later. The claim is what survives that wait (#96).
+        cache.claim(key, job.id)
         logger.info("artefact cache HIT {} ({}) — skipping prepare and compile",
                     entry.key[:12], why)
         return artefacts
+
+    def _release_artefact(self, job: TrainJob) -> None:
+        """Drop this job's claim on a cached corpus. Never fails the job.
+
+        On a terminal state only: a job left in ``training`` by
+        ``--stop-after compile``, or requeued after a preemption, is exactly the
+        one whose claim has to hold.
+        """
+        cache = self._cache()
+        key = self._cache_key(job) if cache else None
+        if cache is None or key is None:
+            return
+        cache.release(key, job.id)
 
     def _store_artefact(self, job: TrainJob, train_artifact: Any,
                         val_artifact: Any) -> tuple[Any, Any]:
@@ -1240,6 +1259,11 @@ class BasePipeline(ABC):
             # the job directory anyone would look in first.
             job.progress.artefact = f"{entry.key[:12]} built by this job"
             self.store.save(job)
+            # Claimed by the job that built it, for the same reason a job that
+            # adopts one claims it (#96): after this the corpus lives in the
+            # cache, so a resume days later resolves it by key, and the entry
+            # must not have expired out from under the run that made it.
+            cache.claim(key, job.id)
             logger.info("artefact cache: stored {} ({:.1f} GB)",
                         entry.key[:12], entry.bytes_ / 1e9)
             removed, note = cache.evict()
@@ -1317,7 +1341,9 @@ class BasePipeline(ABC):
                         "recompiled from scratch would silently change the seeded "
                         "split, and the run would no longer be the one that started.")
                 train_artifact, val_artifact = resumed
-                return self._finish(job, train_artifact, val_artifact)
+                finished = self._finish(job, train_artifact, val_artifact)
+                self._release_artefact(finished)
+                return finished
 
             # #109: an identical selection compiled before is handed straight to
             # train. Both stages are skipped together — reusing the arrow while
@@ -1357,7 +1383,9 @@ class BasePipeline(ABC):
                             self.store.paths(job.id).data)
                 return self.store.load(job.id)
 
-            return self._finish(job, train_artifact, val_artifact)
+            finished = self._finish(job, train_artifact, val_artifact)
+            self._release_artefact(finished)
+            return finished
 
         except Preempted:
             # Leave the status exactly where it is — `training` — so the next
@@ -1368,10 +1396,12 @@ class BasePipeline(ABC):
         except Cancelled:
             logger.warning("job {} cancelled", job.id)
             job.error = "cancelled on request"
+            self._release_artefact(job)
             return self.store.advance(job, "cancelled")
         except BaseException as exc:  # noqa: BLE001 — every failure must land on the record
             stage = job.stage or "prepare"
             logger.exception("job {} failed in {}", job.id, stage)
+            self._release_artefact(job)
             return self.store.fail(
                 job, f"{type(exc).__name__} in {stage}: {exc}",
                 log_tail=tail(self._failure_log(job, stage), self.settings.log_tail_lines),
