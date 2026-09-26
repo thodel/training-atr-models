@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import re
 import shlex
 import socket
 import sys
@@ -75,6 +76,10 @@ __all__ = [
 #: ``<registry_root>/trained`` — the gateway's ``TRAINED_DIRNAME``.
 TRAINED_DIRNAME = "trained"
 SUFFIX = ".yaml"
+
+#: A venv directory name under the gateway's ``.venvs/``, and nothing that could
+#: climb out of it. The gateway's ``_VENV_NAME``, restated (serving 58f678a).
+VENV_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 class RegistrationError(RuntimeError):
@@ -131,6 +136,13 @@ class Registration(BaseModel):
     residency: Literal["pinned", "lazy"] = "lazy"
     gpu_affinity: int | None = None
     prompt: str | None = None
+    #: The venv the gateway launches this model's vLLM from, as a directory name
+    #: under its ``.venvs/`` — ``vllm-next`` for a model whose vLLM the older venv
+    #: cannot serve (serving#132). Written by hand today; a trained model gets one
+    #: when the run's base needs it.
+    vllm_venv: str | None = None
+    #: ``--max-num-seqs`` for that launch: how many sequences the server batches.
+    max_num_seqs: int | None = Field(default=None, ge=1)
     training_datasets: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -152,6 +164,19 @@ class Registration(BaseModel):
             raise ValueError(
                 f"local_path {self.local_path!r} is relative. It must be an absolute path "
                 "under the shared mount, valid on both machines.")
+        # The gateway's own rules for the two vLLM launch fields
+        # (ModelSpec._check_vllm_venv). Kept here so a registration this repo
+        # writes cannot be one the gateway refuses to read.
+        if self.engine != "vllm":
+            for field in ("vllm_venv", "max_num_seqs"):
+                if getattr(self, field) is not None:
+                    raise ValueError(
+                        f"model {self.id!r}: {field} is only meaningful for engine vllm")
+        if self.vllm_venv is not None and (
+                not VENV_NAME_RE.fullmatch(self.vllm_venv) or self.vllm_venv in {".", ".."}):
+            raise ValueError(
+                f"model {self.id!r}: vllm_venv {self.vllm_venv!r} must be a directory "
+                "name under .venvs/ (letters, digits, '.', '_', '-')")
         return self
 
 

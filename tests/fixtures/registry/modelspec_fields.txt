@@ -1,6 +1,6 @@
 # The fields of the gateway's ModelSpec, in its order: serving-atr-inference
-# src/atr_serving/registry.py at 4158bcf (main, 16.09.2026; last changed by
-# 3d74ba3, which added max_pixels).
+# src/atr_serving/registry.py at 58f678a (main, 21.09.2026, which added
+# vllm_venv and max_num_seqs).
 #
 # Refresh when that file changes, e.g.
 #   git -C serving-atr-inference show origin/main:src/atr_serving/registry.py
@@ -25,4 +25,6 @@ max_pixels
 residency
 gpu_affinity
 prompt
+vllm_venv
+max_num_seqs
 training_datasets
