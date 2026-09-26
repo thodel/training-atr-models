@@ -79,7 +79,7 @@ class Pipeline(BasePipeline):
 
     # ── compile: pages → JSONL sample sets ──────────────────────────────────
     def _resume_artifacts(self, job: TrainJob) -> tuple[Path, Path] | None:
-        """This backend resumes from its own job directory.
+        """This backend resumes from its own job directory — or from the cache.
 
         ``_compile`` writes ``data/train.jsonl`` and ``data/val.jsonl`` next to
         the crops they reference, and a Slurm requeue does not touch the job
@@ -87,12 +87,27 @@ class Pipeline(BasePipeline):
         it, with the same seeded split. Both files must be present: half a
         corpus is not a corpus, and training on it would report a CER against a
         validation set that no longer matches the one the run started with.
+
+        A job that **adopted a cached artefact** has neither file, and that is
+        not damage: :meth:`_adopt_cached` trains against the corpus where it
+        lies and deliberately materializes nothing here. Looking only in the job
+        directory therefore made artefact reuse and the two-stage UBELIX flow
+        mutually exclusive — and that flow always crosses this boundary, because
+        stage 1 ends with the job in ``training`` and stage 2 re-enters it. Job
+        16191742 died of it after seven seconds and a day in the queue:
+        ``cannot resume: the corpus this job compiled is no longer on disk``,
+        while the entry it had adopted eight hours earlier was still there.
+
+        The fallback re-adopts **the same entry**, looked up by the same content
+        key, so the split is the one the run started with — which is the thing
+        the refusal exists to protect. When there is no entry either, it still
+        returns None and the job is refused.
         """
         data = self.store.paths(job.id).data
         train, val = data / "train.jsonl", data / "val.jsonl"
         if train.is_file() and val.is_file():
             return train, val
-        return None
+        return super()._resume_artifacts(job)
 
     # ── reusing a compiled corpus (#109) ────────────────────────────────────
     #: An entry has to contain ``data/``: samples name their images as
