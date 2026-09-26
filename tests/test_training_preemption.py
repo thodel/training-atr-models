@@ -7,6 +7,7 @@ six-day training would never finish. These tests pin the three pieces that make
 a requeue transparent — the lifecycle edge, the signal, and the resume path.
 """
 
+import shutil
 import signal
 
 import pytest
@@ -44,6 +45,10 @@ def settings(tmp_path):
         venvs_root=venvs,
         min_free_disk_gb=0.0,
         gpu=1,
+        # Under tmp_path on purpose: the artefact cache defaults to ~/atr-cache,
+        # and a resume now consults it. A test that reaches the developer's real
+        # cache would pass or fail by what happens to be in it.
+        artefact_cache_root=tmp_path / "artefacts",
     )
 
 
@@ -171,12 +176,71 @@ def test_resume_is_refused_when_the_corpus_is_gone(store, settings):
                  source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
 
     (store.paths(job.id).data / "train.jsonl").unlink()
+    # And out of the cache: since a resume falls back to it, deleting only the
+    # job's copy no longer means the corpus is gone — the first attempt stored
+    # the same bytes under a content key on its way past compile.
+    shutil.rmtree(settings.artefact_cache_root, ignore_errors=True)
 
     pipeline = Pipeline(store, settings, runner=FakeRunner(),
                         source=FakeSource({"train": 4, "eval": 2}))
     done = pipeline.execute(job.id)
     assert done.status == "failed"
     assert "cannot resume" in (done.error or "")
+
+
+# ── resuming a corpus that was never in the job directory ───────────────────
+def test_a_resume_continues_from_the_cached_corpus(store, settings):
+    """The UBELIX two-stage flow: stage 1 adopts an entry, stage 2 must find it.
+
+    ``_adopt_cached`` trains against the corpus where it lies in the cache and
+    writes nothing into the job directory. Stage 1 then leaves the job in
+    ``training``; stage 2 is a fresh process that re-enters it. A resume that
+    looked only in the job directory refused exactly that job — which is what
+    happened to 16191742 after a day in the queue, with its entry still on disk.
+
+    The split is not at risk here and that is the whole point: the entry is
+    addressed by a content key, so what comes back is the corpus this run
+    started with, not a recompiled one.
+    """
+    job = store.create(request_with(model_id="qwen3vl-corpus-only-in-cache"))
+    source = FakeSource({"train": 4, "eval": 2})
+    with pytest.raises(Preempted):
+        Pipeline(store, settings, runner=PreemptingRunner(),
+                 source=source).execute(job.id)
+    prepared = list(source.calls)
+
+    # What an adopted corpus looks like: nothing of it in the job directory.
+    data = store.paths(job.id).data
+    (data / "train.jsonl").unlink()
+    (data / "val.jsonl").unlink()
+
+    done = Pipeline(store, settings, runner=FakeRunner(),
+                    source=source).execute(job.id)
+
+    assert done.status == "completed"
+    assert source.calls == prepared, "the resumed attempt re-streamed the corpus"
+
+
+def test_the_job_directory_still_wins_over_the_cache(store, settings, monkeypatch):
+    """A preempted run resumes from its own files without consulting the cache.
+
+    The two would hold the same bytes, but only the job's own copy needs no
+    lookup to be the split this run started with.
+    """
+    job = store.create(request_with(model_id="qwen3vl-own-corpus"))
+    with pytest.raises(Preempted):
+        Pipeline(store, settings, runner=PreemptingRunner(),
+                 source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+
+    def refuse(self, j):
+        raise AssertionError("the cache was consulted although the corpus is here")
+
+    pipeline = Pipeline(store, settings, runner=FakeRunner(),
+                        source=FakeSource({"train": 4, "eval": 2}))
+    monkeypatch.setattr(type(pipeline), "_reuse_artefact", refuse, raising=True)
+    data = store.paths(job.id).data
+    assert pipeline._resume_artifacts(store.load(job.id)) == (
+        data / "train.jsonl", data / "val.jsonl")
 
 
 # ── the checkpoint interval reaches the trainer ─────────────────────────────
