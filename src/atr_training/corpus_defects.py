@@ -50,6 +50,15 @@ DEFAULT_REGISTRY = Path(__file__).resolve().parents[2] / "config" / "corpus_defe
 #: ``retrain_pending`` is the only one that keeps an issue open; the other two
 #: are terminal. A status outside this set is a typo that would otherwise read as
 #: "not pending" and quietly close the rule it was meant to keep open.
+#:
+#: ``superseded`` and ``withdrawn`` are both terminal and say different things.
+#: Superseded points at a replacement — a retrain of *this* model on the
+#: corrected corpus, which is a claim that has to be true. Withdrawn is for
+#: weights that never reached a consumer and have no such replacement: the
+#: medieval Qwen3.5 arms were stored on the share, never registered and never
+#: served, and nothing was retrained in their place. Calling those superseded
+#: by a model of another family and size would be a recommendation dressed as a
+#: lineage.
 STATUSES = frozenset({"retrain_pending", "superseded", "withdrawn"})
 
 
@@ -74,7 +83,8 @@ class AffectedModel:
         if self.status == "superseded":
             return "Superseded by a retrain on the corrected corpus."
         if self.status == "withdrawn":
-            return "Withdrawn — these weights are not published."
+            return ("Withdrawn — these weights never reached a consumer, and no "
+                    "like-for-like retrain exists.")
         return ("**No retrain exists yet.** Scores measured on this model reflect the "
                 "defect as much as the model.")
 

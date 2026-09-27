@@ -127,10 +127,40 @@ def test_a_superseded_model_points_at_its_successor():
     assert "qwen3vl-german-xix-v2" in affected.sentence()
 
 
-def test_a_withdrawn_model_says_the_weights_are_not_published():
+def test_a_withdrawn_model_says_nothing_downstream_carries_it():
     (_, affected), = defects_for("qwen3vl-medieval-german-v2")
 
-    assert "not published" in affected.sentence()
+    assert "never reached a consumer" in affected.sentence()
+
+
+def test_the_medieval_qwen35_arms_are_withdrawn_not_superseded():
+    """They were stored on the share, never registered and never served, and
+    nothing was retrained in their place. Calling them superseded by
+    qwen3vl-medieval-german-v3 — another family, another size — would be a
+    recommendation dressed as a lineage."""
+    for model_id in ("qwen3.5-2b-medieval-german-v1", "qwen3.5-0.8b-medieval-german-v1"):
+        (_, affected), = defects_for(model_id)
+        assert affected.status == "withdrawn", model_id
+        assert affected.successor is None, model_id
+
+
+def test_the_medieval_v3_claim_is_a_real_retrain():
+    """v3 is v1's own retrain: same four repositories, same seed, same 0.9
+    partition, only the parser fixed (docs/UBELIX_PLAN.md §18)."""
+    (_, affected), = defects_for("qwen3vl-medieval-german-v1")
+
+    assert affected.successor == "qwen3vl-medieval-german-v3"
+    assert "same seed" in affected.note
+
+
+def test_no_model_is_listed_that_does_not_exist():
+    """`qwen3.5-4b-medieval-german-v1` was in here once and never existed: it came
+    from the shorthand "{4b,2b,0.8b}" in the issue text, while the UBELIX medieval
+    table has three arms and no 4b. A registry that invents entries is worse than
+    prose, because it looks checked."""
+    named = {m for d in load_defects() for m in d.models}
+
+    assert "qwen3.5-4b-medieval-german-v1" not in named
 
 
 # ── a registry that is not there, or not readable ───────────────────────────

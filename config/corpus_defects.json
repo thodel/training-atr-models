@@ -15,7 +15,12 @@
     "  superseded      - a retrain on the corrected corpus exists; name it in",
     "                    `successor`, so the card points somewhere.",
     "  withdrawn       - the weights are gone or were never published; nothing",
-    "                    to replace and nothing to warn about downstream."
+    "                    to replace and nothing to warn about downstream.",
+    "  withdrawn       - the weights never reached a consumer: unpublished, or",
+    "                    stored but never registered and never served. Nothing",
+    "                    downstream can carry the defect and no retrain is",
+    "                    planned. Not the same as superseded: there is no",
+    "                    like-for-like replacement to point at."
   ],
   "defects": [
     {
@@ -83,27 +88,22 @@
           "status": "superseded",
           "successor": "qwen3vl-medieval-german-v3",
           "where": "share, idhefix overlay (disabled)",
-          "note": "v3 on the corrected corpus: CER 0.5322 -> 0.1120 against the same references, length_ratio 0.479 -> 1.001."
+          "note": "v3 is this model's retrain: the corpus prepared again from scratch with the fixed parser, min_train_chars back to 0, and otherwise identical to v1 — same four repositories, same seed, same 0.9 page-level partition (docs/UBELIX_PLAN.md §18). CER 0.5322 -> 0.1120 against the same references, length_ratio 0.479 -> 1.001."
         },
         "qwen3vl-medieval-german-v2": {
           "status": "withdrawn",
           "where": "scratch only, never published",
           "note": "Its min_train_chars=4 filter treated a symptom of this defect."
         },
-        "qwen3.5-4b-medieval-german-v1": {
-          "status": "superseded",
-          "successor": "qwen3vl-medieval-german-v3",
-          "where": "share"
-        },
         "qwen3.5-2b-medieval-german-v1": {
-          "status": "superseded",
-          "successor": "qwen3vl-medieval-german-v3",
-          "where": "share"
+          "status": "withdrawn",
+          "where": "share, Textrecognition_Training/trained-ubelix/",
+          "note": "CER 0.588 on its own split. Stored but never registered and never served — vLLM 0.11 with transformers 4.57 had no `qwen3_5`, and the adapters were deliberately kept out of the overlay so `merge_loras.py` would not fail for everyone (docs/UBELIX_PLAN.md §16). No retrain of this arm exists or is planned; the medieval retrain was qwen3vl-medieval-german-v3, a different family and size, not this model's own v2."
         },
         "qwen3.5-0.8b-medieval-german-v1": {
-          "status": "superseded",
-          "successor": "qwen3vl-medieval-german-v3",
-          "where": "share"
+          "status": "withdrawn",
+          "where": "share, Textrecognition_Training/trained-ubelix/",
+          "note": "CER 0.698 on its own split. Stored but never registered and never served — vLLM 0.11 with transformers 4.57 had no `qwen3_5`, and the adapters were deliberately kept out of the overlay so `merge_loras.py` would not fail for everyone (docs/UBELIX_PLAN.md §16). No retrain of this arm exists or is planned; the medieval retrain was qwen3vl-medieval-german-v3, a different family and size, not this model's own v2."
         }
       }
     }
