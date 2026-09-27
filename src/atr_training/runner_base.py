@@ -1345,10 +1345,23 @@ class BasePipeline(ABC):
         # checkpoint root, so the only honest thing to do is skip straight to
         # train and let the trainer pick the checkpoint up.
         resuming = job.status == "training"
+        # `compiling` is a continuation too, and a different one (#72). The
+        # corpus is *not* ready, so this must not take the route above — that one
+        # skips to train and would hand `_finish` a half-built corpus. It re-runs
+        # prepare and compile, and the chunked compile skips the chunks it
+        # already finished. Said out loud because a silent restart from chunk 0
+        # is what this looked like for months: hours of work repeated, and
+        # nothing in the log naming it as a repeat.
+        recompiling = job.status == "compiling"
 
         try:
             self._guard_slurm_host(job)
             self._guard_slurm_retrain(job)
+            if recompiling:
+                logger.warning(
+                    "job {} re-entered while `compiling` — it was interrupted "
+                    "mid-corpus. Chunks whose compile finished are kept; the rest "
+                    "is built again.", job.id)
             if resuming:
                 # Two routes lead here and both are ordinary: a preemption or
                 # walltime requeue, or a job built off the GPU by

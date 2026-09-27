@@ -244,6 +244,7 @@ stateDiagram-v2
   queued --> preparing: scheduler claims it, the card has room
   preparing --> compiling
   compiling --> training
+  compiling --> preparing: interrupted mid-corpus, finished chunks are kept
   training --> training: resumed after a preemption or an off-GPU compile, UBELIX only
   training --> testing
   testing --> registering

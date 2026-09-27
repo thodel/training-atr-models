@@ -94,7 +94,12 @@ class IllegalTransition(JobStoreError):
 TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"preparing", "cancelled", "failed"}),
     "preparing": frozenset({"compiling", "cancelled", "failed"}),
-    "compiling": frozenset({"training", "cancelled", "failed"}),
+    # `preparing` is a backward edge, and the only one: a job interrupted while
+    # compiling re-enters and builds the rest of its corpus, which starts with
+    # prepare (#72). Without it the re-entry died on `compiling → preparing`
+    # before reaching the chunk resume at all — which is how a restart from
+    # chunk 0 looked like the intended behaviour.
+    "compiling": frozenset({"training", "preparing", "cancelled", "failed"}),
     "training": frozenset({"testing", "cancelled", "failed", "training"}),
     "testing": frozenset({"registering", "cancelled", "failed"}),
     "registering": frozenset({"completed", "cancelled", "failed"}),
