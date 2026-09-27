@@ -16,6 +16,7 @@ Invoked as::
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -55,6 +56,49 @@ __all__ = [
     "Cancelled", "StageFailed", "CommandRunner", "SubprocessRunner", "tail",
     "Pipeline", "main",
 ]
+
+
+#: Written beside ``train_<i>.arrow`` **after** its ketos compile exited 0, and
+#: only then. Two things it settles that the arrow alone cannot (#72):
+#:
+#: * that the chunk is finished — an arrow exists after a SIGKILL too, and the
+#:   truncated file would go straight into ``ketos train``;
+#: * how many transcribed **lines** it holds. That number is produced inside
+#:   ``materialize()`` and exists nowhere on disk afterwards. The obvious
+#:   substitute, counting lines of ``pages_train_<i>.lst``, is one *page* per
+#:   line (``manifests.write_manifest``), so it reads about a factor 30 low and
+#:   looks plausible. It feeds ``check_convergence`` and is written into the
+#:   artefact-cache payload, from where every later job on that entry reads it
+#:   back — one resumed run would poison it for good.
+CHUNK_RECORD_SUFFIX = ".done.json"
+
+
+def _chunk_record(arrow: Path) -> Path:
+    return arrow.with_name(arrow.name + CHUNK_RECORD_SUFFIX)
+
+
+def _finished_chunk(arrow: Path) -> dict | None:
+    """The record of a finished chunk, or None — in which case it is rebuilt.
+
+    Strict on purpose: a record that does not parse, does not carry both counts,
+    or names an arrow that is gone or empty, is treated as absent. Recompiling a
+    chunk costs minutes; adopting a half-written one costs a training run and
+    says nothing while it does.
+    """
+    record = _chunk_record(arrow)
+    try:
+        data = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not all(isinstance(data.get(k), int) for k in ("pages_written", "lines")):
+        return None
+    if not arrow.exists() or arrow.stat().st_size == 0:
+        logger.warning("chunk record {} names an arrow that is missing or empty — "
+                       "recompiling the chunk", record.name)
+        return None
+    return data
 
 
 class Pipeline(BasePipeline):
@@ -171,18 +215,28 @@ class Pipeline(BasePipeline):
 
     def _compile_one(self, job: TrainJob, manifest: Path, arrow: Path,
                      record: StageRecord, what: str) -> Path:
-        """``ketos compile`` one page manifest into one ``.arrow``."""
+        """``ketos compile`` one page manifest into one ``.arrow``.
+
+        Written under ``.part`` and renamed on success, so **the final name is
+        the proof** (#72). ketos killed partway — `-9` from the OOM killer is the
+        case that started this — leaves a truncated file behind, and a resume
+        that trusted `exists() and st_size > 0` would hand that to `ketos train`.
+        Under the temporary name it cannot be mistaken for a finished chunk.
+        """
+        partial = arrow.with_name(arrow.name + ".part")
+        partial.unlink(missing_ok=True)
         self._run(job, "compile",
-                  compile_cmd(self.settings.ketos, manifest=manifest, output=arrow,
+                  compile_cmd(self.settings.ketos, manifest=manifest, output=partial,
                               device=job.request.params.device,
                               workers=self._workers_for(job, manifest)),
                   record)
-        if not arrow.exists() or arrow.stat().st_size == 0:
+        if not partial.exists() or partial.stat().st_size == 0:
             raise StageFailed(
                 f"compile produced no {what} dataset at {arrow} — ketos exited 0 but "
                 "wrote nothing, which usually means every line was empty or the "
                 "images could not be resolved from the PageXML"
             )
+        os.replace(partial, arrow)
         return arrow
 
     def _compile_chunked(self, job: TrainJob, plan, pages_val: Path,
@@ -206,7 +260,28 @@ class Pipeline(BasePipeline):
         for index, batch in enumerate(chunks(rows, plan.chunk_pages)):
             if remaining is not None and remaining <= 0:
                 break
+            arrow = paths.data / f"train_{index:04d}.arrow"
             chunk_dir = paths.pages / f"chunk_{index:04d}"
+
+            # A chunk this job already finished is not rebuilt (#72). The batch
+            # is still drawn from the stream — the chunk boundaries have to stay
+            # where they were, and the source is consumed once across all chunks
+            # — but neither its pages nor its ketos compile are paid for twice.
+            if (done := _finished_chunk(arrow)) is not None:
+                arrows.append(arrow)
+                pages_total += done["pages_written"]
+                lines_total += done["lines"]
+                if remaining is not None:
+                    remaining -= done["pages_written"]
+                logger.info("chunk {}: already compiled ({} pages, {} lines) — skipped",
+                            index, done["pages_written"], done["lines"])
+                continue
+
+            # An interrupted attempt leaves pages numbered from *its*
+            # start_index. They are in no manifest, nothing will ever read them,
+            # and they sit on exactly the scratch this chunking exists to spare.
+            shutil.rmtree(chunk_dir, ignore_errors=True)
+
             written = materialize(
                 iter(batch), chunk_dir, role="train",
                 max_pages=remaining, start_index=pages_total,
@@ -219,13 +294,20 @@ class Pipeline(BasePipeline):
             manifest = write_manifest(paths.data / f"pages_train_{index:04d}.lst",
                                       [str(p) for p in written.xml_paths])
             arrows.append(self._compile_one(
-                job, manifest, paths.data / f"train_{index:04d}.arrow", record,
-                f"train chunk {index}"))
+                job, manifest, arrow, record, f"train chunk {index}"))
 
             pages_total += written.pages_written
             lines_total += written.lines
             if remaining is not None:
                 remaining -= written.pages_written
+            # The record last, after the arrow is at its final name: it is what a
+            # re-entry believes, so it must not exist a moment before it is true.
+            _chunk_record(arrow).write_text(json.dumps({
+                "pages_written": written.pages_written,
+                "lines": written.lines,
+                "start_index": pages_total - written.pages_written,
+                "arrow": arrow.name,
+            }), encoding="utf-8")
             # Only now: the arrow is written and non-empty, so these pages have
             # been turned into something durable.
             shutil.rmtree(chunk_dir, ignore_errors=True)
@@ -241,6 +323,16 @@ class Pipeline(BasePipeline):
                 f"chunked compile produced no training data from {plan.hf_repo} — "
                 "the stream yielded no page with a transcribed line"
             )
+
+        # Once more, outside the loop: a resume can finish without building a
+        # single chunk, and then nothing above has run. The totals it carries are
+        # the same ones — read back from the chunk records rather than recounted
+        # — and `train_lines` goes into check_convergence and the artefact-cache
+        # payload, so "the loop happened to write it" is not good enough (#72).
+        job.progress.pages_written = pages_total
+        job.progress.lines_written = lines_total
+        job.progress.train_lines = lines_total
+        self.store.save(job)
 
         val_arrow = self._compile_one(job, pages_val, paths.data / "val.arrow",
                                       record, "val")

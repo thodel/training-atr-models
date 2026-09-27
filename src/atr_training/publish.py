@@ -40,6 +40,7 @@ from typing import Any, Iterable, Literal, Protocol, Sequence
 import yaml
 
 from atr_training.contracts import utcnow
+from atr_training.corpus_defects import defects_for
 
 __all__ = [
     "PublishError",
@@ -417,6 +418,47 @@ def _usage(model: TrainedModel, repo_id: str) -> str:
     return f"Weights: `{weights}` (engine: `{model.engine}`)."
 
 
+def _corpus_defects(model: TrainedModel) -> list[str]:
+    """What is wrong with the corpus this model was trained on, if anything.
+
+    Above the metrics rather than below them, because the metrics are what the
+    warning is about: a model trained on ground truth that stopped after the
+    first word of every line scores against a reference that stopped too, and
+    the number looks ordinary (#35).
+
+    Read from ``config/corpus_defects.json`` rather than written into the
+    request's ``notes``. Four model cards were marked by hand, and hand-marking
+    is how a model comes to be flagged in one place and quoted in another — the
+    same failure as a provenance sentence that is a template instead of a fact
+    (see :func:`_where_measured`).
+    """
+    carried = defects_for(model.model_id)
+    if not carried:
+        return []
+
+    lines = ["## Known defect in the training corpus", ""]
+    for defect, affected in carried:
+        issue = f" ([{defect.issue}]({PROJECT_URL}/issues))" if defect.issue else ""
+        lines += [f"**{defect.title}**{issue}", "", affected.sentence(), ""]
+        if defect.what:
+            lines += [defect.what, ""]
+        if defect.evidence:
+            # The measurements, not just the description. A reader deciding
+            # whether to trust these weights needs the size of the damage, and
+            # "+33.5% of characters, with the page count unchanged" settles it
+            # faster than any sentence about XML.
+            lines += ["<details><summary>What it cost, measured</summary>", "",
+                      defect.evidence, "", "</details>", ""]
+        if defect.fixed_by:
+            lines += [defect.fixed_by_sentence() +
+                      " The weights on this page were trained before that, so the "
+                      "scores below were measured against the damaged reference as "
+                      "well as produced by a model that learned from it.", ""]
+        if affected.note:
+            lines += [affected.note, ""]
+    return lines
+
+
 def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) -> str:
     """The ``README.md`` uploaded with the weights.
 
@@ -442,6 +484,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         f"({PROJECT_URL}) training service. These are the weights of the **best "
         "validation checkpoint** of the run below — not its last epoch.",
         "",
+        *_corpus_defects(model),
         "## Evaluation",
         "",
         "| metric | value |",

@@ -65,6 +65,48 @@ __all__ = [
 ]
 
 
+def _size_of(path) -> int | None:
+    """Bytes at ``path``, or None when it cannot be read.
+
+    Its own function so the failure has one name and one place to be stubbed —
+    the alternative, a test that patches ``os.stat``, also patches the copy that
+    is being measured.
+    """
+    try:
+        return os.stat(path, follow_symlinks=False).st_size
+    except OSError:
+        return None
+
+
+def _tree_bytes(root: Path) -> int:
+    """Every file under ``root``, summed. The fallback, not the normal path."""
+    return sum(f.stat().st_size for f in Path(root).rglob("*") if f.is_file())
+
+
+class _Counter:
+    """A ``copy_function`` for :func:`shutil.copytree` that adds up what it copied.
+
+    ``copytree`` walks the tree once and copies each file; the size of each one
+    is known at that moment and was being thrown away, to be recovered by a
+    second walk. The copy still happens through ``copy2``, so permissions and
+    times are preserved exactly as before.
+
+    ``total`` is None once anything could not be measured — a symlink to nowhere,
+    a file that vanished between the walk and the stat. Unknown is not zero, and
+    a manifest claiming 0 bytes would make the cache evict the wrong entry first.
+    """
+
+    def __init__(self) -> None:
+        self.total: int | None = 0
+
+    def __call__(self, src, dst, *, follow_symlinks: bool = True):
+        result = shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+        if self.total is not None:
+            written = _size_of(dst)
+            self.total = None if written is None else self.total + written
+        return result
+
+
 class ArtefactCacheError(RuntimeError):
     """The cache cannot answer, and the caller should compile instead."""
 
@@ -397,6 +439,13 @@ class ArtefactCache:
             raise ArtefactCacheError(f"inner must be a plain relative name: {inner!r}")
         target = staging / inner if inner else staging
 
+        # The size is accumulated while the bytes go past, not measured after
+        # (#22). The second pass was a full metadata walk of the staging tree —
+        # 966,748 files for the xix-v2 corpus, one stat each, on GPFS, right
+        # after the copy that had just touched every one of them. `None` means
+        # "this path could not account for it", and only then is the walk done.
+        size: int | None = 0
+
         if isinstance(source, (str, Path)):
             source = Path(source)
             if not source.is_dir():
@@ -404,9 +453,14 @@ class ArtefactCache:
             if inner:
                 target.parent.mkdir(parents=True, exist_ok=True)
             if move:
+                # The source is about to stop existing, so it is measured first
+                # — and a move is one rename, so this walk is the only one.
+                size = _tree_bytes(source)
                 shutil.move(str(source), str(target))
             else:
-                shutil.copytree(source, target)
+                counted = _Counter()
+                shutil.copytree(source, target, copy_function=counted)
+                size = counted.total
         else:
             files = [Path(f) for f in source]
             missing = [f for f in files if not f.is_file()]
@@ -415,9 +469,11 @@ class ArtefactCache:
                     f"cannot store {len(files)} file(s): {missing or 'none given'}")
             target.mkdir(parents=True)
             for one in files:
+                size += one.stat().st_size      # before a move takes it away
                 (shutil.move if move else shutil.copy2)(str(one), str(target / one.name))
 
-        size = sum(f.stat().st_size for f in staging.rglob("*") if f.is_file())
+        if size is None:
+            size = _tree_bytes(staging)
         (staging / self.MANIFEST).write_text(json.dumps({
             "key": key.digest,
             "pinned": key.pinned,
