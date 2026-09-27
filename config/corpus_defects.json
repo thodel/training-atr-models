@@ -52,24 +52,32 @@
         "In the models the symptom is a transcription that stops: on the Federal",
         "Council test set (doi:10.5281/zenodo.4746342) the three 19th-century v1",
         "models write only the first word on 18.4% / 22.2% / 29.3% of lines, and",
-        "289 lines break in all three with the same first word."
+        "289 lines break in all three with the same first word.",
+        "",
+        "Proven, not inferred: all four 19th-century arms were retrained on the",
+        "corrected corpus and scored on the same benchmark on 2026-09-19. The collapse",
+        "goes to exactly 0 in every one of them — two model families, a 5x spread in",
+        "parameters, nothing changed but the corpus. One model reaching 0 leaves room",
+        "for a lucky run; four do not. docs/UBELIX_PLAN.md §24."
       ],
       "models": {
         "qwen3vl-german-xix-v1": {
           "status": "superseded",
           "successor": "qwen3vl-german-xix-v2",
           "where": "HuggingFace (private), share",
-          "note": "v2 is the retrain on the corrected corpus."
+          "note": "v2 is the retrain on the corrected corpus: CER 0.2551 -> 0.0765 on the 2,751 Federal Council lines, and 507 collapsed lines (18.4%) -> 0."
         },
         "qwen3.5-4b-german-xix-v1": {
-          "status": "retrain_pending",
+          "status": "superseded",
+          "successor": "qwen3.5-4b-german-xix-v2",
           "where": "HuggingFace (private), share",
-          "note": "Benchmark CER 35.96%, 29.3% of lines truncated."
+          "note": "Retrained on the corrected corpus (UBELIX 15560727/28/29) and scored on the same 2,751 Federal Council lines on 2026-09-19 (15696149/50/51): CER 0.3596 -> 0.0680, and 807 collapsed lines (29.3%) -> 0. docs/UBELIX_PLAN.md §24."
         },
         "qwen3.5-2b-german-xix-v1": {
-          "status": "retrain_pending",
+          "status": "superseded",
+          "successor": "qwen3.5-2b-german-xix-v2",
           "where": "HuggingFace (private), share",
-          "note": "Benchmark CER 29.37%, 22.2% of lines truncated."
+          "note": "Same retrain and benchmark: CER 0.2937 -> 0.0895, and 611 collapsed lines (22.2%) -> 0. docs/UBELIX_PLAN.md §24."
         },
         "qwen3vl-medieval-german-v1": {
           "status": "superseded",

@@ -61,19 +61,36 @@ def test_the_defect_names_the_commit_that_fixed_it():
 
 
 # ── the closing rule of #35, as something a test can ask ────────────────────
-def test_two_models_are_still_waiting_for_a_retrain():
-    """The state of #35 today. When this list empties the issue may close, and
-    this test is what will say so."""
-    assert outstanding() == {
-        ISSUE_35: ["qwen3.5-2b-german-xix-v1", "qwen3.5-4b-german-xix-v1"]}
+def test_nothing_is_waiting_for_a_retrain_any_more():
+    """The closing rule of #35, met.
+
+    It was seeded from the issue's own table, which said the two qwen3.5 retrains
+    were open. They were not: all four 19th-century arms were retrained on the
+    corrected corpus and scored on the same 2,751 Federal Council lines on
+    2026-09-19 (UBELIX 15696149/50/51, docs/UBELIX_PLAN.md §24), and the
+    registry's own `disabled_reason` said "use its v2" the whole time. An
+    evaluation was very nearly re-run for a number that already existed.
+
+    Which is the point of this function rather than an embarrassment to it: the
+    rule lived in prose, prose went stale, and nobody could see it. Now it is one
+    edit and this assertion."""
+    assert outstanding() == {}
 
 
-def test_the_retrained_and_withdrawn_models_are_not_outstanding():
-    pending = outstanding()[ISSUE_35]
+def test_every_affected_model_reached_a_terminal_state():
+    defect = load_defects()[0]
 
-    assert "qwen3vl-german-xix-v1" not in pending        # v2 exists
-    assert "qwen3vl-medieval-german-v1" not in pending   # v3 exists
-    assert "qwen3vl-medieval-german-v2" not in pending   # never published
+    assert defect.pending == []
+    assert {m.status for m in defect.models.values()} <= {"superseded", "withdrawn"}
+
+
+def test_each_superseded_model_names_the_successor_that_was_measured():
+    """A successor nobody scored is a claim, not a replacement."""
+    successors = {m.successor for m in load_defects()[0].models.values() if m.successor}
+
+    assert "qwen3.5-4b-german-xix-v2" in successors
+    assert "qwen3.5-2b-german-xix-v2" in successors
+    assert "qwen3vl-german-xix-v2" in successors
 
 
 def test_an_all_terminal_registry_is_empty_not_absent(tmp_path: Path):
@@ -93,7 +110,11 @@ def test_an_unaffected_model_carries_nothing():
 
 
 def test_a_pending_model_says_no_retrain_exists():
-    (_, affected), = defects_for("qwen3.5-4b-german-xix-v1")
+    """Built here rather than taken from the shipped registry, which is now
+    empty of pending entries and should be allowed to stay that way."""
+    from atr_training.corpus_defects import AffectedModel
+
+    affected = AffectedModel(model_id="m", status="retrain_pending")
 
     assert affected.pending is True
     assert "No retrain exists yet" in affected.sentence()
@@ -170,10 +191,12 @@ def test_an_unaffected_models_card_says_nothing_about_defects(card):
 
 
 def test_an_affected_models_card_carries_the_warning(card):
+    """Superseded is not the same as harmless: these weights are still on the
+    share and still cited, and their card has to say what is wrong with them."""
     text = card("qwen3.5-4b-german-xix-v1")
 
     assert "Known defect in the training corpus" in text
-    assert "No retrain exists yet" in text
+    assert "qwen3.5-4b-german-xix-v2" in text
     assert "33f55fc" in text
 
 
