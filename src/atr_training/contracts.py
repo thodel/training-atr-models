@@ -293,6 +293,12 @@ class KrakenTrainParams(BaseModel):
     workers: int = Field(default=8, ge=0)
     #: The unit sets CUDA_VISIBLE_DEVICES=1, so physical GPU 1 is cuda:0 here.
     device: str = "cuda:0"
+    #: Held-out benchmarks scored after the validation split (#124). Until this
+    #: existed only the VLM backend had them, so no kraken run could report a
+    #: number against a named held-out set — `cer` was its own split, which is a
+    #: different set per job and comparable with nothing outside it. That is what
+    #: left `kraken-medieval-german-v2`'s 0.2131 a figure measured by hand.
+    benchmarks: list["BenchmarkSpec"] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _one_cycle_needs_a_full_cycle(self) -> "KrakenTrainParams":

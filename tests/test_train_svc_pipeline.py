@@ -1218,3 +1218,111 @@ def test_the_convergence_guard_gets_a_line_count_for_a_multi_dataset_run(store, 
                               TwoRepos(rows_a=7, empty_in_a={1, 3, 5}, rows_b=4))
     assert job.progress.train_lines > 0
     assert job.progress.train_lines <= job.progress.lines_written
+
+
+# ── the benchmark stage, which kraken did not have (#124) ───────────────────
+#
+# Until #124 `benchmark_cer` was the VLM backend's alone, so no kraken run could
+# report a number against a named held-out set. What it could report was `cer` on
+# its own validation split — a different set per job. That is why
+# kraken-medieval-german-v2's 0.2131 had to be measured by hand afterwards.
+
+BENCHMARK_REPORT = """=== report best_0.9550.mlmodel ===
+
+882255\tCharacters
+188022\tErrors
+78.69\t%Character Accuracy
+40.30%\tWord Accuracy
+"""
+
+
+class BenchmarkRunner(FakeRunner):
+    """Answers the split test and the benchmark test with different reports."""
+
+    def run(self, cmd, log_path: Path, env=None):
+        code = super().run(cmd, log_path, env=env)
+        if "test" in cmd and "benchmark" in log_path.name:
+            log_path.write_text(BENCHMARK_REPORT, encoding="utf-8")
+        return code
+
+
+def benchmark_request(**kw):
+    from atr_training.contracts import BenchmarkSpec, KrakenTrainParams
+
+    return request_with(params=KrakenTrainParams(benchmarks=[BenchmarkSpec(
+        hf_repo=REPO, project=THUN_TEST, label="german-medieval-v1")]), **kw)
+
+
+def test_a_run_without_benchmarks_is_unchanged(store, settings):
+    """Down to the stage list: the whole point is that this path is opt-in."""
+    job = run_pipeline(store, settings, FakeSource({"train": 6, "eval": 2}), FakeRunner())
+    assert job.status == "completed", job.error
+    assert [s.name for s in job.stages] == ["prepare", "compile", "train", "test", "register"]
+    assert job.metrics.benchmark_cer is None and job.metrics.measured_on is None
+
+
+def test_a_benchmark_is_compiled_and_scored(store, settings):
+    runner = BenchmarkRunner()
+    job = run_pipeline(store, settings, FakeSource({"train": 6, "eval": 2}), runner,
+                       request=benchmark_request())
+
+    assert job.status == "completed", job.error
+    assert job.metrics.benchmark_cer == pytest.approx(188022 / 882255)
+    assert job.metrics.measured_on == "german-medieval-v1"
+    # The split CER is still the split's, and still reported beside it.
+    assert job.metrics.cer == pytest.approx(1234 / 24680)
+
+
+def test_the_benchmark_goes_through_the_same_ketos_calls_as_the_corpus(store, settings):
+    """A second, private evaluation route would measure that route as much as it
+    measures the model, and the number is meant to sit next to the split's."""
+    runner = BenchmarkRunner()
+    run_pipeline(store, settings, FakeSource({"train": 6, "eval": 2}), runner,
+                 request=benchmark_request())
+
+    compiles = [c for c in runner.commands_named("compile")
+                if Path(c[c.index("--output") + 1]).name.startswith("benchmark_")]
+    tests = [c for c in runner.commands_named("test")
+             if Path(c[c.index("--test-data") + 1]).name.startswith("benchmark_")]
+    assert len(compiles) == 1 and len(tests) == 1
+    assert compiles[0][compiles[0].index("--format-type") + 1] == "page"
+    assert tests[0][tests[0].index("--format-type") + 1] == "binary"
+    assert tests[0][tests[0].index("--normalization") + 1] == "NFD"
+
+
+def test_a_contaminated_benchmark_is_refused_before_it_is_measured(store, settings):
+    """A CER over documents the model trained on is a memory test. It must
+    produce no number at all, not one that is then explained.
+
+    The benchmark here names the project the run trains on, which is the mistake
+    the guard exists for: `BenchmarkSpec` used to claim the held-out registry
+    prevented it, and the registry only knows the docIds written into it by hand.
+    """
+    from atr_training.contracts import BenchmarkSpec, KrakenTrainParams
+
+    request = request_with(
+        dataset=DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN]),
+        params=KrakenTrainParams(benchmarks=[BenchmarkSpec(
+            hf_repo=REPO, project=THUN_TRAIN, label="contaminated")]))
+    job = run_pipeline(store, settings, FakeSource({"train": 6}), BenchmarkRunner(),
+                       request=request)
+
+    assert job.status == "failed"
+    assert "shares" in job.error and "document" in job.error
+
+
+def test_an_unparsable_benchmark_report_does_not_lose_the_run(store, settings):
+    """The split CER is already measured and the model is trained either way.
+    What must not happen is a missing benchmark passing for a clean one."""
+    class Mute(FakeRunner):
+        def run(self, cmd, log_path: Path, env=None):
+            code = super().run(cmd, log_path, env=env)
+            if "test" in cmd and "benchmark" in log_path.name:
+                log_path.write_text("no report here\n", encoding="utf-8")
+            return code
+
+    job = run_pipeline(store, settings, FakeSource({"train": 6, "eval": 2}), Mute(),
+                       request=benchmark_request())
+    assert job.status == "completed", job.error
+    assert job.metrics.cer == pytest.approx(1234 / 24680)
+    assert job.metrics.benchmark_cer is None and job.metrics.measured_on is None

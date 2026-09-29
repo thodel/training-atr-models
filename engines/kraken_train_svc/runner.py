@@ -444,6 +444,76 @@ class Pipeline(BasePipeline):
                 "report a model with an unknown error rate as trained"
             )
         logger.info("CER {:.4f} / WER {}", metrics.cer, metrics.wer)
+        return self._benchmark(job, weights, metrics, record)
+
+    def _benchmark(self, job: TrainJob, weights: Path, metrics: Metrics,
+                   record: StageRecord) -> Metrics:
+        """Score a named held-out set beside the validation split (#124).
+
+        Until this existed the benchmark stage was the VLM backend's alone, so
+        ``benchmark_cer`` was never anything but None for kraken and the model
+        card's benchmark row stayed empty. What a kraken run could report was
+        ``cer`` on its own validation split — a different set per job, comparable
+        with nothing outside that job. It is why the only trustworthy German CER
+        this project has, 0.2131 for ``kraken-medieval-german-v2``, was measured
+        by hand afterwards and carried a hand-written ``measured_on``.
+
+        The route is the one that measurement took: materialise the benchmark's
+        pages, compile them the way the corpus is compiled, and run the same
+        ``ketos test`` the split is scored with. A second, private evaluation path
+        would measure that path as much as it measures the model, and the number
+        is meant to sit next to the split's.
+
+        A run without benchmarks is unchanged, down to the stage log.
+        """
+        params = job.request.params
+        benchmarks = getattr(params, "benchmarks", None)
+        if not benchmarks:
+            return metrics
+
+        paths = self.store.paths(job.id)
+        first = benchmarks[0]
+        label = first.label or f"{first.hf_repo} / {first.project}"
+        manifest, pages = self._benchmark_pages(job, first)
+        # Before the evaluation, not after: a contaminated benchmark must produce
+        # no number at all, rather than one that is then explained.
+        self._refuse_contaminated_benchmark(job, first)
+
+        arrow = paths.data / f"benchmark_{first.project}.arrow"
+        if not arrow.exists():
+            self._run(job, "compile (benchmark)",
+                      compile_cmd(self.settings.ketos, manifest=manifest, output=arrow,
+                                  format_type="page", device=params.device,
+                                  workers=compile_workers(params.workers, pages)),
+                      record)
+        if not arrow.exists():
+            raise StageFailed(
+                f"benchmark {label}: ketos compile exited 0 but wrote no {arrow.name}")
+
+        self._run(job, "test (benchmark)",
+                  evaluate_cmd(self.settings.ketos, model=weights,
+                               manifest=binary_manifest(
+                                   paths.data / f"benchmark_{first.project}_bin.lst", arrow),
+                               device=params.device, workers=params.workers,
+                               normalization=params.normalization),
+                  record)
+        bm = parse_test_report(
+            paths.log("test (benchmark)").read_text(encoding="utf-8", errors="replace"))
+        if bm.cer is None:
+            # Loud, and not fatal: the split CER is already measured and the run
+            # is a trained model either way. What must not happen is a missing
+            # benchmark passing for a clean one.
+            logger.warning("benchmark {}: ketos test exited 0 but its report could not "
+                           "be parsed — reporting the split CER without a benchmark", label)
+            return metrics
+
+        metrics = metrics.model_copy(deep=True)
+        metrics.benchmark_cer = bm.cer
+        metrics.benchmark_wer = bm.wer
+        metrics.benchmark_samples = bm.chars
+        metrics.measured_on = label
+        logger.info("benchmark CER {:.4f} / WER {} over {} characters (measured on {})",
+                    bm.cer, bm.wer, bm.chars, label)
         return metrics
 
     def _register(self, job: TrainJob, weights: Path, metrics: Metrics) -> Path:

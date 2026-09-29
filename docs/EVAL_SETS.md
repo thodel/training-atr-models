@@ -49,6 +49,15 @@ cleaned (#183), and that is how the first copy was lost.
 
 ### Rebuilding it
 
+`scripts/restore_eval_split.py` is the supported route: it rebuilds the split from
+the registry and **refuses to call the result by this set's name** unless it
+matches. Prefer it to the raw commands below, and read
+`atr_training.split_identity` for why matching document ids is necessary but not
+sufficient — `val_per_doc` / `test_per_doc` also decide *which pages* of a capped
+document are drawn, and the registry did not originally record them.
+
+The compile itself, for when the split lists are already in hand:
+
 ```bash
 S=/mnt/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs/20260905T190759Z-kraken-german-eval-pool-v1/data/split
 A=$HOME/atr-cache/arrows
@@ -136,6 +145,26 @@ before its own test stage ran, and insertions outnumber deletions 7.5 : 1 under
 this project's convention — where an insertion is a reference character the
 hypothesis did *not* produce. So the model omits rather than over-generates, and
 had not finished converging when it was stopped.
+
+### Measuring a model on it
+
+A kraken run can score it itself, as a benchmark beside its own validation split
+(#124):
+
+```json
+{"params": {"benchmarks": [{"hf_repo": "dh-unibe/image-text_…",
+                            "project": "…",
+                            "label": "german-medieval-v1"}]}}
+```
+
+That fills `benchmark_cer`, `benchmark_wer` and `measured_on` on the job record,
+and the model card renders them. Before #124 the benchmark stage existed only in
+the VLM backend, which is why the 0.2131 above had to be measured by hand and its
+`measured_on` written in by hand with it.
+
+The run **refuses** rather than scores if the benchmark's documents appear in the
+training corpus: a CER measured there is a memory test, not an error rate. The
+check is by document, not by page, because pages of one manuscript share a hand.
 
 ### Keeping it out of training
 
