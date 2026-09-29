@@ -107,8 +107,22 @@ c69e74941589207db714c3a111210d64e596f073073646dd14b1077c12c16d7b  german_val.arr
 
 Compiled on asteraix with kraken **7.0.2** (`.venvs/kraken-train`), repo at
 `fad3f89`; `compile_cmd` is unchanged between that commit and current main, so
-the argv above is the one that ran. Recorded for the sweep manifests (#113),
-where the data version is a required field.
+the argv above is the one that ran.
+
+A sweep manifest pins the set by this digest, and refuses to load without one
+(`atr_training.sweep`, #113):
+
+```yaml
+data:
+  eval:
+    name: german-medieval-v1
+    path: /mnt/wbkolleg_dh_1/Textrecognition_Training/eval_sets/german-medieval-v1/german_test.arrow
+    sha256: b96679b559cdc861f1ec30cab1e1c2bc2f295c21cb222ff07ba1ad98ddd5f93f
+```
+
+The digest is also folded into every configuration's `config_id`, so the same
+hyperparameters measured on a different corpus cannot share a leaderboard row
+with these.
 
 ### The reference number, and what it is not
 
