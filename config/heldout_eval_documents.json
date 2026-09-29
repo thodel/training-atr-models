@@ -371,7 +371,28 @@
         "4428135",
         "612638",
         "8716099"
-      ]
+      ],
+      "split_params": {
+        "seed": 20260810,
+        "val_docs": 150,
+        "val_per_doc": 160,
+        "test_docs": 200,
+        "test_per_doc": 220,
+        "shard_pages": 50000,
+        "manifests": [
+          "pages_train.lst",
+          "pages_val.lst"
+        ],
+        "_recovered": [
+          "val_per_doc",
+          "test_per_doc",
+          "shard_pages",
+          "manifests"
+        ]
+      },
+      "page_digests": {}
     }
-  ]
+  ],
+  "_split_params": "How the set was drawn, so it can be drawn again (#112). `seed`, `val_docs` and `test_docs` are recorded — they are in `seed` and `built_by`. The three caps were NOT recorded and are recovered from make_split.py's history: the file has two commits and both carry 160/220/50000, so those were the defaults on 05.09.2026. Marked in `_recovered` because recovered is not the same as recorded, and the next set should record all six. The caps do not change WHICH DOCUMENTS are drawn (the draw pops from a list shuffled once and consumes no randomness), but they do change WHICH PAGES of an over-cap document are drawn, across both draws — see page_digests.",
+  "_page_digests": "sha256[:16] over the sorted, deduplicated basenames of a side's pages (atr_training.split_identity.page_digest). Absent here because the arrows and their manifests were removed on 21.09.2026 and nothing was pinned beforehand. Until one is recorded, a restore can match every document id in this file and still hold out different pages. Pin it from the ORIGINAL pages_test.lst/pages_val.lst if they survived on the share — that confirms this set; pinning it from a rebuild only names a new one."
 }
