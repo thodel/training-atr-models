@@ -259,6 +259,44 @@ def _parse_kind_pixels(raw: str | None) -> dict[str, int]:
     return out
 
 
+def _pixels_in_model_dtype(inputs: dict, model) -> dict:
+    """``pixel_values`` in the dtype the model computes in.
+
+    Transformers casts the pixels itself — but only when it can see a floating
+    point weight to cast them to. Gemma 4's encoder-free image path does it like
+    this (``modeling_gemma4_unified.py``)::
+
+        if (target_dtype := self.patch_dense.weight.dtype).is_floating_point:
+            pixel_values = pixel_values.to(target_dtype)
+        hidden_states = self.patch_ln1(pixel_values)
+
+    Under 4-bit, ``patch_dense`` is a ``Linear4bit`` whose weight is ``uint8``,
+    so the cast is skipped — while the LayerNorm beside it is bf16 and the
+    processor hands out fp32. Measured on UBELIX (job 16738077) with
+    ``google/gemma-4-12B-it`` and its trained adapter::
+
+        model.dtype: torch.bfloat16
+        patch_ln1    LayerNorm     weight=torch.bfloat16
+        patch_dense  Linear4bit    weight=torch.uint8
+        pixel_values dtype from the processor: torch.float32
+        WITHOUT cast -> RuntimeError: expected scalar type Float but found BFloat16
+        WITH cast    -> 'Belette'   (reference: Belette)
+
+    That killed the test stage of a run that had trained for 25 hours
+    (20260926T080903Z-ladder-med-gemma4-12b, checkpoint-19162 intact).
+
+    For every model whose image path does cast — Qwen3-VL, Qwen3.5, Gemma's own
+    vision-tower sizes — this is a no-op: it targets the same dtype the model
+    would have chosen. Only ``pixel_values`` is touched; ``input_ids`` and the
+    masks are integer tensors and must stay that way.
+    """
+    pixels = inputs.get("pixel_values")
+    dtype = getattr(model, "dtype", None)
+    if pixels is None or dtype is None or not getattr(dtype, "is_floating_point", False):
+        return inputs
+    return {**inputs, "pixel_values": pixels.to(dtype)}
+
+
 def transcribe(model, processor, image_path: Path, prompt: str, max_new_tokens: int,
                system: str | None = None, max_pixels: int | None = None) -> str:
     import torch
@@ -276,6 +314,7 @@ def transcribe(model, processor, image_path: Path, prompt: str, max_new_tokens: 
             add_generation_prompt=True, **CHAT_TEMPLATE_KWARGS)
         inputs = processor(text=[text], images=[image], return_tensors="pt")
     inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+    inputs = _pixels_in_model_dtype(inputs, model)
     with torch.no_grad():
         stops = stop_token_ids(processor.tokenizer, processor)
         generated = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False,
