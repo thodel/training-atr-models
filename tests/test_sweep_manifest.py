@@ -34,6 +34,8 @@ data:
   train: shard_00
   eval: german_test
   digest: "sha256:0123456789abcdef"
+  datasets:
+    - {hf_repo: "dh-unibe/image-text_aaeb-xiv-xvii", granularity: line}
 budget:
   steps: 4000
   rungs: [12, 4, 1]
@@ -172,8 +174,9 @@ def test_adding_a_value_to_an_axis_leaves_every_other_id_alone():
     """The failure #113 names: with index-based ids, inserting `1e-5` at the
     front renames every configuration after it and the leaderboard compares
     unlike things under one name."""
-    before = set(ids(parse()))
-    after = set(ids(parse(**{"axes.lrate": [1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4]})))
+    before = set(ids(parse(**{"budget.rungs": None})))
+    after = set(ids(parse(**{"axes.lrate": [1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4],
+                             "budget.rungs": None})))
 
     assert before < after
     assert len(after - before) == 4        # the new rate, once per other axis

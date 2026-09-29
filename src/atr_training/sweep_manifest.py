@@ -88,7 +88,8 @@ ID_CHARS = 12
 
 #: What may appear at the top level. A typo'd key is refused rather than ignored:
 #: `budgets:` silently dropping the budget is the failure this is cheap to avoid.
-TOP_LEVEL = frozenset({"name", "data", "budget", "base", "axes", "notes"})
+TOP_LEVEL = frozenset({"name", "data", "budget", "base", "axes", "notes",
+                       "engine", "base_model"})
 
 #: Python's ``float()`` also accepts ``nan``, ``inf`` and ``1_000``; YAML does
 #: not mean those, so the match is a pattern rather than a ``try``.
@@ -170,6 +171,13 @@ class SweepManifest:
     train: str
     eval: str
     data_digest: str
+    #: The dataset specs every configuration trains on, verbatim. They are the
+    #: data, so they live under `data` — and because every configuration gets the
+    #: same list, they all hit one entry of the artefact cache and the corpus is
+    #: compiled once for the whole sweep (#109).
+    datasets: tuple[dict, ...]
+    engine: str
+    base_model: str | None
     steps: int
     rungs: tuple[int, ...]
     base: dict
@@ -253,11 +261,13 @@ def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...]]:
         raise ManifestError(
             f"budget.rungs: {rungs} ends at {rungs[-1]}, so the sweep stops with "
             "more than one survivor and never names a winner.")
-    if rungs[0] > n_configs:
+    if rungs[0] != n_configs:
         raise ManifestError(
             f"budget.rungs: rung 0 wants {rungs[0]} configurations and the axes "
-            f"define {n_configs}. Widen the axes or lower the ladder — a rung "
-            "that starts short of its width eliminates nothing.")
+            f"define {n_configs}. Rung 0 screens the whole field: a wider ladder "
+            "has nothing to eliminate, and a narrower one would leave "
+            "configurations unrun without saying which — they would be decided "
+            "by the order the cross product happens to come out in.")
     return steps, rungs
 
 
@@ -313,11 +323,23 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
         n_configs *= len(values)
     steps, rungs = _budget(_require(raw, "budget", where), n_configs)
 
+    specs = _require(data, "datasets", f"{where}.data")
+    if not isinstance(specs, (list, tuple)) or not specs:
+        raise ManifestError(f"{where}: data.datasets must be a non-empty list of "
+                            "dataset specs — they are what a job is submitted with")
+    for index, spec in enumerate(specs):
+        if not isinstance(spec, Mapping):
+            raise ManifestError(f"{where}: data.datasets[{index}] must be a mapping, "
+                                f"got {type(spec).__name__}")
+
     return SweepManifest(
         name=name,
         train=str(_require(data, "train", f"{where}.data")),
         eval=str(_require(data, "eval", f"{where}.data")),
         data_digest=str(data["digest"]).strip(),
+        datasets=tuple(dict(s) for s in specs),
+        engine=str(raw.get("engine") or "kraken"),
+        base_model=(str(raw["base_model"]) if raw.get("base_model") else None),
         steps=steps,
         rungs=rungs,
         base=canonical(base),
