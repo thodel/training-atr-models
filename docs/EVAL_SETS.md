@@ -109,18 +109,17 @@ Compiled on asteraix with kraken **7.0.2** (`.venvs/kraken-train`), repo at
 `fad3f89`; `compile_cmd` is unchanged between that commit and current main, so
 the argv above is the one that ran.
 
-A sweep manifest pins the set by this digest, and refuses to load without one
-(`atr_training.sweep`, #113):
+A sweep manifest pins the set by this digest and refuses to load without one
+(`atr_training.sweep_manifest`, #113):
 
 ```yaml
 data:
-  eval:
-    name: german-medieval-v1
-    path: /mnt/wbkolleg_dh_1/Textrecognition_Training/eval_sets/german-medieval-v1/german_test.arrow
-    sha256: b96679b559cdc861f1ec30cab1e1c2bc2f295c21cb222ff07ba1ad98ddd5f93f
+  train: /home/tobias/atr-cache/arrows/sweep_train.arrow
+  eval: german_test
+  digest: sha256:b96679b559cdc861f1ec30cab1e1c2bc2f295c21cb222ff07ba1ad98ddd5f93f
 ```
 
-The digest is also folded into every configuration's `config_id`, so the same
+The digest is folded into every configuration's `config_id`, so the same
 hyperparameters measured on a different corpus cannot share a leaderboard row
 with these.
 
