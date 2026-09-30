@@ -78,6 +78,9 @@ class Row:
     #: that number came from (#119).
     reserved_pages: int | None = None
     reserved_pages_source: str | None = None
+    #: axis name -> value -> how to print it, so a whole VGSL spec does not
+    #: become a table column.
+    labels: dict = field(default_factory=dict)
     rank: int | None = None
     #: True when this row shares its rank with another, i.e. the material cannot
     #: tell them apart.
@@ -159,6 +162,7 @@ def rows_for(manifest: SweepManifest, state: SweepState) -> list[Row]:
                 config_id=config_id,
                 rung=rung,
                 axes=dict(config.axes) if config else {},
+                labels=dict(config.labels) if config else {},
                 steps=steps_at_rung(state.base_steps, rung),
                 raw=entry.get("raw"),
                 score=entry.get("score"),
@@ -260,7 +264,9 @@ def render(manifest: SweepManifest, state: SweepState,
             if row.overrides:
                 mark += f" ⚠ {'+'.join(o.split('_')[0] for o in row.overrides)} overridden"
             cells = ([rank, f"`{row.config_id}`"]
-                     + [str(row.axes.get(name, "—")) for name in axis_names]
+                     + [str(row.labels.get(name, {}).get(str(row.axes.get(name)),
+                                                          row.axes.get(name, "—")))
+                        for name in axis_names]
                      + [f"{row.steps:,}", _cell(row.raw),
                         "—" if row.minutes is None else f"{row.minutes:.0f}", mark])
             lines.append("| " + " | ".join(cells) + " |")

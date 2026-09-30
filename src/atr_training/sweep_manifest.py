@@ -68,6 +68,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 __all__ = [
     "ManifestError",
+    "distinguishing",
     "MANIFEST_VERSION",
     "SweepConfig",
     "SweepManifest",
@@ -97,8 +98,48 @@ TOP_LEVEL = frozenset({"name", "data", "budget", "base", "axes", "notes",
 NUMERIC = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
 
 
+#: Axis values longer than this are shown by what tells them apart.
+LABEL_MAX = 28
+
+
 class ManifestError(ValueError):
     """A manifest that cannot be read as one experiment."""
+
+
+def distinguishing(values: Sequence[Any]) -> dict[str, str]:
+    """Map each value to the shortest text that tells it from its siblings.
+
+    A height axis is three whole VGSL specs — ``ketos`` takes the spec, not a
+    height — and printing them in full makes a twelve-row listing unreadable and
+    a leaderboard column impossible. They differ in one number, so that is what
+    is shown: ``…,64,…`` against ``…,128,…``.
+
+    Only for long strings, and only where a common prefix and suffix actually
+    exist; anything else is returned as it stands, because an abbreviation that
+    hides the difference is worse than a long cell.
+    """
+    texts = [str(v) for v in values]
+    labels = {text: text for text in texts}
+    if len(set(texts)) < 2 or max(len(t) for t in texts) <= LABEL_MAX:
+        return labels
+
+    head = 0
+    while all(t[head:head + 1] == texts[0][head:head + 1] and head < len(t) for t in texts):
+        head += 1
+    tail = 0
+    while all(tail < len(t) - head and t[len(t) - tail - 1] == texts[0][len(texts[0]) - tail - 1]
+              for t in texts):
+        tail += 1
+
+    middles = {text: text[head:len(text) - tail] for text in texts}
+    if len(set(middles.values())) < len(set(texts)) or any(not m for m in middles.values()):
+        return labels                      # the difference is not in one place
+    if max(len(m) for m in middles.values()) > LABEL_MAX // 2:
+        # The shared prefix and suffix are too short to be worth removing: the
+        # label would be nearly the whole value with ellipses stuck on, which is
+        # longer than the value and no easier to read.
+        return labels
+    return {text: f"…{middle}…" for text, middle in middles.items()}
 
 
 def _as_number(text: str) -> int | float | None:
@@ -228,8 +269,14 @@ class SweepConfig:
     #: the base is the same for every row and belongs in the table's header.
     axes: dict
 
+    #: axis name -> value -> how to print it. Set by ``SweepManifest.configs``,
+    #: because an abbreviation is only meaningful against an axis's other values.
+    labels: dict = field(default_factory=dict)
+
     def __str__(self) -> str:
-        shown = ", ".join(f"{k}={v}" for k, v in sorted(self.axes.items()))
+        shown = ", ".join(
+            f"{k}={self.labels.get(k, {}).get(str(v), v)}"
+            for k, v in sorted(self.axes.items()))
         return f"{self.config_id}  {shown}" if shown else self.config_id
 
 
@@ -275,12 +322,14 @@ class SweepManifest:
         not would still make two runs look different in every report.
         """
         names = sorted(self.axes)
+        labels = {name: distinguishing(self.axes[name]) for name in names}
         out: list[SweepConfig] = []
         for point in itertools.product(*(self.axes[n] for n in names)):
             chosen = dict(zip(names, point))
             params = canonical({**self.base, **chosen})
             out.append(SweepConfig(config_id=config_id(params, data_digest=self.data_digest),
-                                   params=params, axes=canonical(chosen)))
+                                   params=params, axes=canonical(chosen),
+                                   labels=labels))
         return out
 
 

@@ -313,3 +313,76 @@ for #91:
    than a ranking of the good.
 2. **A collapse is not a low score.** h256's 0.5591 should have been flagged as an
    anomaly, not averaged in. A rung scheduler needs a variance check, not just a maximum.
+
+---
+
+## The order of the sweeps (#118)
+
+Five axes of three values are 243 configurations, which is not a sweep but a
+year. What follows is the planned order, so the next sweep does not start over at
+the height. Each entry says what would make it worth running *before* the one
+above it.
+
+### Sweep 1 — `kraken-medieval-height-augment-lrate-01` (written, not yet run)
+
+`config/sweeps/kraken-medieval-height-augment-lrate-01.yaml`. Height (64/128/192)
+× augmentation (off/on) × learning rate (1e-4/3e-4) = 12 cells, ladder 12→4→1,
+4,000 optimizer steps at rung 0.
+
+Height is first, against #118's ordering, for a reason that is in the code rather
+than in the old results: `KRAKEN_PLUS_SPEC` — the default every kraken run has
+used, and the shape behind CER 0.2131 — is height 64, and `vgsl_geometry` puts it
+at 1.97 frames per character, just under its own warn threshold of 2.0. The
+baseline sits at the bottom of the one direction that held over both seeds of the
+first search. h64 is in the sweep as the **control**, not as a candidate.
+
+### Sweep 2 — pre-processing, properly
+
+Whatever sweep 1 says about `--augment` is a binary answer to a question
+Ströbel's 1.6-point gap suggests is richer than binary. If augmentation helps,
+this sweep asks *which* augmentation, and adds `normalization` (NFD/NFC) and
+h96 — the first height above the warn threshold, dropped from sweep 1 only to
+keep rung 0 at twelve.
+
+Run it first instead if sweep 1's augmentation effect is the largest thing on its
+leaderboard: the axis with a live effect is worth splitting before one without.
+
+### Sweep 3 — fine-tuning against from-scratch
+
+`GET /bases` has ranked kraken bases by script before century since #44. A
+fine-tune of a fitting base can beat every architecture variant trained from
+scratch — and if it does, the whole search space above is the wrong question.
+
+This is cheap to test and expensive to postpone. **Consider running a two-cell
+version of it before sweep 2**: one from-scratch winner of sweep 1 against one
+fine-tune of the best-ranked base, same budget. The answer changes what the rest
+of the programme is about.
+
+### Sweep 4 — depth, and the batch/learning-rate pair
+
+A fourth convolutional layer or a third LSTM block; neither has been tried
+systematically. And the effective batch size, which is tied to the learning rate
+by linear scaling and is therefore one axis with it rather than two — 128/256/512
+against a rate that moves with it.
+
+Last, because both are refinements of a shape that sweeps 1–3 will have settled
+or discarded.
+
+### What does not come back
+
+| | why |
+|---|---|
+| LSTM width | +0.0009 and +0.0006 over two seeds. Measured, and measured to do nothing. |
+| h48 | 1.48 frames/char — below the warn threshold, and ≥0.09 under everything from h96 up at both seeds. |
+| h256 | 70 % more compute for +0.0021, and 0.7515 → 0.5591 on a seed change. What sometimes trains to garbage is not a candidate. |
+| seed | Varying it measures seed noise. That is #115's job, on one configuration, deliberately. |
+
+### Before any of it
+
+Two things gate every sweep above, and neither is code:
+
+1. **The noise floor** (#115) for this corpus at this budget. Without it a
+   leaderboard reports gaps and none of them is known to be one.
+2. **Pinned dataset revisions.** None of the four corpora names a `revision`, so
+   a sweep's data digest identifies its specs and not the bytes behind them. Two
+   sweeps months apart could share a digest and different data.
