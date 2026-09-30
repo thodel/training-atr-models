@@ -330,6 +330,17 @@ class TrainerSettings(BaseSettings):
     #: is the number preflight queries. The child gets CUDA_VISIBLE_DEVICES=<gpu>,
     #: which makes it cuda:0 inside the process.
     gpu: int = 1
+    #: Every PHYSICAL card this box may train on (#12). ``None`` means "only
+    #: ``gpu``", which is what every deployment did before this existed — so the
+    #: default changes nothing and opening the second card is one setting:
+    #: ``ATR_TRAIN_GPUS=0,1``.
+    #:
+    #: Kept beside ``gpu`` rather than replacing it because ``gpu`` is still the
+    #: card a job takes when nothing allocates one (a hand-run script, a
+    #: single-card box) and the name is in ``GET /host`` and in deployments. What
+    #: must not happen is the two drifting apart, so nothing reads ``gpu``
+    #: directly for scheduling: :attr:`usable_gpus` is the one answer.
+    gpus: list[int] | None = None
     #: Headroom a kraken run needs (batch 256 through 3× Lbx256).
     min_free_vram_mb: int = 12000
     #: A QLoRA fine-tune of an 8B Qwen3-VL is a different order of appetite: ~6 GB
@@ -357,7 +368,13 @@ class TrainerSettings(BaseSettings):
     auto_publish_org: str = "dh-unibe"
 
     #: Training and inference do not share the card politely; one job at a time.
-    max_concurrent: int = 1
+    #: An explicit cap on jobs at once, or ``None`` for "as many as there are
+    #: cards" (#12). It was a flat ``1``: on a two-card box that made the second
+    #: card unreachable no matter what ``gpus`` said, which is the state this
+    #: epic is about. ``None`` on a one-card box still means one, so the default
+    #: behaviour is unchanged — :meth:`concurrency_limit` is where that is
+    #: decided, and a test pins it.
+    max_concurrent: int | None = None
     #: How often the scheduler reconciles jobs and starts a queued one.
     poll_interval_s: int = 10
     #: Lines of a stage log kept on a failed job record.
@@ -369,7 +386,7 @@ class TrainerSettings(BaseSettings):
         """VRAM a job of this engine must find free before it may start."""
         return self.vlm_min_free_vram_mb if engine == "vllm" else self.min_free_vram_mb
 
-    def env_for_child(self) -> dict[str, str]:
+    def env_for_child(self, gpu: int | None = None) -> dict[str, str]:
         """Environment overrides for a spawned training process.
 
         ``expandable_segments`` because the allocator's fixed-size segments
@@ -382,9 +399,35 @@ class TrainerSettings(BaseSettings):
         already been setting it.
         """
         return {
-            "CUDA_VISIBLE_DEVICES": str(self.gpu),
+            # The card the scheduler allocated to this job, not a box-wide
+            # constant: two jobs on one box must see different cards, and each
+            # sees its own as `cuda:0` (#12).
+            "CUDA_VISIBLE_DEVICES": str(self.gpu if gpu is None else gpu),
             "PYTORCH_CUDA_ALLOC_CONF": self.cuda_alloc_conf,
         }
+
+    @property
+    def usable_gpus(self) -> tuple[int, ...]:
+        """The cards the scheduler may allocate, in the order it tries them.
+
+        Deduplicated and ordered, because it decides which card a job lands on
+        and "whichever the set iterated first" is not a decision.
+        """
+        if not self.gpus:
+            return (self.gpu,)
+        return tuple(sorted(dict.fromkeys(int(g) for g in self.gpus)))
+
+    def concurrency_limit(self) -> int:
+        """How many jobs this box may run at once.
+
+        A function of the cards, capped by ``max_concurrent`` when one is set.
+        Never more than there are cards: a second job on one card is the OOM this
+        whole module exists to prevent.
+        """
+        cards = len(self.usable_gpus)
+        if self.max_concurrent is None:
+            return cards
+        return max(1, min(self.max_concurrent, cards))
 
 
 _settings: TrainerSettings | None = None

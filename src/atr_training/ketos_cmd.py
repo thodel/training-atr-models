@@ -6,8 +6,10 @@ Every flag here was read off the kraken **7.0.2** sources, not the docs on
 they are self-documenting in ``journalctl``, and they sidestep the trap that
 ``-s`` means ``--seed`` on the ``ketos`` group but ``--spec`` on ``train``.
 
-Device convention: the unit sets ``CUDA_VISIBLE_DEVICES=1``, so physical GPU 1 is
-addressed as ``cuda:0`` inside the process.
+Device convention: the scheduler allocates a physical card per job and sets
+``CUDA_VISIBLE_DEVICES`` to it for the child (#12), so whichever card a job got is
+addressed as ``cuda:0`` inside the process. The unit sets nothing — it never
+touches a card itself.
 """
 
 from __future__ import annotations

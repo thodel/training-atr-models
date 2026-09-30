@@ -291,7 +291,11 @@ class KrakenTrainParams(BaseModel):
     warmup: int | None = Field(default=None, ge=0)
     seed: int = 42
     workers: int = Field(default=8, ge=0)
-    #: The unit sets CUDA_VISIBLE_DEVICES=1, so physical GPU 1 is cuda:0 here.
+    #: Always ``cuda:0``: the scheduler allocates a physical card and sets
+    #: ``CUDA_VISIBLE_DEVICES`` to it for the child, so the card the job got is
+    #: the only one the process can see (#12). Which card that was is on the
+    #: job record as ``TrainJob.gpu``, not here — this is what the process
+    #: addresses, that is where it ran.
     device: str = "cuda:0"
     #: Held-out benchmarks scored after the validation split (#124). Until this
     #: existed only the VLM backend had them, so no kraken run could report a
@@ -460,7 +464,11 @@ class VlmTrainParams(BaseModel):
     # ── run ──────────────────────────────────────────────────────────────────
     seed: int = 42
     workers: int = Field(default=4, ge=0)
-    #: The unit sets CUDA_VISIBLE_DEVICES=1, so physical GPU 1 is cuda:0 here.
+    #: Always ``cuda:0``: the scheduler allocates a physical card and sets
+    #: ``CUDA_VISIBLE_DEVICES`` to it for the child, so the card the job got is
+    #: the only one the process can see (#12). Which card that was is on the
+    #: job record as ``TrainJob.gpu``, not here — this is what the process
+    #: addresses, that is where it ran.
     device: str = "cuda:0"
     #: Weights & Biases run name; None = reporting off (the box has no wandb key).
     wandb_run: str | None = None
@@ -594,7 +602,11 @@ class TrOCRTrainParams(BaseModel):
     # ── run ──────────────────────────────────────────────────────────────────
     seed: int = 42
     workers: int = Field(default=4, ge=0)
-    #: The unit sets CUDA_VISIBLE_DEVICES=1, so physical GPU 1 is cuda:0 here.
+    #: Always ``cuda:0``: the scheduler allocates a physical card and sets
+    #: ``CUDA_VISIBLE_DEVICES`` to it for the child, so the card the job got is
+    #: the only one the process can see (#12). Which card that was is on the
+    #: job record as ``TrainJob.gpu``, not here — this is what the process
+    #: addresses, that is where it ran.
     device: str = "cuda:0"
     #: Weights & Biases run name; None = reporting off.
     wandb_run: str | None = None
@@ -933,6 +945,12 @@ class TrainJob(BaseModel):
     #: (#15). None on the records written before the field existed; read those
     #: through :meth:`JobStore.host_of`, never directly.
     host: str | None = None
+    #: The PHYSICAL card the scheduler allocated (#12). None on a job that was
+    #: never started, and on every job recorded before cards were allocated —
+    #: which is why the scheduler treats None as "holds no card" rather than as
+    #: "holds the default one": guessing would let a second job onto a card an
+    #: older run is still using.
+    gpu: int | None = None
     #: PID of the detached runner process group leader — on ``host``.
     pid: int | None = None
     #: Why a queued job has not started yet (e.g. another job is running, or the
