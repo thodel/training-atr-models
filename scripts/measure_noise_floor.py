@@ -106,6 +106,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--base-model", default=None,
                     help="fine-tune from these weights instead of from scratch")
+    ap.add_argument("--resize", default=None,
+                    choices=["add", "union", "both", "new", "fail"],
+                    help="codec adaptation when fine-tuning; default 'union'. "
+                         "The default elsewhere is 'fail', which is right for a run "
+                         "whose base must already cover the alphabet — a fine-tune "
+                         "onto medieval German from a base with 251 characters is not "
+                         "that run, and 'fail' would refuse it before the first step.")
     ap.add_argument("--data-digest", required=True,
                     help="the sweep's data version (#112) — a floor belongs to the "
                          "corpus it was measured on and to nothing else")
@@ -116,7 +123,10 @@ def main(argv: list[str] | None = None) -> int:
 
     from_scratch = args.base_model is None
     steps = args.steps or floor_for("kraken", from_scratch)
-    params = KrakenTrainParams(device=args.device, workers=args.workers, quit="fixed")
+    params = KrakenTrainParams(
+        device=args.device, workers=args.workers, quit="fixed",
+        # Only meaningful with --load; train_cmd omits it for a from-scratch run.
+        resize=args.resize or ("union" if args.base_model else "fail"))
     effective = params.effective_batch_size
     epochs = epochs_for(steps, args.train_lines, effective)
     actual = plan_steps(args.train_lines, effective, epochs).total_steps
