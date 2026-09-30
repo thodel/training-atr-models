@@ -1,12 +1,31 @@
 {
   "status": "ok",
   "host": "dhserver03",
-  "engines": ["kraken", "trocr", "vllm"],
-  "available_engines": ["kraken", "vllm"],
+  "engines": [
+    "kraken",
+    "trocr",
+    "vllm"
+  ],
+  "available_engines": [
+    "kraken",
+    "vllm"
+  ],
   "gpu": 0,
+  "training_gpus": [
+    1
+  ],
+  "concurrency_limit": 1,
   "gpus": [
-    {"index": 0, "free_mb": 20986, "total_mb": 46068},
-    {"index": 1, "free_mb": 45589, "total_mb": 46068}
+    {
+      "index": 0,
+      "free_mb": 20986,
+      "total_mb": 46068
+    },
+    {
+      "index": 1,
+      "free_mb": 45589,
+      "total_mb": 46068
+    }
   ],
   "jobs_root": "/mnt/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs-asteraix",
   "backends": {
@@ -29,6 +48,10 @@
       "min_free_vram_mb": 12000
     }
   },
-  "jobs": {"total": 49, "running": 1, "queued": 0},
+  "jobs": {
+    "total": 49,
+    "running": 1,
+    "queued": 0
+  },
   "gateway_auth_configured": true
 }

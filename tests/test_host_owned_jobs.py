@@ -697,7 +697,10 @@ def test_a_waiting_tick_never_erases_a_start_it_did_not_see(asteraix, tmp_path, 
 
     # Claimed since the listing, pid not saved yet: not written either, since
     # that save could land after the pid's. Other waiting jobs still are.
-    roomier = trainer_settings(tmp_path, venvs, "asteraix", max_concurrent=2)
+    # Two jobs at once means two cards, not a raised counter: a limit above the
+    # card count is capped, because two trainings on one card is the OOM (#12).
+    roomier = trainer_settings(tmp_path, venvs, "asteraix",
+                               max_concurrent=2, gpus=[0, 1])
     third = asteraix.create(request("m3"))
     before = asteraix.paths(second.id).job_json.read_bytes()
 

@@ -160,7 +160,7 @@ def _spawn(settings: TrainerSettings, job: TrainJob) -> int:
         )
     cmd = [str(python), "-m", backend.runner_module,
            "--root", str(settings.jobs_root), "--job-id", job.id]
-    env = {**os.environ, **settings.env_for_child()}
+    env = {**os.environ, **settings.env_for_child(job.gpu)}
     log = _store().paths(job.id).logs / "runner.out"
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("ab") as out:
@@ -240,20 +240,53 @@ def schedule_once(
             job.queued_reason = reason
             store.save(job)
 
-    if len(running) >= settings.max_concurrent:
+    limit = settings.concurrency_limit()
+    if len(running) >= limit:
         first = running[0]
         hold(f"waiting for {first.id} "
-             f"({'starting' if first.id in starting else first.status})")
+             f"({'starting' if first.id in starting else first.status})"
+             + (f" — {len(running)} of {limit} slots busy" if limit > 1 else "")
+             # A max_concurrent above the card count is not a bigger limit, it is
+             # a misconfiguration: two trainings on one card is the OOM this
+             # guards (#12). Said here rather than logged, because here is where
+             # somebody is wondering why nothing starts.
+             + (f". max_concurrent is {settings.max_concurrent} but this box "
+                f"trains on {len(settings.usable_gpus)} card(s) — set "
+                "ATR_TRAIN_GPUS to open another one"
+                if (settings.max_concurrent or 0) > len(settings.usable_gpus) else ""))
         return None
 
     # The oldest queued job goes first — no reordering to fit a smaller job into
     # the free VRAM, which would starve exactly the expensive runs the queue
     # exists for. How much VRAM is "enough" depends on the engine.
     job = queued[0]
-    try:
-        gpu = vram_check(settings.gpu, settings.min_free_vram_for(job.request.engine))
-    except PreflightError as exc:
-        hold(str(exc))
+    need = settings.min_free_vram_for(job.request.engine)
+
+    # A card one of our running jobs holds is not a candidate, whatever
+    # nvidia-smi says about it: a job between claim and allocation has nothing
+    # resident yet, and asking the card would happily let a second run onto it.
+    # This is the case that killed a run with 841 MiB free on 15.09
+    # (serving-atr-inference#129), one layer up.
+    taken = {j.gpu for j in running if j.gpu is not None}
+    free_cards = [card for card in settings.usable_gpus if card not in taken]
+    if not free_cards:
+        hold(f"every card this box trains on is held: "
+             f"{', '.join(str(c) for c in sorted(taken))}")
+        return None
+
+    gpu = None
+    refusals: list[str] = []
+    for card in free_cards:
+        try:
+            gpu = vram_check(card, need)
+            break
+        except PreflightError as exc:
+            refusals.append(str(exc))
+    if gpu is None:
+        # Every free card refused. Report all of them: on a two-card box "GPU 1
+        # has too little" names half the problem and sends the reader to the
+        # wrong card.
+        hold(" / ".join(refusals))
         return None
 
     # The claim is what makes "listed as unspawned" and "started by us" one
@@ -285,6 +318,13 @@ def schedule_once(
     logger.info("starting {} ({} job; GPU {} has {} MB free)",
                 job.id, job.request.engine, gpu.index, gpu.free_mb)
     job.queued_reason = None
+    # On the record the claim handed back, not on the copy from the listing: that
+    # one is discarded by the reload above, so setting it earlier wrote nothing
+    # and raced the claim besides. Saved before the spawn, because the child's
+    # CUDA_VISIBLE_DEVICES is read from it and because the next scheduler tick
+    # must see this card as held (#12).
+    job.gpu = gpu.index
+    store.save(job)
     try:
         job.pid = spawn(settings, job)
     except (PreflightError, UnknownBackend, OSError) as exc:
@@ -544,6 +584,10 @@ def _health_body(*, deep: bool = False) -> dict:
         "available_engines": [e for e in ENGINES
                               if e in BACKENDS and settings.runner_python(e).exists()],
         "gpu": settings.gpu,
+        # Which cards this box may TRAIN on, as policy — distinct from `gpus`
+        # below, which is what nvidia-smi sees. A one-card deployment has both.
+        "training_gpus": list(settings.usable_gpus),
+        "concurrency_limit": settings.concurrency_limit(),
         "gpus": gpus,
         "jobs_root": str(settings.jobs_root),
         # Which backends this box can actually run, not which ones exist in code:
