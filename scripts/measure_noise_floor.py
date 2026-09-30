@@ -106,6 +106,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--base-model", default=None,
                     help="fine-tune from these weights instead of from scratch")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help="micro-batch. Default 256, which is the corpus default at "
+                         "input height 64 and does NOT fit at height 120: CATMuS "
+                         "Medieval's own spec asked for 55.42 GiB of activations on a "
+                         "44.42 GiB card. Activation memory, not parameters — probe "
+                         "the largest micro-batch that fits and use --accumulate to "
+                         "reach the same effective batch, or the runs are not "
+                         "comparable with each other.")
+    ap.add_argument("--accumulate", type=int, default=None,
+                    help="gradient accumulation. batch-size x accumulate is the "
+                         "effective batch, and it is what the step budget is counted "
+                         "in; changing it changes what a step means.")
     ap.add_argument("--resize", default=None,
                     choices=["add", "union", "both", "new", "fail"],
                     help="codec adaptation when fine-tuning; default 'union'. "
@@ -125,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     steps = args.steps or floor_for("kraken", from_scratch)
     params = KrakenTrainParams(
         device=args.device, workers=args.workers, quit="fixed",
+        **({"batch_size": args.batch_size} if args.batch_size else {}),
+        **({"accumulate_grad_batches": args.accumulate} if args.accumulate else {}),
         # Only meaningful with --load; train_cmd omits it for a from-scratch run.
         resize=args.resize or ("union" if args.base_model else "fail"))
     effective = params.effective_batch_size

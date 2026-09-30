@@ -91,3 +91,18 @@ def test_over_generation_at_cer_above_one_still_counts_as_collapse():
     """Both signals are checked because either alone can be misread; a CER at or
     above 1.0 with no length information is treated as a collapse."""
     assert mnf.is_collapsed(cer=1.4, length_ratio=None) is True
+
+
+# ── activation memory, not parameters (#115) ────────────────────────────────
+
+def test_accumulation_keeps_the_effective_batch_and_so_the_step_count():
+    """CATMuS Medieval's input height is 120, and batch 256 there asked for
+    55.42 GiB of activations on a 44.42 GiB card. The micro-batch has to shrink;
+    the *effective* batch must not, or the runs stop being comparable."""
+    from atr_training.contracts import KrakenTrainParams
+
+    big = KrakenTrainParams(batch_size=256, accumulate_grad_batches=1)
+    small = KrakenTrainParams(batch_size=64, accumulate_grad_batches=4)
+    assert big.effective_batch_size == small.effective_batch_size == 256
+    assert mnf.epochs_for(500, 236908, big.effective_batch_size) == \
+           mnf.epochs_for(500, 236908, small.effective_batch_size)
