@@ -35,18 +35,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from atr_training.contracts import KrakenTrainParams  # noqa: E402
-from atr_training.convergence import floor_for, plan_steps  # noqa: E402
+from atr_training.codeversion import current_code  # noqa: E402
+from atr_training.convergence import (  # noqa: E402
+    epochs_for, floor_for, plan_steps,
+)
 from atr_training.ketos_cmd import (  # noqa: E402
     evaluate_cmd,
     find_best_weights,
@@ -54,12 +57,6 @@ from atr_training.ketos_cmd import (  # noqa: E402
     train_cmd,
 )
 from atr_training.manifests import binary_manifest  # noqa: E402
-
-
-def epochs_for(steps: int, train_lines: int, effective_batch: int) -> int:
-    """Epochs that reach ``steps`` optimizer steps, by the guard's own arithmetic."""
-    per_epoch = plan_steps(train_lines, effective_batch, 1).steps_per_epoch
-    return max(1, math.ceil(steps / per_epoch))
 
 
 def run(cmd: list[str], log: Path) -> int:
@@ -88,6 +85,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--base-model", default=None,
                     help="fine-tune from these weights instead of from scratch")
+    ap.add_argument("--data-digest", required=True,
+                    help="the sweep's data version (#112) — a floor belongs to the "
+                         "corpus it was measured on and to nothing else")
+    ap.add_argument("--write-to", type=Path, default=None,
+                    help="write the measured floor into this sweep manifest, "
+                         "instead of retyping it")
     args = ap.parse_args(argv)
 
     from_scratch = args.base_model is None
@@ -133,8 +136,19 @@ def main(argv: list[str] | None = None) -> int:
               f"({entry['minutes']} min, exit {code})", flush=True)
 
     scored = [r["cer"] for r in results if r.get("cer") is not None]
+    code = current_code()
     summary = {
         "train": str(args.train), "benchmark": str(args.benchmark),
+        # What #115 asks to be noted beside the number: the seeds, the commit and
+        # the data version. Without the last two a floor is a number nobody can
+        # attribute, and a floor from other material licenses a ranking it never
+        # earned — which is the failure the whole measurement exists to prevent.
+        "data_digest": args.data_digest,
+        "commit": code.commit, "dirty": code.dirty,
+        "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "train_bytes": args.train.stat().st_size if args.train.exists() else None,
+        "benchmark_bytes": (args.benchmark.stat().st_size
+                            if args.benchmark.exists() else None),
         "train_lines": args.train_lines, "effective_batch": effective,
         "epochs": epochs, "steps": actual, "from_scratch": from_scratch,
         "base_model": args.base_model, "seeds": args.seeds, "runs": results,
@@ -155,7 +169,46 @@ def main(argv: list[str] | None = None) -> int:
     (args.out / "noise_floor.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"written to {args.out / 'noise_floor.json'}")
+
+    if args.write_to and "noise_floor" in summary:
+        try:
+            write_into_manifest(args.write_to, summary)
+        except ValueError as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            return 1
+        print(f"and into {args.write_to}")
     return 0 if len(scored) >= 2 else 1
+
+
+def write_into_manifest(path: Path, summary: dict) -> None:
+    """Put the measured floor into a sweep manifest, with what it was measured on.
+
+    Retyping the number is how it ends up stale or attached to the wrong corpus,
+    so the manifest's own data version is checked against the measurement's
+    first. The written block is the shape `sweep_manifest` validates: a bare
+    number would parse, but nobody reading it later could say where it came from.
+    """
+    import yaml
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    digest = str(((raw.get("data") or {}).get("digest") or "")).strip()
+    if digest != summary["data_digest"]:
+        raise ValueError(
+            f"{path} runs on data {digest!r} and this floor was measured on "
+            f"{summary['data_digest']!r}. A floor belongs to the corpus and the "
+            "budget it was measured at; writing it here would license a ranking "
+            "it never earned.")
+    raw["noise_floor"] = {
+        "value": summary["noise_floor"]["spread"],
+        "measured_on": summary["data_digest"],
+        "seeds": summary["seeds"],
+        "commit": summary["commit"],
+        "steps": summary["steps"],
+        "n": summary["noise_floor"]["n"],
+        "measured_at": summary["measured_at"],
+    }
+    path.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True),
+                    encoding="utf-8")
 
 
 if __name__ == "__main__":

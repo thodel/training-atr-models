@@ -46,6 +46,7 @@ __all__ = [
     "FLOOR_FINETUNE",
     "FLOOR_BY_ENGINE",
     "plan_steps",
+    "epochs_for",
     "floor_for",
     "check_convergence",
 ]
@@ -100,6 +101,24 @@ class ConvergenceVerdict:
 
 def plan_steps(train_lines: int, effective_batch: int, epochs: int) -> StepBudget:
     return StepBudget(train_lines=train_lines, effective_batch=effective_batch, epochs=epochs)
+
+
+def epochs_for(steps: int, train_lines: int, effective_batch: int) -> int:
+    """The smallest epoch count that buys at least ``steps`` optimizer steps.
+
+    ``ketos`` is told epochs; a sweep budgets in steps, because an epoch budget
+    hands a smaller batch more optimizer steps than a larger one (#111, lesson 3).
+    The inverse lives here, beside :class:`StepBudget`, so that the sweep driver,
+    the noise-floor measurement and the convergence guard cannot drift apart —
+    the first sweep had two of these and gave its large configurations a quarter
+    of their budget.
+    """
+    if steps < 1:
+        raise ValueError(f"a step budget must be at least 1, got {steps}")
+    if train_lines < 1:
+        raise ValueError(f"cannot size a budget against {train_lines} training lines")
+    per_epoch = plan_steps(train_lines, effective_batch, 1).steps_per_epoch
+    return max(1, math.ceil(steps / per_epoch))
 
 
 def floor_for(engine: str, from_scratch: bool) -> int:

@@ -62,7 +62,7 @@ import hashlib
 import itertools
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -108,8 +108,30 @@ def _as_number(text: str) -> int | float | None:
     return int(value) if value.is_integer() else value
 
 
-def _noise_floor(raw: Mapping[str, Any], where: str) -> float | None:
+def _noise_floor(raw: Mapping[str, Any], where: str,
+                 data_digest: str) -> tuple[float | None, dict]:
     """The measured resolution of this material, if it has been measured (#115).
+
+    Two shapes, and the difference between them is whether anybody can tell what
+    the number was measured on:
+
+        noise_floor: 0.0085                        # a bare number
+
+        noise_floor:                               # measured, and says so
+          value: 0.0085
+          measured_on: "sha256:0123…"              # must equal data.digest
+          seeds: [42, 43, 44, 45]
+          commit: "1a429b3…"
+          steps: 2000
+
+    A floor is a property of a corpus **and** a budget — #115 measured 0.0085 on
+    one configuration and watched another move 0.1924 — so a number carried over
+    from other material licenses a ranking it never earned. When the block names
+    a `measured_on`, it has to be this sweep's data version or the manifest is
+    refused. A bare number is still accepted, because the field was defined that
+    way, but it travels with `provenance: "unstated"` so the state file and the
+    leaderboard can say that nobody knows where it came from rather than printing
+    it as if somebody did.
 
     Refused rather than coerced when it is not a positive number: a floor of zero
     would mark every cut as decided outside the noise, which is the reassurance
@@ -117,7 +139,30 @@ def _noise_floor(raw: Mapping[str, Any], where: str) -> float | None:
     """
     value = raw.get("noise_floor")
     if value is None:
-        return None
+        return None, {}
+
+    provenance: dict = {}
+    if isinstance(value, Mapping):
+        block = dict(value)
+        if "value" not in block:
+            raise ManifestError(
+                f"{where}: noise_floor is a block without a `value`. Write the "
+                "measured spread there, or give the bare number instead.")
+        measured_on = str(block.get("measured_on") or "").strip()
+        if measured_on and measured_on != data_digest:
+            raise ManifestError(
+                f"{where}: noise_floor was measured on {measured_on!r} and this "
+                f"sweep runs on {data_digest!r}. A floor is a property of the "
+                "corpus and the budget it was measured at — #115 measured 0.0085 "
+                "on one configuration and 0.1924 on another — so a number from "
+                "other material would license a ranking it never earned. Measure "
+                "it again on this corpus, or remove the field.")
+        provenance = {k: v for k, v in block.items() if k != "value"}
+        provenance.setdefault("provenance", "measured" if measured_on else "unstated")
+        value = block["value"]
+    else:
+        provenance = {"provenance": "unstated"}
+
     try:
         floor = float(value)
     except (TypeError, ValueError):
@@ -127,7 +172,7 @@ def _noise_floor(raw: Mapping[str, Any], where: str) -> float | None:
             f"{where}: noise_floor must be greater than zero, got {floor}. A floor of "
             "zero marks every cut as decided outside the noise, which is the "
             "reassurance this field exists to withhold.")
-    return floor
+    return floor, provenance
 
 
 def canonical(value: Any) -> Any:
@@ -211,6 +256,9 @@ class SweepManifest:
     #: exist before them. Where it is absent, a ranking from this sweep has no
     #: resolution attached and must not be read as one.
     noise_floor: float | None = None
+    #: Where that floor came from: the seeds, the commit and the data version it
+    #: was measured on, or ``{"provenance": "unstated"}`` for a bare number.
+    noise_floor_provenance: dict = field(default_factory=dict)
     source: str | None = None
 
     def configs(self) -> list[SweepConfig]:
@@ -361,6 +409,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
             raise ManifestError(f"{where}: data.datasets[{index}] must be a mapping, "
                                 f"got {type(spec).__name__}")
 
+    floor, floor_provenance = _noise_floor(raw, where, str(data["digest"]).strip())
     return SweepManifest(
         name=name,
         train=str(_require(data, "train", f"{where}.data")),
@@ -373,7 +422,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
         rungs=rungs,
         base=canonical(base),
         axes=axes,
-        noise_floor=_noise_floor(raw, where),
+        noise_floor=floor, noise_floor_provenance=floor_provenance,
         source=source,
     )
 
