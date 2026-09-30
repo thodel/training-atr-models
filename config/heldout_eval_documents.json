@@ -390,9 +390,12 @@
           "manifests"
         ]
       },
-      "page_digests": {}
+      "page_digests": {
+        "test": "7a3f839ff97da4fd",
+        "val": "fdb71e2c02240a64"
+      }
     }
   ],
   "_split_params": "How the set was drawn, so it can be drawn again (#112). `seed`, `val_docs` and `test_docs` are recorded — they are in `seed` and `built_by`. The three caps were NOT recorded and are recovered from make_split.py's history: the file has two commits and both carry 160/220/50000, so those were the defaults on 05.09.2026. Marked in `_recovered` because recovered is not the same as recorded, and the next set should record all six. The caps do not change WHICH DOCUMENTS are drawn (the draw pops from a list shuffled once and consumes no randomness), but they do change WHICH PAGES of an over-cap document are drawn, across both draws — see page_digests.",
-  "_page_digests": "sha256[:16] over the sorted, deduplicated basenames of a side's pages (atr_training.split_identity.page_digest). Absent here because the arrows and their manifests were removed on 21.09.2026 and nothing was pinned beforehand. Until one is recorded, a restore can match every document id in this file and still hold out different pages. Pin it from the ORIGINAL pages_test.lst/pages_val.lst if they survived on the share — that confirms this set; pinning it from a rebuild only names a new one."
+  "_page_digests": "sha256[:16] over the sorted, deduplicated basenames of a side's pages (atr_training.split_identity.page_digest). Pinned on 30.09.2026 from the ORIGINAL pages_test.lst / pages_val.lst of the split job, which survived on the share — so these identify the real set and not a rebuild that resembles it. A restore whose documents match this file but whose pages hash differently is refused: val_per_doc / test_per_doc decide which pages of a capped document are drawn (1,773 val pages were dropped to the cap), and those were never recorded, so document ids alone would have waved a different set through. Note this is a digest of page NAMES, not of the compiled arrows — those are not byte-reproducible (docs/EVAL_SETS.md), which is why their acceptance test is 882,255 characters and 188,022 errors instead."
 }

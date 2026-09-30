@@ -414,3 +414,32 @@ def test_a_registry_without_the_caps_refuses_to_guess_them(pool_dir, tmp_path):
 
     assert result.returncode != 0
     assert "val_per_doc" in result.stdout + result.stderr
+
+
+# ── the set is now confirmable ──────────────────────────────────────────────
+def test_the_registry_now_proves_its_pages():
+    """Pinned on 30.09.2026 from the ORIGINAL split lists, which survived on the
+    share — so this is the real set's digest and not a rebuild's.
+
+    Until it was there, a restore could match all 350 document ids and hold
+    different pages. `split.json` shows why that was not theoretical: 1,773 val
+    pages were dropped to the per-document cap, so `rng.sample` ran often, and
+    the caps that shift which pages are drawn were never recorded.
+    """
+    identity = load_identity()
+
+    assert identity.proves_pages
+    assert identity.test_page_digest == "7a3f839ff97da4fd"
+    assert identity.val_page_digest == "fdb71e2c02240a64"
+
+
+def test_a_rebuild_that_draws_other_pages_is_now_refused():
+    """What the pin buys: the check that document ids alone cannot make."""
+    identity = load_identity()
+
+    verdict = identity.verify(
+        test_pages=[f"1_{d}_0001_9.xml" for d in sorted(identity.test_documents)],
+        val_pages=[f"1_{d}_0001_9.xml" for d in sorted(identity.val_documents)])
+
+    assert not verdict.ok
+    assert any("page digest" in c for c in verdict.complaints), verdict.complaints
