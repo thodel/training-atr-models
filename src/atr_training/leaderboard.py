@@ -47,8 +47,16 @@ from atr_training.sweep_manifest import SweepConfig, SweepManifest
 __all__ = ["Row", "rows_for", "render", "band_ranks"]
 
 #: What a row says about a configuration's fate at its rung.
-PROMOTED, ELIMINATED, ANOMALY, UNSCORED, RUNNING = (
-    "promoted", "eliminated", "anomaly", "unscored", "running")
+PROMOTED, ELIMINATED, ANOMALY, UNSCORED, RUNNING, REFUSED = (
+    "promoted", "eliminated", "anomaly", "unscored", "running", "refused")
+
+#: Sentences the guards raise with. A job that failed on one of these was
+#: refused before it could produce a number, and #119 asks for that to appear as
+#: a refusal with its reason rather than as a missing CER — which reads like a
+#: crash, and would put a configuration the material cannot support in the same
+#: column as a machine that fell over.
+GUARD_MARKERS = ("optimizer steps", "does not converge", "frames per character",
+                 "line geometry", "reserved for evaluation")
 
 
 @dataclass
@@ -63,6 +71,12 @@ class Row:
     status: str
     commit: str | None = None
     overrides: list[str] = field(default_factory=list)
+    #: Why a guard refused this configuration, when one did.
+    refusal: str | None = None
+    #: What the run's own record says about the held-out reservation, and where
+    #: that number came from (#119).
+    reserved_pages: int | None = None
+    reserved_pages_source: str | None = None
     rank: int | None = None
     #: True when this row shares its rank with another, i.e. the material cannot
     #: tell them apart.
@@ -97,8 +111,18 @@ def band_ranks(rows: Sequence[Row], noise_floor: float | None) -> None:
         index += len(band)
 
 
+def _refusal_of(entry: Mapping[str, Any]) -> str | None:
+    """The guard's own sentence, when the job failed on one."""
+    error = str(entry.get("error") or "")
+    if entry.get("status") != "failed" or not error:
+        return None
+    return error if any(mark in error for mark in GUARD_MARKERS) else None
+
+
 def _status_of(config_id: str, rung: int, entry: Mapping[str, Any],
                promotions: Iterable[Mapping[str, Any]]) -> str:
+    if _refusal_of(entry):
+        return REFUSED
     decision = next((p for p in promotions if p.get("rung") == rung), None)
     if decision is not None:
         if config_id in (decision.get("anomalies") and
@@ -136,6 +160,9 @@ def rows_for(manifest: SweepManifest, state: SweepState) -> list[Row]:
                 status=_status_of(config_id, rung, entry, state.promotions),
                 commit=entry.get("commit"),
                 overrides=list(entry.get("overrides") or []),
+                refusal=_refusal_of(entry),
+                reserved_pages=entry.get("reserved_pages"),
+                reserved_pages_source=entry.get("reserved_pages_source"),
             ))
         band_ranks(rung_rows, manifest.noise_floor)
         # Within a band every row shares a rank, so the score has to order them:
@@ -182,7 +209,7 @@ def _cell(value: float | None, digits: int = 4) -> str:
 
 
 MARKS = {PROMOTED: "promoted", ELIMINATED: "eliminated", ANOMALY: "**ANOMALY**",
-         UNSCORED: "unscored", RUNNING: "running"}
+         UNSCORED: "unscored", RUNNING: "running", REFUSED: "**REFUSED**"}
 
 
 def render(manifest: SweepManifest, state: SweepState,
@@ -230,6 +257,37 @@ def render(manifest: SweepManifest, state: SweepState,
                      + [f"{row.steps:,}", _cell(row.raw),
                         "—" if row.minutes is None else f"{row.minutes:.0f}", mark])
             lines.append("| " + " | ".join(cells) + " |")
+
+    refused = [r for r in rows if r.status == REFUSED]
+    if refused:
+        lines.append("")
+        lines.append("### Refused by a guard")
+        lines.append("")
+        lines.append("Not a poor result: these never produced one. A guard said the "
+                     "configuration could not be measured, and its sentence is the "
+                     "finding.")
+        lines.append("")
+        for row in refused:
+            lines.append(f"* `{row.config_id}` (rung {row.rung}) — {row.refusal}")
+
+    unchecked = [r for r in rows if r.reserved_pages is None and r.status != RUNNING]
+    if unchecked:
+        lines.append("")
+        lines.append(f"> **{len(unchecked)} run(s) record no held-out check.** "
+                     "`reserved_pages: null` means nothing looked, which is not the "
+                     "same as looking and finding nothing (#119). A CER from a run "
+                     "that may have trained on the measurement set is not a CER on "
+                     "held-out material.")
+    adopted = sorted({r.reserved_pages_source for r in rows
+                      if r.reserved_pages_source and r.reserved_pages_source != "prepare"})
+    if adopted:
+        lines.append("")
+        lines.append("> **Corpus reused.** The reservation count of some runs comes "
+                     "from the artefact they adopted rather than from their own "
+                     f"prepare: {'; '.join(adopted)}. The cache key carries the "
+                     "held-out fingerprint, so an artefact built under a different "
+                     "reservation is never adopted — the corpus is clean, and this "
+                     "line is what lets the record say so.")
 
     if any(r.tied for r in rows):
         lines.append("")

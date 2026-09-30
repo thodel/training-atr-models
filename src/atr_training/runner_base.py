@@ -399,13 +399,22 @@ class BasePipeline(ABC):
         run is meant to train on. The count goes on the job record — a hold-out
         that quietly removed data would be its own kind of unmeasured run.
         """
+        from atr_training.artefact_cache import heldout_fingerprint
+
+        job.progress.heldout_fingerprint = heldout_fingerprint()
         reserved_set = load_heldout()
         if not reserved_set:
+            # Consulted, and it holds nothing back. That is a measurement too —
+            # the alternative reading, "nobody looked", is what `None` is for.
+            job.progress.reserved_pages = 0
+            job.progress.reserved_pages_source = "prepare (registry empty)"
+            self.store.save(job)
             return train_manifest
         pages = [line for line in
                  train_manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
         keep, reserved = reserved_set.split(pages)
         job.progress.reserved_pages = len(reserved)
+        job.progress.reserved_pages_source = "prepare"
         if not reserved:
             logger.info("held-out documents: none of {} training pages are reserved "
                         "({} documents in the registry)", len(pages), len(reserved_set.documents))
@@ -1330,9 +1339,22 @@ class BasePipeline(ABC):
             return None
 
         # The counts the guards read cannot be recomputed — the pages are gone.
-        for field, value in (entry.payload or {}).items():
+        payload = dict(entry.payload or {})
+        counts = payload.pop("dataset_counts", None)
+        for field, value in payload.items():
             if hasattr(job.progress, field):
                 setattr(job.progress, field, value)
+        if counts:
+            job.progress.dataset_counts = [DatasetCounts.model_validate(c) for c in counts]
+        # Say where the reservation count came from, rather than letting a number
+        # this job never measured read like one it did (#119). An artefact built
+        # under a different held-out registry has a different cache key and is
+        # never adopted, so the corpus really is clean — but only this line makes
+        # the job record able to say so.
+        if payload.get("reserved_pages") is not None:
+            job.progress.reserved_pages_source = (
+                f"artefact {entry.key[:12]} built by "
+                f"{payload.get('job_id') or entry.job_id}")
         job.progress.artefact = (
             f"{entry.key[:12]} reused, built by "
             f"{entry.payload.get('job_id') or entry.job_id}")
@@ -1399,6 +1421,14 @@ class BasePipeline(ABC):
                 "lines_written": job.progress.lines_written,
                 "pages_written": job.progress.pages_written,
                 "aspect_per_char": job.progress.aspect_per_char,
+                # What was true about how this corpus was made has to travel with
+                # it (#119, and #108 for the second one): a job that adopts the
+                # artefact skips the stage that produced these, and without them
+                # its record states a default as if it were a finding.
+                "reserved_pages": job.progress.reserved_pages,
+                "heldout_fingerprint": job.progress.heldout_fingerprint,
+                "dataset_counts": [c.model_dump(mode="json")
+                                   for c in job.progress.dataset_counts],
                 "job_id": job.id,
             })
             rebound = self._adopt_cached(job, entry)
