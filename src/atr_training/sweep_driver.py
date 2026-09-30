@@ -344,6 +344,13 @@ class SweepDriver:
             "finished_at": job.get("finished_at"),
             "minutes": _minutes(job.get("started_at"), job.get("finished_at")),
             "commit": (job.get("code") or {}).get("commit"),
+            # A guard that refused this configuration said why, and that sentence
+            # is the result (#119). Without it the leaderboard shows an absent
+            # CER, which reads like a crash rather than like a configuration the
+            # material cannot support.
+            "error": job.get("error"),
+            "reserved_pages": (job.get("progress") or {}).get("reserved_pages"),
+            "reserved_pages_source": (job.get("progress") or {}).get("reserved_pages_source"),
             "overrides": [name for name in ("convergence_override", "geometry_override")
                           if job.get(name)],
         })

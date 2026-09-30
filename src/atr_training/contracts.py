@@ -831,9 +831,29 @@ class Progress(BaseModel):
     #: Supersedes the flat counters above when multiple datasets are used.
     dataset_counts: list[DatasetCounts] = Field(default_factory=list)
     #: Training pages dropped because their document is reserved for evaluation
-    #: (#98). 0 means the registry was consulted and matched nothing — not that
-    #: nothing was checked, which is what the log line says.
-    reserved_pages: int = 0
+    #: (#98). Three-valued on purpose (#119):
+    #:
+    #: * ``n`` — the registry was consulted and dropped n pages;
+    #: * ``0`` — the registry was consulted and matched nothing;
+    #: * ``None`` — nothing was checked *in this job*.
+    #:
+    #: It defaulted to ``0``, so a run that adopted a cached artefact and skipped
+    #: ``prepare`` carried a number saying "checked, nothing found" that nobody
+    #: had produced. Measured on ``20260916T205123Z-qwen3vl-german-pages-v5``:
+    #: ``reserved_pages: 0`` on a job whose corpus was in fact reserved down by
+    #: 3,187 pages in the run that built its artefact. In a sweep of dozens of
+    #: runs that nobody reads individually, a zero that can mean two things is
+    #: not recoverable afterwards.
+    reserved_pages: int | None = None
+    #: Where that number comes from: ``"prepare"`` when this job measured it, or
+    #: ``"artefact <key> built by <job>"`` when it came across with a reused
+    #: corpus. ``None`` alongside ``reserved_pages: None`` means nothing checked.
+    reserved_pages_source: str | None = None
+    #: The held-out registry the corpus was built under, as
+    #: ``artefact_cache.heldout_fingerprint`` computes it. Already part of the
+    #: cache key, so an artefact built under a different reservation is never
+    #: adopted — but the key is not in the job record and this is.
+    heldout_fingerprint: str | None = None
     #: Aspect ratio per character over the prepared lines — what the line-geometry
     #: guard compares against the VGSL spec. Recorded so it can travel with a
     #: cached artefact (#109), whose pages are deleted once it is stored.
