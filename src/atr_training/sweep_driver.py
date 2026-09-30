@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
@@ -68,6 +69,23 @@ STATE_VERSION = 1
 #: on noticing costs nothing and a tighter loop is a poll storm on a box whose
 #: job is training.
 POLL_S = 60.0
+
+
+def _minutes(started: str | None, finished: str | None) -> float | None:
+    """Wall-clock minutes between two ISO timestamps, or None.
+
+    #116 asks for the runtime on the table because it changes what a result
+    means: h256 costs about twelve times h48 per step, so a gain of 0.0021 for
+    70 % more compute is a different statement from a gain of 0.0021.
+    """
+    if not started or not finished:
+        return None
+    try:
+        a = datetime.fromisoformat(str(started))
+        b = datetime.fromisoformat(str(finished))
+    except ValueError:
+        return None
+    return round((b - a).total_seconds() / 60, 1)
 
 
 class SweepError(RuntimeError):
@@ -317,6 +335,17 @@ class SweepDriver:
             "score": self.metric.rank_of(job),
             "raw": self.metric.raw_of(job),
             "metric": self.metric.name,
+            # For the leaderboard (#116), and all of it from the job record so
+            # nothing is retyped: the cost, the code, and whether a guard was
+            # overridden. That last one matters even though this driver never
+            # sets `force` — a CER from a run known not to converge must never be
+            # read as an ordinary one, and the table is where it would be.
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+            "minutes": _minutes(job.get("started_at"), job.get("finished_at")),
+            "commit": (job.get("code") or {}).get("commit"),
+            "overrides": [name for name in ("convergence_override", "geometry_override")
+                          if job.get(name)],
         })
         self.state.save()
 
