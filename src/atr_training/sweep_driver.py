@@ -43,7 +43,6 @@ the results of the first three becoming suspect.
 from __future__ import annotations
 
 import json
-import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,7 +50,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from loguru import logger
 
-from atr_training.convergence import plan_steps
+from atr_training.convergence import epochs_for as _epochs_for
 from atr_training.rungs import DEFAULT_ETA, Promotion, plan_rungs, promote
 from atr_training.sweep_manifest import SweepConfig, SweepManifest
 
@@ -118,11 +117,11 @@ METRICS: dict[str, Metric] = {
 
 
 def epochs_for(steps: int, train_lines: int, effective_batch: int) -> int:
-    """The smallest epoch count that buys at least ``steps`` optimizer steps.
+    """:func:`convergence.epochs_for`, with the sweep's own way of saying why.
 
-    ``ketos`` is told epochs; the sweep budgets in steps (#111, lesson 3).
-    ``steps_per_epoch`` comes from :class:`convergence.StepBudget`, so the
-    driver's arithmetic and the convergence guard's cannot drift apart.
+    The arithmetic is not repeated here: the driver and the convergence guard
+    judging its jobs have to agree, and two functions with one formula is how
+    they stop agreeing.
     """
     if steps < 1:
         raise SweepError(f"a rung budget must be at least one step, got {steps}")
@@ -131,8 +130,7 @@ def epochs_for(steps: int, train_lines: int, effective_batch: int) -> int:
             f"cannot size a rung against {train_lines} training lines. The count "
             "comes from a completed job's progress.train_lines, or from "
             "--train-lines for the first rung.")
-    per_epoch = plan_steps(train_lines, effective_batch, 1).steps_per_epoch
-    return max(1, math.ceil(steps / per_epoch))
+    return _epochs_for(steps, train_lines, effective_batch)
 
 
 def steps_at_rung(base_steps: int, rung: int, eta: int = DEFAULT_ETA) -> int:
@@ -161,6 +159,9 @@ class SweepState:
     base_steps: int
     metric: str
     train_lines: int | None = None
+    #: What the noise floor was measured on, carried so a reader of this file
+    #: never has to trust a bare number (#115).
+    noise_floor_provenance: dict = field(default_factory=dict)
     #: rung (as a string, because JSON) -> config_id -> {job_id, status, score, raw}.
     #: Rung-major, because a configuration runs at several rungs with different
     #: budgets and therefore different scores. Keyed by configuration alone, a
@@ -175,7 +176,8 @@ class SweepState:
     def for_manifest(cls, manifest: SweepManifest, metric: str,
                      path: Path | None = None) -> "SweepState":
         return cls(sweep=manifest.name, data_digest=manifest.data_digest,
-                   base_steps=manifest.steps, metric=metric, path=path)
+                   base_steps=manifest.steps, metric=metric, path=path,
+                   noise_floor_provenance=dict(manifest.noise_floor_provenance))
 
     @classmethod
     def load(cls, path: Path, manifest: SweepManifest, metric: str) -> "SweepState":
@@ -185,6 +187,8 @@ class SweepState:
         state = cls(sweep=raw["sweep"], data_digest=raw["data_digest"],
                     base_steps=raw["base_steps"], metric=raw["metric"],
                     train_lines=raw.get("train_lines"),
+                    noise_floor_provenance=(raw.get("noise_floor_provenance")
+                                            or dict(manifest.noise_floor_provenance)),
                     results=raw.get("results", {}),
                     promotions=raw.get("promotions", []), path=path)
         state.check_against(manifest, metric)
@@ -235,6 +239,7 @@ class SweepState:
             "version": STATE_VERSION, "sweep": self.sweep,
             "data_digest": self.data_digest, "base_steps": self.base_steps,
             "metric": self.metric, "train_lines": self.train_lines,
+            "noise_floor_provenance": self.noise_floor_provenance,
             "results": self.results, "promotions": self.promotions,
         }
         tmp = self.path.with_suffix(self.path.suffix + ".part")
@@ -385,6 +390,14 @@ class SweepDriver:
             self.state.promotions.append({
                 "rung": decision.rung, "promoted": decision.promoted,
                 "eliminated": decision.eliminated, "unscored": decision.unscored,
+                # The number the rung turned on, and whether the material can
+                # resolve it (#115). Without these two in the file the mark lives
+                # only in a log line that scrolls past, and the leaderboard (#116)
+                # has nothing to print — which is the state the first architecture
+                # search published its ranking in.
+                "boundary_margin": decision.boundary_margin,
+                "decided_within_noise": decision.decided_within_noise,
+                "noise_floor": self.manifest.noise_floor,
                 "anomalies": [{"config_id": a.config_id, "score": a.score,
                                "lower_fence": a.lower_fence} for a in decision.anomalies],
             })
@@ -394,6 +407,14 @@ class SweepDriver:
 
     def _log_promotion(self, decision: Promotion) -> None:
         logger.info("{}", decision)
+        if decision.decided_within_noise:
+            # Not an error: a rung has to narrow. But the record has to say that
+            # repeating the same configuration would have moved it further than
+            # the difference this cut rests on.
+            logger.warning(
+                "rung {}: the cut fell on {:.4f}, inside the measured noise floor "
+                "{} — this rung was decided by noise, not by the configurations",
+                decision.rung, decision.boundary_margin, self.manifest.noise_floor)
         for flag in decision.anomalies:
             # Not a low score: a training outcome that failed. Logged distinctly
             # so a post-run audit can tell "needs more data" from "collapsed".
