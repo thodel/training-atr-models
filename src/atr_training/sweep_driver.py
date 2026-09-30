@@ -378,7 +378,8 @@ class SweepDriver:
             if rung + 1 >= len(ladder):
                 break
             scores = {cid: self.state.at(rung, cid).get("score") for cid in entrants}
-            decision = promote(scores, eta=self.eta, keep=ladder[rung + 1], rung=rung)
+            decision = promote(scores, eta=self.eta, keep=ladder[rung + 1], rung=rung,
+                               noise_floor=self.manifest.noise_floor)
             promotions.append(decision)
             self._log_promotion(decision)
             self.state.promotions.append({

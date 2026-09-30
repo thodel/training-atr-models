@@ -217,3 +217,56 @@ def test_anomalies_field_is_list_of_anomalyflags():
     assert result.anomalies[0].config_id == "h256-c43"
     assert "0.5591" in result.anomalies[0].reason
     assert "lower fence" in result.anomalies[0].reason.lower()
+
+
+# ── the noise floor as a threshold (#115) ───────────────────────────────────
+#
+# The first architecture search ranked seven heights and four LSTM widths, and a
+# matched pair 0.0148 apart flipped sign when the seed changed. The spread of the
+# *same* configuration across two seeds was 0.0085. A cut made on a margin that
+# small is a coin toss, and nothing in the record said so.
+
+def test_the_boundary_margin_is_recorded_even_without_a_floor():
+    """The number the whole ladder turns on: everything else in the record is a
+    consequence of where that cut fell."""
+    result = promote({"a": 0.90, "b": 0.80, "c": 0.50}, keep=1)
+    assert result.promoted == ["a"]
+    assert result.boundary_margin == pytest.approx(0.10)
+    assert result.decided_within_noise is False
+
+
+def test_a_cut_closer_than_the_noise_floor_is_marked():
+    result = promote({"a": 0.9010, "b": 0.9000, "c": 0.50}, keep=1, noise_floor=0.0085)
+    assert result.promoted == ["a"]          # the rung still narrows
+    assert result.decided_within_noise is True
+    assert "WITHIN NOISE" in str(result)
+
+
+def test_a_cut_wider_than_the_floor_is_not_marked():
+    result = promote({"a": 0.95, "b": 0.90, "c": 0.50}, keep=1, noise_floor=0.0085)
+    assert result.decided_within_noise is False
+
+
+def test_the_floor_does_not_change_who_is_promoted():
+    """A rung has to narrow. Refusing to cut on a tight field would stall the
+    sweep on exactly the material where every configuration is similar."""
+    scores = {"a": 0.9010, "b": 0.9000, "c": 0.8999, "d": 0.50}
+    without = promote(scores, keep=2)
+    with_floor = promote(scores, keep=2, noise_floor=0.05)
+    assert without.promoted == with_floor.promoted
+    assert with_floor.decided_within_noise is True
+
+
+def test_an_anomaly_cannot_make_a_clear_cut_look_close():
+    """An anomaly is eliminated regardless of its raw score, so it must not be
+    the neighbour the margin is measured against."""
+    scores = {"a": 0.90, "b": 0.89, "c": 0.88, "d": 0.87, "e": 0.10}
+    result = promote(scores, keep=1, noise_floor=0.005)
+    assert "e" in {flag.config_id for flag in result.anomalies}
+    assert result.boundary_margin == pytest.approx(0.01)   # a vs b, not a vs e
+
+
+def test_a_rung_with_nothing_eliminated_has_no_margin():
+    result = promote({"a": 0.9}, keep=1, noise_floor=0.01)
+    assert result.boundary_margin is None
+    assert result.decided_within_noise is False

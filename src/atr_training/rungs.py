@@ -108,6 +108,19 @@ class Promotion:
     #: a sweep that quietly loses a third of its candidates to a bug would look
     #: exactly like a sweep that worked.
     unscored: list[str] = field(default_factory=list)
+    #: The gap between the worst promoted and the best eliminated configuration,
+    #: or None when one of the two sides is empty. The number the whole ladder
+    #: turns on: everything else in this record is a consequence of where that cut
+    #: fell.
+    boundary_margin: float | None = None
+    #: True when that gap is smaller than the measured noise floor (#115), i.e.
+    #: when repeating the *same* configuration would move it by more than the
+    #: difference the cut was made on. The promotion still happens — a rung has to
+    #: narrow — but it was decided by noise, and a leaderboard that does not say so
+    #: reports a coin toss as a ranking. This is the failure that cost the first
+    #: architecture search its result: a matched pair 0.0148 apart flipped sign on
+    #: a seed change, and the spread of one configuration across seeds was 0.0085.
+    decided_within_noise: bool = False
     #: Anomalies: configurations whose scores are below the Tukey lower fence
     #: (more than ``factor`` × IQR below Q1). Eliminated, but flagged distinctly
     #: so a post-run audit can separate "bad luck" from "collapsed training" —
@@ -116,6 +129,8 @@ class Promotion:
 
     def __str__(self) -> str:
         tail = f", {len(self.unscored)} unscored" if self.unscored else ""
+        if self.decided_within_noise:
+            tail += f", boundary {self.boundary_margin:.4f} WITHIN NOISE"
         if self.anomalies:
             ids = ", ".join(a.config_id for a in self.anomalies)
             tail += f", {len(self.anomalies)} anomaly [{ids}]"
@@ -237,6 +252,7 @@ def promote(
     keep: int | None = None,
     rung: int = 0,
     iqr_factor: float = 1.5,
+    noise_floor: float | None = None,
 ) -> Promotion:
     """Advance the best ``1/eta`` of a rung, guarding against collapse.
 
@@ -259,6 +275,16 @@ def promote(
     An anomaly is flagged in ``Promotion.anomalies`` rather than buried in
     ``eliminated`` so that a post-run audit can distinguish "needs more data"
     from "collapsed at high height".
+
+    ``noise_floor`` — measured by repeating one configuration across seeds (#115)
+    — does not change who is promoted. A rung has to narrow, and refusing to cut
+    when the field is tight would stall the sweep on exactly the material where
+    every configuration is similar. What it changes is what the record *claims*:
+    a cut made on a margin smaller than the floor is marked
+    ``decided_within_noise``, because repeating the same configuration would have
+    moved it further than the difference the decision rests on. The first
+    architecture search had no such mark and published a ranking whose matched
+    pair flipped sign on a seed change.
     """
     if eta < 2:
         raise RungError(f"eta must be at least 2, got {eta}")
@@ -296,5 +322,14 @@ def promote(
     promoted = [cid for cid, _ in ranked[:keep]]
     eliminated = [cid for cid, _ in ranked[keep:]] + sorted(anomaly_ids)
 
+    # The margin is over the *ranked* cut, so an anomaly — eliminated regardless
+    # of its raw score — cannot make a clear cut look like a close one.
+    margin: float | None = None
+    if promoted and len(ranked) > keep:
+        margin = ranked[keep - 1][1] - ranked[keep][1]
+    within = (margin is not None and noise_floor is not None
+              and margin < float(noise_floor))
+
     return Promotion(rung=rung, promoted=promoted, eliminated=eliminated,
-                     unscored=unscored, anomalies=anomalies)
+                     unscored=unscored, anomalies=anomalies,
+                     boundary_margin=margin, decided_within_noise=within)

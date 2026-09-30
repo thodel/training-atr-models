@@ -89,6 +89,7 @@ ID_CHARS = 12
 #: What may appear at the top level. A typo'd key is refused rather than ignored:
 #: `budgets:` silently dropping the budget is the failure this is cheap to avoid.
 TOP_LEVEL = frozenset({"name", "data", "budget", "base", "axes", "notes",
+                       "noise_floor",
                        "engine", "base_model"})
 
 #: Python's ``float()`` also accepts ``nan``, ``inf`` and ``1_000``; YAML does
@@ -105,6 +106,28 @@ def _as_number(text: str) -> int | float | None:
         return None
     value = float(text)
     return int(value) if value.is_integer() else value
+
+
+def _noise_floor(raw: Mapping[str, Any], where: str) -> float | None:
+    """The measured resolution of this material, if it has been measured (#115).
+
+    Refused rather than coerced when it is not a positive number: a floor of zero
+    would mark every cut as decided outside the noise, which is the reassurance
+    this field exists to withhold.
+    """
+    value = raw.get("noise_floor")
+    if value is None:
+        return None
+    try:
+        floor = float(value)
+    except (TypeError, ValueError):
+        raise ManifestError(f"{where}: noise_floor must be a number, got {value!r}") from None
+    if not floor > 0:
+        raise ManifestError(
+            f"{where}: noise_floor must be greater than zero, got {floor}. A floor of "
+            "zero marks every cut as decided outside the noise, which is the "
+            "reassurance this field exists to withhold.")
+    return floor
 
 
 def canonical(value: Any) -> Any:
@@ -182,6 +205,12 @@ class SweepManifest:
     rungs: tuple[int, ...]
     base: dict
     axes: dict[str, tuple]
+    #: The smallest difference this material and this budget can resolve,
+    #: measured by repeating one configuration across seeds (#115). Optional,
+    #: because it is measured *on* a corpus and a budget and therefore cannot
+    #: exist before them. Where it is absent, a ranking from this sweep has no
+    #: resolution attached and must not be read as one.
+    noise_floor: float | None = None
     source: str | None = None
 
     def configs(self) -> list[SweepConfig]:
@@ -344,6 +373,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
         rungs=rungs,
         base=canonical(base),
         axes=axes,
+        noise_floor=_noise_floor(raw, where),
         source=source,
     )
 

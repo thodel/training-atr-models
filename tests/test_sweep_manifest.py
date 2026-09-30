@@ -362,3 +362,34 @@ def test_the_check_refuses_a_bad_manifest_with_the_reason_on_stderr(tmp_path):
 
     assert result.returncode == 1
     assert "data.digest is required" in result.stderr
+
+
+# ── the measured resolution (#115) ──────────────────────────────────────────
+
+def with_floor(value) -> dict:
+    doc = yaml.safe_load(MANIFEST)
+    if value is not None:
+        doc["noise_floor"] = value
+    return doc
+
+
+def test_a_manifest_without_a_noise_floor_has_none():
+    """It is measured *on* a corpus and a budget, so it cannot exist before them.
+    Absent means a ranking from this sweep has no resolution attached."""
+    assert parse_manifest(with_floor(None)).noise_floor is None
+
+
+def test_a_measured_noise_floor_is_carried():
+    assert parse_manifest(with_floor(0.0085)).noise_floor == 0.0085
+
+
+def test_a_noise_floor_of_zero_is_refused():
+    """Zero marks every cut as decided outside the noise, which is the
+    reassurance the field exists to withhold."""
+    with pytest.raises(ManifestError, match="greater than zero"):
+        parse_manifest(with_floor(0))
+
+
+def test_a_noise_floor_that_is_not_a_number_is_refused():
+    with pytest.raises(ManifestError, match="must be a number"):
+        parse_manifest(with_floor("soon"))
