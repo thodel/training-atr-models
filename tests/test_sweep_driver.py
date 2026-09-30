@@ -76,8 +76,10 @@ class FakeTrainer:
 
     def __init__(self, scores=None, *, valid=True, errors=(), train_lines=120_000):
         self.submitted: list[dict] = []
+        self.foreign: list[dict] = []
+        self.cancelled: list[str] = []
         self.verified: list[dict] = []
-        self.jobs: dict[str, dict] = {}
+        self.records: dict[str, dict] = {}
         self.scores = dict(scores or {})
         self.valid = valid
         self.errors = list(errors)
@@ -97,7 +99,7 @@ class FakeTrainer:
         job_id = f"job-{self._n:03d}"
         config = self._config_of(request)
         cer = self.scores.get(config)
-        self.jobs[job_id] = {
+        self.records[job_id] = {
             "id": job_id,
             "status": "completed" if cer is not None else "failed",
             "progress": {"train_lines": self.train_lines},
@@ -107,7 +109,24 @@ class FakeTrainer:
         return {"job_id": job_id, "status": "queued"}
 
     def job(self, job_id):
-        return self.jobs[job_id]
+        return self.records[job_id]
+
+    # The rest of `TrainerClient`, because a stand-in that answers only half the
+    # protocol makes the driver treat the card as occupied on every poll — which
+    # is the right reflex and the wrong test.
+    def jobs(self):
+        """Everything the trainer knows about, ours and anyone else's."""
+        return [{"id": jid, "status": job["status"]} for jid, job in self.records.items()] \
+            + list(self.foreign)
+
+    def cancel(self, job_id):
+        self.cancelled.append(job_id)
+        self.records[job_id] = {**self.records[job_id], "status": "cancelled"}
+        return self.records[job_id]
+
+    def someone_wants_the_card(self, job_id: str = "requested-1", status: str = "queued"):
+        """A job this sweep did not submit — an operator's training run."""
+        self.foreign.append({"id": job_id, "status": status})
 
 
 def driver(trainer, m=None, *, metric="benchmark_cer", train_lines=120_000,
@@ -323,7 +342,7 @@ def test_one_metric_is_used_throughout_rather_than_falling_back():
     number against a validation number that overlaps training."""
     m = manifest()
     trainer = FakeTrainer(scores_for(m, [0.2] * 12))
-    for job in trainer.jobs.values():                # nothing yet; set below
+    for job in trainer.records.values():                # nothing yet; set below
         job["result"]["cer"] = 0.01
     d = driver(trainer, m, metric="benchmark_cer")
     d.run()
@@ -395,7 +414,7 @@ def test_a_restart_reattaches_to_a_job_that_was_still_running(tmp_path: Path):
     state.save()
 
     trainer = FakeTrainer(scores_for(m, [0.2 + i / 1000 for i in range(12)]))
-    trainer.jobs["job-007"] = {"id": "job-007", "status": "completed",
+    trainer.records["job-007"] = {"id": "job-007", "status": "completed",
                                "progress": {"train_lines": 120_000},
                                "result": {"benchmark_cer": 0.11}}
     reloaded = SweepState.load(state_path, m, "benchmark_cer")
@@ -432,7 +451,7 @@ def test_the_driver_polls_until_a_job_is_terminal():
 
         def job(self, job_id):
             self._looks[job_id] = self._looks.get(job_id, 0) + 1
-            job = dict(self.jobs[job_id])
+            job = dict(self.records[job_id])
             if self._looks[job_id] < 3:
                 job["status"] = "running"
             return job

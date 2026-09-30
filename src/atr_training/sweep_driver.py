@@ -47,7 +47,7 @@ import time
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from loguru import logger
 
@@ -56,12 +56,31 @@ from atr_training.rungs import DEFAULT_ETA, Promotion, plan_rungs, promote
 from atr_training.sweep_manifest import SweepConfig, SweepManifest
 
 __all__ = [
-    "SweepError", "Metric", "METRICS", "SweepState", "SweepDriver",
-    "TrainerClient", "epochs_for", "steps_at_rung",
+    "SweepError", "Preempted", "Metric", "METRICS", "SweepState", "SweepDriver",
+    "TrainerClient", "epochs_for", "steps_at_rung", "YIELD_POLICIES", "IDLE_S",
 ]
 
 #: Job statuses from which no further progress is possible.
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
+
+#: A job in one of these holds, or is about to hold, the card.
+ACTIVE = frozenset({"queued", "preparing", "compiling", "training", "testing",
+                    "registering"})
+
+#: How a sweep gets out of the way when somebody asks for the card (#117).
+#:
+#: ``cancel`` stops the running cell at once. ``finish_cell`` lets it end and
+#: submits nothing more. Which is right depends on what a cell costs: at rung 0
+#: it is under an hour and cancelling is cheap, at the last rung it is many hours
+#: and cancelling throws all of them away — but waiting them out is exactly the
+#: block this issue exists to prevent. The default is ``cancel``, because a sweep
+#: that can make a requested run wait hours is not the last tenant of the card,
+#: whatever it is called.
+YIELD_POLICIES = ("cancel", "finish_cell")
+
+#: How long a serving driver waits before looking again — for a freed card, or
+#: for a manifest that gained a configuration.
+IDLE_S = 300.0
 
 STATE_VERSION = 1
 
@@ -90,6 +109,11 @@ def _minutes(started: str | None, finished: str | None) -> float | None:
 
 class SweepError(RuntimeError):
     """The sweep cannot proceed without a person deciding something."""
+
+
+class Preempted(RuntimeError):
+    """This pass gave the card back. Not a failure — the cell simply did not
+    happen, and the next pass will try it again."""
 
 
 @dataclass(frozen=True)
@@ -166,6 +190,8 @@ class TrainerClient(Protocol):
     def verify(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
     def submit(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
     def job(self, job_id: str) -> Mapping[str, Any]: ...
+    def jobs(self) -> Sequence[Mapping[str, Any]]: ...
+    def cancel(self, job_id: str) -> Mapping[str, Any]: ...
 
 
 @dataclass
@@ -271,7 +297,25 @@ class SweepState:
         self.results.setdefault(str(rung), {})[config_id] = entry
 
     def scored(self, config_id: str, rung: int) -> bool:
-        return self.at(rung, config_id).get("status") in TERMINAL
+        """Finished *and* holding a number.
+
+        A preempted cell is terminal and is not scored: it ran on part of its
+        budget, and half a budget is not a measurement (#117). Leaving it out of
+        this means the next pass submits it again, which is the whole point.
+        """
+        entry = self.at(rung, config_id)
+        if entry.get("status") not in TERMINAL:
+            return False
+        return not entry.get("preempted")
+
+    def spent_steps(self) -> int:
+        """Optimizer steps this sweep has spent, preempted cells included.
+
+        Included because they cost the card the same, and a ceiling that only
+        counts successful work is not a ceiling on what the sweep consumes.
+        """
+        return sum(int(entry.get("steps") or 0)
+                   for rung in self.results.values() for entry in rung.values())
 
 
 class SweepDriver:
@@ -280,13 +324,18 @@ class SweepDriver:
     def __init__(self, manifest: SweepManifest, state: SweepState,
                  client: TrainerClient, *, eta: int = DEFAULT_ETA,
                  poll_s: float = POLL_S,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep,
+                 yield_policy: str = "cancel") -> None:
         self.manifest = manifest
         self.state = state
         self.client = client
         self.eta = eta
         self.poll_s = poll_s
         self.sleep = sleep
+        if yield_policy not in YIELD_POLICIES:
+            raise SweepError(f"yield policy must be one of {YIELD_POLICIES}, "
+                             f"got {yield_policy!r}")
+        self.yield_policy = yield_policy
         self.metric = METRICS[state.metric]
 
     # ── the ladder ──────────────────────────────────────────────────────────
@@ -318,18 +367,82 @@ class SweepDriver:
                       f"{self.manifest.data_digest}"),
         }
 
+    # ── the sweep is the last tenant of the card ────────────────────────────
+    def our_job_ids(self) -> set[str]:
+        return {str(entry.get("job_id")) for rung in self.state.results.values()
+                for entry in rung.values() if entry.get("job_id")}
+
+    def requested_jobs(self) -> list[str]:
+        """Active jobs this sweep did not submit.
+
+        Identified by absence from our own state rather than by a marker on the
+        job: a marker can be forgotten, and the state file already holds every id
+        we asked for. The consequence worth naming is that a *second* sweep's
+        jobs read as requested here and would preempt this one — which is why one
+        sweep at a time, and why this says so rather than guessing at names.
+        """
+        mine = self.our_job_ids()
+        try:
+            jobs = self.client.jobs()
+        except Exception as exc:                      # noqa: BLE001 — see below
+            # Never let a failed poll look like a free card. A driver that
+            # cannot see the queue must assume somebody is in it, because the
+            # failure this yields to killed a run with 841 MiB free (#129).
+            logger.warning("could not list the trainer's jobs ({}) — assuming the "
+                           "card is wanted", exc)
+            return ["<unknown>"]
+        return [str(j.get("id")) for j in jobs
+                if str(j.get("status")) in ACTIVE and str(j.get("id")) not in mine]
+
+    def _preempt(self, config: SweepConfig, rung: int, job_id: str,
+                 wanted_by: list[str]) -> None:
+        """Get out of the way, and leave no half measurement behind."""
+        if self.yield_policy == "cancel":
+            try:
+                self.client.cancel(job_id)
+            except Exception as exc:                  # noqa: BLE001
+                logger.warning("could not cancel {} ({}) — it will finish on its "
+                               "own; nothing is recorded for it either way",
+                               job_id, exc)
+        logger.warning(
+            "rung {}: yielding the card to {} — {} is {} and its budget is "
+            "forfeit. Half a budget is not a measurement, so this configuration "
+            "stays unscored and will be run again.",
+            rung, ", ".join(wanted_by[:3]), config.config_id,
+            "cancelled" if self.yield_policy == "cancel" else "left to finish")
+        entry = dict(self.state.at(rung, config.config_id))
+        entry.update(status="cancelled", score=None, raw=None, preempted=True,
+                     preempted_for=wanted_by[:3])
+        self.state.put(rung, config.config_id, entry)
+        self.state.save()
+
     # ── one configuration ───────────────────────────────────────────────────
-    def _await(self, job_id: str) -> Mapping[str, Any]:
+    def _await(self, job_id: str, config: SweepConfig | None = None,
+               rung: int = 0) -> Mapping[str, Any] | None:
+        """Wait for a job, unless somebody asks for the card first.
+
+        ``None`` means this cell was given up. It is not an error and not a
+        result: the configuration stays unscored and comes back on a later pass.
+        """
         while True:
             job = self.client.job(job_id)
             if str(job.get("status")) in TERMINAL:
                 return job
+            if config is not None:
+                wanted_by = self.requested_jobs()
+                if wanted_by:
+                    self._preempt(config, rung, job_id, wanted_by)
+                    return None
             self.sleep(self.poll_s)
 
     def _record(self, config: SweepConfig, rung: int, job: Mapping[str, Any]) -> None:
         self.state.observe_train_lines(
             (job.get("progress") or {}).get("train_lines"))
+        # Merged, not replaced: the budget this cell was given is written at
+        # submit, and a fresh dict here dropped it — `spent_steps()` then counted
+        # zero and the ceiling never held. Found by its own test.
         self.state.put(rung, config.config_id, {
+            **self.state.at(rung, config.config_id),
             "job_id": job.get("id"),
             "status": str(job.get("status")),
             "score": self.metric.rank_of(job),
@@ -359,22 +472,39 @@ class SweepDriver:
     def _run_config(self, config: SweepConfig, rung: int) -> None:
         if self.state.scored(config.config_id, rung):
             return
-        job_id = self.state.at(rung, config.config_id).get("job_id")
+        previous = self.state.at(rung, config.config_id)
+        # A preempted cell keeps the id of the job that was given up. Re-attaching
+        # to it would find a cancelled job, record no score, and do the same again
+        # on every later pass — the configuration would never be measured and
+        # nothing would say why. It is submitted afresh instead.
+        job_id = None if previous.get("preempted") else previous.get("job_id")
         if job_id:
             # A driver killed mid-rung left a job running; re-attach rather than
             # submit a second one for the same configuration.
             logger.info("rung {}: re-attaching to {} for {}", rung, job_id,
                         config.config_id)
         else:
+            wanted_by = self.requested_jobs()
+            if wanted_by:
+                logger.info("rung {}: not submitting {} — {} has the card",
+                            rung, config.config_id, ", ".join(wanted_by[:3]))
+                raise Preempted(config.config_id)
             answer = self.client.submit(self.request_for(config, rung))
             job_id = str(answer["job_id"])
             self.state.put(rung, config.config_id, {
                 "job_id": job_id, "status": str(answer.get("status", "queued")),
                 "score": None, "raw": None, "metric": self.metric.name,
+                # What this cell is allowed to cost, recorded at submit so the
+                # ceiling counts a preempted cell too: it spent the card whether
+                # or not it produced a number.
+                "steps": steps_at_rung(self.state.base_steps, rung, self.eta),
             })
             self.state.save()
             logger.info("rung {}: submitted {} as {}", rung, config.config_id, job_id)
-        self._record(config, rung, self._await(job_id))
+        finished = self._await(job_id, config, rung)
+        if finished is None:
+            raise Preempted(config.config_id)
+        self._record(config, rung, finished)
 
     # ── the sweep ───────────────────────────────────────────────────────────
     def verify_all(self, configs: list[SweepConfig]) -> None:
@@ -393,6 +523,62 @@ class SweepDriver:
         if complaints:
             raise SweepError("the trainer refuses these configurations:\n"
                              + "\n".join(complaints))
+
+    def over_ceiling(self) -> str | None:
+        """Why this sweep must stop, or ``None`` while it may continue.
+
+        A continuously running sweep without an upper bound is not a process, it
+        is a leak (#117). Checked before each cell rather than after, because a
+        ceiling crossed by the cell that crossed it has not held.
+        """
+        ceiling = self.manifest.max_total_steps
+        if ceiling is None:
+            return None
+        spent = self.state.spent_steps()
+        if spent < ceiling:
+            return None
+        return (f"{self.manifest.name} has spent {spent:,} optimizer steps of its "
+                f"{ceiling:,} ceiling. Raise budget.max_total_steps if this sweep "
+                "is worth more, but raise it deliberately.")
+
+    def serve(self, *, reload: Callable[[], SweepManifest] | None = None,
+              idle_s: float = IDLE_S, passes: int | None = None) -> int:
+        """Keep the sweep going: the standing queue of #117.
+
+        One pass is one attempt at the ladder. A pass that is preempted, or that
+        finds the whole manifest already measured, sleeps and tries again — so a
+        configuration added to the file days later is picked up, and a card taken
+        by a requested run is simply waited out.
+
+        Returns the number of passes made, which is what a test can assert on.
+        Stops for two reasons only: the ceiling, or ``passes`` running out.
+        """
+        made = 0
+        while passes is None or made < passes:
+            made += 1
+            if reload is not None:
+                self.manifest = reload()
+                self.state.check_against(self.manifest, self.state.metric)
+            reason = self.over_ceiling()
+            if reason:
+                logger.warning("sweep stopped: {}", reason)
+                return made
+            try:
+                self.run()
+            except Preempted as gave_way:
+                logger.info("pass {} gave the card back at {}; waiting {:.0f}s",
+                            made, gave_way, idle_s)
+                self.sleep(idle_s)
+                continue
+            if self.outstanding():
+                continue          # more to do, and nobody is in the way
+            self.sleep(idle_s)
+        return made
+
+    def outstanding(self) -> list[str]:
+        """Configurations of rung 0 with no score yet. The queue, in other words."""
+        return [c.config_id for c in self.manifest.configs()
+                if not self.state.scored(c.config_id, 0)]
 
     def run(self) -> list[Promotion]:
         configs = {c.config_id: c for c in self.manifest.configs()}
@@ -414,6 +600,10 @@ class SweepDriver:
             logger.info("rung {}: {} configurations, {} steps each", rung,
                         len(entrants), steps_at_rung(self.state.base_steps, rung, self.eta))
             for config_id in entrants:
+                reason = self.over_ceiling()
+                if reason:
+                    logger.warning("sweep stopped mid-rung: {}", reason)
+                    return promotions
                 self._run_config(configs[config_id], rung)
 
             if rung + 1 >= len(ladder):
