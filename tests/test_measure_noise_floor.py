@@ -55,3 +55,39 @@ def test_only_the_seed_differs_between_runs(monkeypatch, tmp_path):
     for other in dumps[1:]:
         differing = {k for k in dumps[0] if dumps[0][k] != other[k]}
         assert differing == {"seed"}, differing
+
+
+# ── a spread over collapsed runs is not a resolution (#115) ─────────────────
+#
+# Measured on asteraix, 30.09.2026: a from-scratch run at 2,778 optimizer steps
+# produced an empty hypothesis — 882,255 characters, 882,255 errors, 882,255
+# insertions, 0 deletions, 0 substitutions, val_accuracy 0.0000. Four of those
+# score 1.0 each, so their spread is 0.0000, which reads as perfect resolution
+# and is the absence of any.
+
+def test_an_empty_hypothesis_is_a_collapse_not_a_score():
+    assert mnf.is_collapsed(cer=1.0, length_ratio=0.0) is True
+
+
+def test_a_poor_but_real_reading_is_not_a_collapse():
+    """kraken-medieval-german-v2 reads this material at 0.2131 with a length
+    ratio near 1; a 0.7 CER is bad, not absent."""
+    assert mnf.is_collapsed(cer=0.2131, length_ratio=0.97) is False
+    assert mnf.is_collapsed(cer=0.70, length_ratio=0.85) is False
+
+
+def test_a_near_empty_hypothesis_counts_even_below_cer_one():
+    """An over-short reading can sit below 1.0 and still be nothing."""
+    assert mnf.is_collapsed(cer=0.97, length_ratio=0.01) is True
+
+
+def test_a_run_with_no_cer_at_all_is_not_called_collapsed():
+    """It crashed or was cancelled; `promote` keeps those unscored, which is a
+    different thing from a run that finished and read nothing."""
+    assert mnf.is_collapsed(cer=None, length_ratio=None) is False
+
+
+def test_over_generation_at_cer_above_one_still_counts_as_collapse():
+    """Both signals are checked because either alone can be misread; a CER at or
+    above 1.0 with no length information is treated as a collapse."""
+    assert mnf.is_collapsed(cer=1.4, length_ratio=None) is True

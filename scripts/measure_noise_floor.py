@@ -59,6 +59,27 @@ from atr_training.ketos_cmd import (  # noqa: E402
 from atr_training.manifests import binary_manifest  # noqa: E402
 
 
+#: A hypothesis this short is not a bad reading, it is no reading. CTC blank
+#: collapse emits the blank label at nearly every timestep, so the output is
+#: empty and every reference character counts as missing.
+COLLAPSE_LENGTH_RATIO = 0.05
+
+
+def is_collapsed(cer: float | None, length_ratio: float | None) -> bool:
+    """Did this run produce nothing, rather than something poor?
+
+    Both signals, because either alone can be misread: a CER at or above 1.0 can
+    also come from a model that over-generates, and a length ratio near zero
+    could in principle accompany a short but correct reading of a long page. An
+    empty hypothesis shows both at once.
+    """
+    if cer is None:
+        return False
+    if length_ratio is not None and length_ratio <= COLLAPSE_LENGTH_RATIO:
+        return True
+    return cer >= 1.0
+
+
 def run(cmd: list[str], log: Path) -> int:
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("wb") as handle:
@@ -130,12 +151,17 @@ def main(argv: list[str] | None = None) -> int:
                 work / "test.log")
             report = parse_test_report(
                 (work / "test.log").read_text(encoding="utf-8", errors="replace"))
-            entry.update(cer=report.cer, chars=report.chars, errors=report.errors)
+            entry.update(cer=report.cer, chars=report.chars, errors=report.errors,
+                         length_ratio=report.length_ratio,
+                         collapsed=is_collapsed(report.cer, report.length_ratio))
         results.append(entry)
         print(f"  seed {seed}: cer={entry.get('cer')} "
               f"({entry['minutes']} min, exit {code})", flush=True)
 
-    scored = [r["cer"] for r in results if r.get("cer") is not None]
+    usable = [r for r in results
+              if r.get("cer") is not None and not r.get("collapsed")]
+    collapsed = [r for r in results if r.get("collapsed")]
+    scored = [r["cer"] for r in usable]
     code = current_code()
     summary = {
         "train": str(args.train), "benchmark": str(args.benchmark),
@@ -165,7 +191,18 @@ def main(argv: list[str] | None = None) -> int:
         print("This is the floor: no ranking on this corpus at this budget may be "
               "read finer than it.")
     else:
-        print(f"\nonly {len(scored)} run(s) produced a CER — no floor can be stated")
+        print(f"\nonly {len(scored)} usable run(s) — no floor can be stated")
+    if collapsed:
+        # The trap this exists for: four collapsed runs all score 1.0, so their
+        # spread is 0.0000 — which reads as perfect resolution and means no
+        # signal at all. Measured on 30.09.2026 at 2,778 steps from scratch:
+        # every one of 882,255 reference characters missing, four times over
+        # would have printed "spread 0.0000".
+        print(f"\n{len(collapsed)} of {len(results)} run(s) COLLAPSED (empty "
+              f"hypothesis): seeds {[r['seed'] for r in collapsed]}. A spread over "
+              "those is not a resolution, it is the absence of one. Raise the "
+              "budget until a run learns something, then measure.")
+        summary["collapsed_seeds"] = [r["seed"] for r in collapsed]
     (args.out / "noise_floor.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"written to {args.out / 'noise_floor.json'}")
