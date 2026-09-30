@@ -255,6 +255,11 @@ class SweepManifest:
     #: because it is measured *on* a corpus and a budget and therefore cannot
     #: exist before them. Where it is absent, a ranking from this sweep has no
     #: resolution attached and must not be read as one.
+    #: The most optimizer steps this sweep may ever spend, across every rung and
+    #: every configuration. ``None`` means no ceiling — fine for a sweep somebody
+    #: starts and watches, and wrong for one that runs continuously (#117): a
+    #: process without an upper bound is not a process, it is a leak.
+    max_total_steps: int | None = None
     noise_floor: float | None = None
     #: Where that floor came from: the seeds, the commit and the data version it
     #: was measured on, or ``{"provenance": "unstated"}`` for a bare number.
@@ -307,7 +312,7 @@ def _axis_values(name: str, values: Any) -> tuple:
     return tuple(folded)
 
 
-def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...]]:
+def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...], int | None]:
     if "epochs" in raw:
         raise ManifestError(
             "budget.epochs: the budget is in optimizer steps, not epochs. An "
@@ -317,13 +322,19 @@ def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...]]:
             "yourself — the conversion depends on the data version, and doing "
             "it here would hide that.")
 
+    ceiling = raw.get("max_total_steps")
+    if ceiling is not None and (not isinstance(ceiling, int) or isinstance(ceiling, bool)
+                                or ceiling < 1):
+        raise ManifestError(
+            f"budget.max_total_steps: expected a positive whole number, got {ceiling!r}")
+
     steps = _require(raw, "steps", "budget")
     if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
         raise ManifestError(f"budget.steps: expected a positive whole number, got {steps!r}")
 
     rungs_raw = raw.get("rungs")
     if rungs_raw is None:
-        return steps, ()
+        return steps, (), ceiling
     if (not isinstance(rungs_raw, (list, tuple)) or not rungs_raw
             or any(not isinstance(r, int) or isinstance(r, bool) or r < 1 for r in rungs_raw)):
         raise ManifestError(f"budget.rungs: expected positive whole numbers, got {rungs_raw!r}")
@@ -345,7 +356,7 @@ def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...]]:
             "has nothing to eliminate, and a narrower one would leave "
             "configurations unrun without saying which — they would be decided "
             "by the order the cross product happens to come out in.")
-    return steps, rungs
+    return steps, rungs, ceiling
 
 
 def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
@@ -398,7 +409,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
     n_configs = 1
     for values in axes.values():
         n_configs *= len(values)
-    steps, rungs = _budget(_require(raw, "budget", where), n_configs)
+    steps, rungs, ceiling = _budget(_require(raw, "budget", where), n_configs)
 
     specs = _require(data, "datasets", f"{where}.data")
     if not isinstance(specs, (list, tuple)) or not specs:
@@ -420,6 +431,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
         base_model=(str(raw["base_model"]) if raw.get("base_model") else None),
         steps=steps,
         rungs=rungs,
+        max_total_steps=ceiling,
         base=canonical(base),
         axes=axes,
         noise_floor=floor, noise_floor_provenance=floor_provenance,

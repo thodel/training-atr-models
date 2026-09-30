@@ -47,8 +47,9 @@ from atr_training.sweep_manifest import SweepConfig, SweepManifest
 __all__ = ["Row", "rows_for", "render", "band_ranks"]
 
 #: What a row says about a configuration's fate at its rung.
-PROMOTED, ELIMINATED, ANOMALY, UNSCORED, RUNNING, REFUSED = (
-    "promoted", "eliminated", "anomaly", "unscored", "running", "refused")
+PROMOTED, ELIMINATED, ANOMALY, UNSCORED, RUNNING, REFUSED, PREEMPTED = (
+    "promoted", "eliminated", "anomaly", "unscored", "running", "refused",
+    "preempted")
 
 #: Sentences the guards raise with. A job that failed on one of these was
 #: refused before it could produce a number, and #119 asks for that to appear as
@@ -121,6 +122,11 @@ def _refusal_of(entry: Mapping[str, Any]) -> str | None:
 
 def _status_of(config_id: str, rung: int, entry: Mapping[str, Any],
                promotions: Iterable[Mapping[str, Any]]) -> str:
+    if entry.get("preempted"):
+        # Distinct from `unscored`, which means the run produced no number.
+        # This one gave the card back on part of its budget (#117): not a
+        # failure, not a result, and it will be run again.
+        return PREEMPTED
     if _refusal_of(entry):
         return REFUSED
     decision = next((p for p in promotions if p.get("rung") == rung), None)
@@ -209,7 +215,8 @@ def _cell(value: float | None, digits: int = 4) -> str:
 
 
 MARKS = {PROMOTED: "promoted", ELIMINATED: "eliminated", ANOMALY: "**ANOMALY**",
-         UNSCORED: "unscored", RUNNING: "running", REFUSED: "**REFUSED**"}
+         UNSCORED: "unscored", RUNNING: "running", REFUSED: "**REFUSED**",
+         PREEMPTED: "preempted"}
 
 
 def render(manifest: SweepManifest, state: SweepState,
@@ -270,7 +277,16 @@ def render(manifest: SweepManifest, state: SweepState,
         for row in refused:
             lines.append(f"* `{row.config_id}` (rung {row.rung}) — {row.refusal}")
 
-    unchecked = [r for r in rows if r.reserved_pages is None and r.status != RUNNING]
+    preempted = [r for r in rows if r.status == PREEMPTED]
+    if preempted:
+        lines.append("")
+        lines.append(f"> **{len(preempted)} cell(s) gave the card back** to a "
+                     "requested run and are not results: each spent part of its "
+                     "budget, and half a budget is not a measurement (#117). They "
+                     "are back in the queue and will be run again.")
+
+    unchecked = [r for r in rows
+                 if r.reserved_pages is None and r.status not in {RUNNING, PREEMPTED}]
     if unchecked:
         lines.append("")
         lines.append(f"> **{len(unchecked)} run(s) record no held-out check.** "
