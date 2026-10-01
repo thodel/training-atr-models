@@ -768,6 +768,24 @@ axes:
   # only as a hint that the order of magnitude is right.
   lrate: [1.0e-4, 3.0e-4]
 
+baseline:
+  # The number #111 asks every Kraken sweep to beat, and the only honest Kraken
+  # CER this project has. `metric` and `measured_on` are not decoration: the
+  # epic opens by holding this 0.2131 against the VLMs' 0.111 and 0.0680 and
+  # saying the comparison is NOT established, because the sets differ. Without
+  # those two fields the leaderboard would make that same mistake one level down.
+  #
+  # And it does differ here: this sweep ranks on `cer`, its own validation
+  # partition, while 0.2131 is a `benchmark_cer` over 200 unseen documents. So
+  # the verdict line will say "not comparable" — which is the right answer and
+  # the reason the winner gets measured on german-medieval-v1 afterwards.
+  model: kraken-medieval-german-v2
+  value: 0.2131
+  metric: benchmark_cer
+  measured_on: german-medieval-v1
+  chars: 882255
+  errors: 188022
+
 notes: |
   METRIC. Run this with --metric cer, not benchmark_cer.
 

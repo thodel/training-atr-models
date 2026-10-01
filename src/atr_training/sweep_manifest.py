@@ -91,7 +91,7 @@ ID_CHARS = 12
 #: What may appear at the top level. A typo'd key is refused rather than ignored:
 #: `budgets:` silently dropping the budget is the failure this is cheap to avoid.
 TOP_LEVEL = frozenset({"name", "data", "budget", "base", "axes", "notes",
-                       "noise_floor",
+                       "noise_floor", "baseline",
                        "engine", "base_model"})
 
 #: Python's ``float()`` also accepts ``nan``, ``inf`` and ``1_000``; YAML does
@@ -341,6 +341,15 @@ class SweepManifest:
     #: Where that floor came from: the seeds, the commit and the data version it
     #: was measured on, or ``{"provenance": "unstated"}`` for a bare number.
     noise_floor_provenance: dict = field(default_factory=dict)
+    #: The number this sweep has to beat, and nothing else (#111). Optional,
+    #: because a sweep can be run to see what happens; present, it is what turns
+    #: "no configuration won" from silence into a finding.
+    baseline: float | None = None
+    #: Which model, which metric, which measurement set. #111's own opening
+    #: paragraph is why this is not just a number: it holds 0.2131 against 0.111
+    #: and 0.0680 and says the comparison is **not** established, because the
+    #: sets are different.
+    baseline_provenance: dict = field(default_factory=dict)
     source: str | None = None
 
     def configs(self) -> list[SweepConfig]:
@@ -448,6 +457,73 @@ def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...], int | N
     return steps, rungs, ceiling
 
 
+def _baseline(raw: Mapping[str, Any], where: str) -> tuple[float | None, dict]:
+    """The number this sweep has to beat, and what it was measured on (#111).
+
+    Two shapes, as with ``noise_floor``, and the difference is again whether
+    anybody can say what the number means:
+
+        baseline: 0.2131                           # a bare number
+
+        baseline:                                  # and what it is
+          model: kraken-medieval-german-v2
+          value: 0.2131
+          metric: benchmark_cer
+          measured_on: german-medieval-v1
+          chars: 882255
+          errors: 188022
+
+    ``metric`` is the field that does the work. #111 opens by putting 0.2131
+    against 0.111 and 0.0680 and saying the comparison is **not** established
+    because the sets differ — and a sweep ranking on ``cer`` (its own validation
+    partition) against a baseline measured as ``benchmark_cer`` (held-out
+    documents) is that same mistake one level down. The leaderboard refuses the
+    comparison rather than printing a difference nobody can read.
+
+    A bare number is accepted and travels as ``provenance: "unstated"``: it can
+    still be shown, and it cannot be compared, because nothing says which metric
+    it is.
+    """
+    value = raw.get("baseline")
+    if value is None:
+        return None, {}
+
+    provenance: dict = {}
+    if isinstance(value, Mapping):
+        block = dict(value)
+        if "value" not in block:
+            raise ManifestError(
+                f"{where}: baseline is a block without a `value`. Put the number "
+                "there, or give the bare number instead.")
+        provenance = {k: v for k, v in block.items() if k != "value"}
+        if not str(provenance.get("metric") or "").strip():
+            raise ManifestError(
+                f"{where}: baseline needs a `metric`. 0.2131 on held-out "
+                "documents and 0.2131 on a validation partition that overlaps "
+                "the training projects are different claims, and without the "
+                "field the leaderboard would compare them as if they were one "
+                "(#111).")
+        if not str(provenance.get("measured_on") or "").strip():
+            raise ManifestError(
+                f"{where}: baseline needs a `measured_on` naming the measurement "
+                "set. #111's first table exists to show what happens without it.")
+        provenance.setdefault("provenance", "stated")
+        value = block["value"]
+    else:
+        provenance = {"provenance": "unstated"}
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ManifestError(
+            f"{where}: baseline {value!r} is not a number") from None
+    if not 0 < number:
+        raise ManifestError(
+            f"{where}: baseline {number!r} must be positive — a target of zero "
+            "or less is not one this sweep could miss.")
+    return number, provenance
+
+
 def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
     """Validate and resolve, refusing rather than warning.
 
@@ -518,6 +594,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
                                 f"got {type(spec).__name__}")
 
     floor, floor_provenance = _noise_floor(raw, where, str(data["digest"]).strip())
+    baseline, baseline_provenance = _baseline(raw, where)
     return SweepManifest(
         name=name,
         train=str(_require(data, "train", f"{where}.data")),
@@ -532,6 +609,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
         base=canonical(base),
         axes=axes,
         noise_floor=floor, noise_floor_provenance=floor_provenance,
+        baseline=baseline, baseline_provenance=baseline_provenance,
         source=source,
     )
 
