@@ -408,10 +408,29 @@ or discarded — and because sweep 2 can make the question moot.
 
 ### Before any of it
 
-Two things gate every sweep above, and neither is code:
+Three things gate every sweep above. One is now closed, and the other two are
+not code:
 
-1. **The noise floor** (#115) for this corpus at this budget. Without it a
-   leaderboard reports gaps and none of them is known to be one.
-2. **Pinned dataset revisions.** None of the four corpora names a `revision`, so
-   a sweep's data digest identifies its specs and not the bytes behind them. Two
-   sweeps months apart could share a digest and different data.
+1. ~~**Pinned dataset revisions.**~~ Closed: both manifests carry the four commit
+   SHAs from `ubelix/specs/medieval-german-page-v1.json` (#135/#143), so their
+   digest identifies the bytes. It had to happen before the first run — an
+   unpinned artefact expires after seven days and a twelve-cell ladder runs for
+   longer, so the rebuild would have landed between two rungs.
+2. **The line ceiling, applied to the page pool.** `sweep_train.arrow` was
+   compiled from a pool materialised on 05.09.2026, before `drop_wide_lines`
+   existed, and it still holds a 177:1 line — four fine-tune attempts died of
+   CUDA OOM on it, mid-epoch, because kraken pads a batch to its widest member
+   (serving#90). A number measured on that corpus is not one today's prepare
+   would produce. `scripts/apply_line_ceiling.py` writes a cut copy; the pool
+   itself is never touched, because `german_test` and the 0.2131 acceptance
+   figure are defined against it.
+3. **The noise floor** (#115) for this corpus at this budget. Without it a
+   leaderboard reports gaps and none of them is known to be one — and with it,
+   the floor is a **lower bound** and not an error bar: the spread grows with
+   the height (0.0085 at one shape, 0.1924 at another), so a floor measured on
+   the cheapest cell bounds the ties from below and says nothing about the gaps
+   above it. The table says so rather than letting its own ranks imply
+   otherwise.
+
+In that order: the ceiling before the floor, because a floor measured on the
+uncut corpus would have to be measured again.

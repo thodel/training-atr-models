@@ -92,6 +92,19 @@ def band_ranks(rows: Sequence[Row], noise_floor: float | None) -> None:
 
     In place, because a row's rank is a property of the field it sits in and
     there is no useful Row without one.
+
+    The floor is a **lower bound**, not an error bar, and the asymmetry is the
+    point. #115's own table: the spread of one configuration over two seeds was
+    0.0085, and another moved 0.1924 — the spread grows with the height. So a
+    floor measured on the cheapest cell says, of two rows:
+
+    * closer than the floor — the material cannot tell them apart. Sound, because
+      the cheapest cell is the *least* noisy: if even it moves that far between
+      seeds, nothing here resolves finer.
+    * further apart than the floor — **not** "distinguishable". A taller cell may
+      move further between seeds than the floor was measured to be, and nobody
+      has measured how far. :func:`_floor_line` says so on the table rather than
+      letting the ranks imply otherwise.
     """
     scored = sorted([r for r in rows if r.score is not None],
                     key=lambda r: (-r.score, r.config_id))
@@ -195,9 +208,27 @@ def _floor_line(manifest: SweepManifest) -> str:
                 "measured at, so the ties below rest on a number that cannot be "
                 "checked (#115).")
     seeds = provenance.get("seeds") or []
-    return (f"**noise floor** {manifest.noise_floor:.4f} — measured over "
-            f"{len(seeds)} seeds {seeds} at {provenance.get('steps')} steps, "
-            f"commit `{str(provenance.get('commit') or '?')[:12]}`.")
+    at = f"at {provenance.get('steps')} steps"
+    height = provenance.get("input_height")
+    if height:
+        at += f", height {height}"
+    line = (f"**noise floor** {manifest.noise_floor:.4f} — measured over "
+            f"{len(seeds)} seeds {seeds} {at}, commit "
+            f"`{str(provenance.get('commit') or '?')[:12]}`.")
+    # A floor is measured on ONE configuration and the spread grows with the
+    # height (#115: 0.0085 at one shape, 0.1924 at another). So it bounds the
+    # ties from below and says nothing about the gaps above it, and a table that
+    # left that out would read its own ranks as findings.
+    line += (" It is a **lower bound**: rows closer than this are not "
+             "distinguishable, and rows further apart are not thereby "
+             "distinguished — no cell's own spread has been measured.")
+    tail = provenance.get("line_tail") or {}
+    if tail.get("state") and tail["state"] != "applied":
+        line += (f" **Measured on an unverified corpus**: {tail.get('over_ceiling')} "
+                 f"line(s) over the {tail.get('ceiling')}:1 ceiling, so this "
+                 "number belongs to a corpus today's prepare would not build "
+                 "(#115).")
+    return line
 
 
 def _commits(rows: Sequence[Row]) -> str:

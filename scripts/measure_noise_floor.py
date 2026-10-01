@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from atr_training.contracts import KrakenTrainParams  # noqa: E402
+from atr_training import line_ceiling  # noqa: E402
 from atr_training.codeversion import current_code  # noqa: E402
 from atr_training.convergence import (  # noqa: E402
     epochs_for, floor_for, plan_steps,
@@ -57,6 +58,7 @@ from atr_training.ketos_cmd import (  # noqa: E402
     train_cmd,
 )
 from atr_training.manifests import binary_manifest  # noqa: E402
+from atr_training.vgsl_geometry import input_height  # noqa: E402
 
 
 #: A hypothesis this short is not a bad reading, it is no reading. CTC blank
@@ -131,6 +133,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--write-to", type=Path, default=None,
                     help="write the measured floor into this sweep manifest, "
                          "instead of retyping it")
+    ap.add_argument("--allow-unverified-corpus", action="store_true",
+                    help="measure anyway on a corpus whose over-wide lines were "
+                         "never dropped. The floor then says so, because a "
+                         "number from such a corpus is not reproducible by "
+                         "today's prepare (#115)")
+    ap.add_argument("--line-tail-limit", type=int, default=None,
+                    help="judge the tail from the first N lines instead of all "
+                         "of them. A sample is a different claim and is recorded "
+                         "as one")
     args = ap.parse_args(argv)
 
     from_scratch = args.base_model is None
@@ -144,6 +155,25 @@ def main(argv: list[str] | None = None) -> int:
     effective = params.effective_batch_size
     epochs = epochs_for(steps, args.train_lines, effective)
     actual = plan_steps(args.train_lines, effective, epochs).total_steps
+
+    # Before four runs of several hours each: is this the corpus today's
+    # pipeline would build? `sweep_train.arrow` was compiled from a page pool
+    # materialised on 05.09.2026, before `drop_wide_lines` existed, and it still
+    # holds a 177:1 line — four fine-tune attempts died of OOM on it, three to
+    # thirteen minutes in. A floor measured on that corpus measures a corpus
+    # nobody can rebuild (#115, serving#90).
+    tail = line_ceiling.summarise(
+        line_ceiling.aspects_from_arrow(args.train, limit=args.line_tail_limit))
+    sampled = (f" (from the first {args.line_tail_limit:,} lines)"
+               if args.line_tail_limit else "")
+    print(f"line tail of {args.train.name}{sampled}: {tail.describe()}")
+    if not tail.verifiable and not args.allow_unverified_corpus:
+        print("\n" + tail.refusal("measuring the noise floor"), file=sys.stderr)
+        return 2
+    if not tail.verifiable:
+        print("  --allow-unverified-corpus given; the floor will carry this tail",
+              flush=True)
+    print(flush=True)
 
     args.out.mkdir(parents=True, exist_ok=True)
     train_lst = binary_manifest(args.out / "train_bin.lst", args.train)
@@ -200,8 +230,21 @@ def main(argv: list[str] | None = None) -> int:
         "benchmark_bytes": (args.benchmark.stat().st_size
                             if args.benchmark.exists() else None),
         "train_lines": args.train_lines, "effective_batch": effective,
+        # The configuration, because the floor is a property of one. #115's own
+        # table: 0.0085 spread at one shape, 0.1924 at another — so a floor
+        # measured here is a LOWER BOUND for a taller cell, not its error bar.
+        "spec": params.spec, "input_height": input_height(params.spec),
         "epochs": epochs, "steps": actual, "from_scratch": from_scratch,
         "base_model": args.base_model, "seeds": args.seeds, "runs": results,
+        # Travels with the number, like the commit and the digest: a floor from
+        # a corpus whose tail was never cut is a floor for a corpus that cannot
+        # be rebuilt, and the reader has to be able to see that without asking.
+        "line_tail": {
+            "lines": tail.lines, "median": tail.median, "p99": tail.p99,
+            "max": tail.maximum, "over_ceiling": tail.over_ceiling,
+            "ceiling": tail.ceiling, "state": tail.state,
+            "sampled": args.line_tail_limit,
+        },
     }
     if len(scored) >= 2:
         summary["noise_floor"] = {
@@ -259,7 +302,7 @@ def write_into_manifest(path: Path, summary: dict) -> None:
             f"{summary['data_digest']!r}. A floor belongs to the corpus and the "
             "budget it was measured at; writing it here would license a ranking "
             "it never earned.")
-    raw["noise_floor"] = {
+    block = {
         "value": summary["noise_floor"]["spread"],
         "measured_on": summary["data_digest"],
         "seeds": summary["seeds"],
@@ -267,9 +310,50 @@ def write_into_manifest(path: Path, summary: dict) -> None:
         "steps": summary["steps"],
         "n": summary["noise_floor"]["n"],
         "measured_at": summary["measured_at"],
+        # What makes it a lower bound rather than an error bar (#115): the shape
+        # it was measured at. The spread grows with the height, so a floor from
+        # h64 says nothing about how far h192 moves between seeds.
+        "spec": summary.get("spec"),
+        "input_height": summary.get("input_height"),
+        "line_tail": summary.get("line_tail"),
     }
-    path.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True),
-                    encoding="utf-8")
+    _splice(path, {k: v for k, v in block.items() if v is not None})
+
+
+def _splice(path: Path, block: dict) -> None:
+    """Write the block into the manifest **without re-dumping the file**.
+
+    `yaml.safe_dump` of the parsed document would have worked and would have
+    deleted every comment in it — and in these manifests the comments are the
+    reasoning: which axes were left out and why, which base and why not another.
+    A measurement that silently erased that would have cost more than it added.
+    """
+    import yaml
+
+    rendered = yaml.safe_dump({"noise_floor": block}, sort_keys=False,
+                              allow_unicode=True).rstrip("\n").splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept, index, replaced = [], 0, False
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("noise_floor:"):
+            # Drop the old block: itself and everything indented under it.
+            index += 1
+            while index < len(lines) and (not lines[index].strip()
+                                          or lines[index][:1].isspace()):
+                index += 1
+            kept.extend(rendered)
+            replaced = True
+            continue
+        kept.append(line)
+        index += 1
+    if not replaced:
+        # Before `notes:` when there is one, so the prose stays at the bottom
+        # where a reader expects it; otherwise at the end.
+        at = next((i for i, line in enumerate(kept) if line.startswith("notes:")),
+                  len(kept))
+        kept[at:at] = rendered + [""]
+    path.write_text("\n".join(kept).rstrip("\n") + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
