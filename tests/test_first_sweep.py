@@ -13,6 +13,7 @@ warning about the production configuration all along, which is why #118's
 ordering (height last, "only if an axis is free") is inverted here.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -161,8 +162,6 @@ def test_the_datasets_are_the_four_medieval_corpora(sweep):
 def test_the_project_lists_are_the_ones_already_in_the_repo(sweep):
     """Copied from ubelix/specs/medieval-german-page-v1.json, not retyped. This
     fails if either side is edited alone, which is the point."""
-    import json
-
     known = json.loads((ROOT / "ubelix" / "specs" / "medieval-german-page-v1.json")
                        .read_text(encoding="utf-8"))["datasets"]
     by_repo = {d["hf_repo"]: d for d in sweep.datasets}
@@ -183,15 +182,31 @@ def test_the_digest_is_the_content_key_of_those_datasets(sweep):
     assert sweep.data_digest == f"sha256:{expected}"
 
 
-def test_the_corpus_is_not_pinned_and_the_file_says_so():
-    """None of the four names a `revision`, so the digest identifies the specs
-    and not the bytes behind them. That is a real weakness and it is written
-    down rather than left to be discovered."""
+def test_the_corpus_is_pinned_so_the_digest_names_the_bytes():
+    """It was not, and the weakness was written down instead. #135/#143 put the
+    four commit SHAs in ubelix/specs/medieval-german-page-v1.json, so it could
+    be closed from the repo — and it had to be, before the first run: an
+    unpinned artefact is reusable for seven days
+    (``UNPINNED_MAX_AGE_DAYS``) and this ladder runs for longer, so rung 1 would
+    have been compared against a validation partition rebuilt between the rungs.
+    """
     sweep = load_manifest(MANIFEST)
     key = key_for_specs([DatasetSpec.model_validate(d) for d in sweep.datasets], "kraken")
 
-    assert key.pinned is False
-    assert "NOT PINNED" in yaml.safe_load(MANIFEST.read_text())["notes"]
+    assert key.pinned is True
+    assert "PINNED" in yaml.safe_load(MANIFEST.read_text())["notes"]
+
+
+def test_the_revisions_are_the_ones_already_in_the_repo():
+    """Copied from the ubelix spec, not fetched and retyped — the same rule the
+    project lists follow, and for the same reason."""
+    known = {d["hf_repo"]: d["revision"] for d in json.loads(
+        (ROOT / "ubelix" / "specs" / "medieval-german-page-v1.json")
+        .read_text(encoding="utf-8"))["datasets"]}
+    mine = {d["hf_repo"]: d.get("revision")
+            for d in yaml.safe_load(MANIFEST.read_text())["data"]["datasets"]}
+
+    assert mine == known
 
 
 def test_no_noise_floor_is_claimed_yet(sweep):

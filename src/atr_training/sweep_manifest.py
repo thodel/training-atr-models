@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 __all__ = [
+    "BASE_AXIS",
     "ManifestError",
     "distinguishing",
     "MANIFEST_VERSION",
@@ -100,6 +101,14 @@ NUMERIC = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
 
 #: Axis values longer than this are shown by what tells them apart.
 LABEL_MAX = 28
+
+#: The one axis that is not a ketos parameter: what each cell starts from.
+#: #118 lists "fine-tuning instead of from scratch" among the untried axes and
+#: says why it comes first — "a fine-tune of a fitting base can beat any
+#: architecture variant from scratch, and then the whole search space is the
+#: wrong question". Its default is the manifest's top-level ``base_model``, and
+#: ``null`` in the axis means from scratch.
+BASE_AXIS = "base_model"
 
 
 class ManifestError(ValueError):
@@ -242,20 +251,35 @@ def canonical(value: Any) -> Any:
     raise ManifestError(f"a manifest cannot carry a {type(value).__name__}: {value!r}")
 
 
-def _payload(params: Mapping[str, Any], data_digest: str) -> str:
-    return json.dumps(
-        {"version": MANIFEST_VERSION, "data": data_digest, "params": canonical(params)},
-        sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+def _payload(params: Mapping[str, Any], data_digest: str,
+             base_model: str | None = None) -> str:
+    body: dict[str, Any] = {"version": MANIFEST_VERSION, "data": data_digest,
+                            "params": canonical(params)}
+    if base_model is not None:
+        # Omitted when there is none, so every id written before `base_model`
+        # could be swept is unchanged. A cell with no base and a cell from
+        # before the field existed are the same configuration — training from
+        # scratch — so collapsing them is the right answer and not a silent one.
+        body["base_model"] = str(base_model)
+    return json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
-def config_id(params: Mapping[str, Any], *, data_digest: str) -> str:
-    """The identity of one configuration: its resolved parameters and its data.
+def config_id(params: Mapping[str, Any], *, data_digest: str,
+              base_model: str | None = None) -> str:
+    """The identity of one configuration: its parameters, its data, its base.
 
     Not its position in the file, which is what #31 would have had: inserting a
     value into an axis renames every configuration after it, and the leaderboard
     then compares two different things under one name.
+
+    ``base_model`` belongs in the identity even though it is not a parameter:
+    a fine-tune of CATMuS and a run from scratch with the same hyperparameters
+    are not the same experiment, and before this they would have shared an id —
+    so the second result would have overwritten the first (#118).
     """
-    return hashlib.sha256(_payload(params, data_digest).encode("utf-8")).hexdigest()[:ID_CHARS]
+    return hashlib.sha256(
+        _payload(params, data_digest, base_model).encode("utf-8")
+    ).hexdigest()[:ID_CHARS]
 
 
 @dataclass(frozen=True)
@@ -268,6 +292,12 @@ class SweepConfig:
     #: Just the axis values, which is what a leaderboard puts in its columns —
     #: the base is the same for every row and belongs in the table's header.
     axes: dict
+
+    #: What this cell starts from: a base to fine-tune, or ``None`` for from
+    #: scratch. Resolved, so a cell whose axis chose ``null`` is distinguishable
+    #: from one in a sweep that has no base at all — they mean the same thing to
+    #: the trainer, and the distinction matters to nobody reading the file.
+    base_model: str | None = None
 
     #: axis name -> value -> how to print it. Set by ``SweepManifest.configs``,
     #: because an abbreviation is only meaningful against an axis's other values.
@@ -323,13 +353,23 @@ class SweepManifest:
         """
         names = sorted(self.axes)
         labels = {name: distinguishing(self.axes[name]) for name in names}
+        if BASE_AXIS in labels:
+            # `base_model=None` is "from scratch", and a leaderboard column
+            # reading `None` invites the reader to wonder what went missing.
+            labels[BASE_AXIS] = {**labels[BASE_AXIS], "None": "from scratch"}
         out: list[SweepConfig] = []
         for point in itertools.product(*(self.axes[n] for n in names)):
             chosen = dict(zip(names, point))
-            params = canonical({**self.base, **chosen})
-            out.append(SweepConfig(config_id=config_id(params, data_digest=self.data_digest),
-                                   params=params, axes=canonical(chosen),
-                                   labels=labels))
+            # `base_model` is a request field, not a ketos parameter, so it is
+            # swept and shown but never passed as one.
+            base = chosen.get(BASE_AXIS, self.base_model)
+            params = canonical({k: v for k, v in {**self.base, **chosen}.items()
+                                if k != BASE_AXIS})
+            out.append(SweepConfig(
+                config_id=config_id(params, data_digest=self.data_digest,
+                                    base_model=base),
+                params=params, axes=canonical(chosen),
+                base_model=str(base) if base else None, labels=labels))
         return out
 
 
@@ -444,7 +484,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
     axes_raw = raw.get("axes") or {}
     if not isinstance(axes_raw, Mapping):
         raise ManifestError(f"{where}: `axes` must be a mapping of name to values")
-    undeclared = sorted(set(axes_raw) - set(base))
+    undeclared = sorted(set(axes_raw) - set(base) - {BASE_AXIS})
     if undeclared:
         raise ManifestError(
             f"{where}: {', '.join(undeclared)} "
@@ -453,6 +493,14 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
             "one there is nothing to compare an extension against, and a "
             "configuration that simply did not pin the parameter cannot be told "
             "apart from one that pinned it to this value.")
+    if BASE_AXIS in axes_raw and "spec" in axes_raw:
+        raise ManifestError(
+            f"{where}: `spec` and `{BASE_AXIS}` cannot both be axes. `ketos "
+            "train` ignores --spec when --load is given — the loaded network "
+            "keeps its own geometry — so a fine-tune cell labelled h192 would "
+            "have trained at whatever height the base has, and the leaderboard "
+            "would carry a column of heights that half the rows never used. "
+            "Sweep the geometry from scratch, or sweep the base; not both.")
     axes = {str(k): _axis_values(str(k), v) for k, v in axes_raw.items()}
 
     n_configs = 1
@@ -511,6 +559,12 @@ def describe(manifest: SweepManifest, configs: Sequence[SweepConfig] | None = No
     yield f"budget  {manifest.steps} optimizer steps per configuration"
     if manifest.rungs:
         yield f"rungs   {' → '.join(str(r) for r in manifest.rungs)}"
+    if BASE_AXIS in manifest.axes:
+        shown = ", ".join(str(v) if v else "from scratch"
+                          for v in manifest.axes[BASE_AXIS])
+        yield f"base    an axis: {shown}"
+    elif manifest.base_model:
+        yield f"base    {manifest.base_model}"
     yield f"configs {len(configs)} from {len(manifest.axes)} axes"
     yield ""
     for config in configs:

@@ -67,6 +67,12 @@ class BaseEntry(BaseModel):
     languages: list[str] = []
     #: Approximate century midpoints, e.g. ``[14, 15, 16]`` for the 14th–16th range.
     centuries: list[int] = []
+    #: What this model was trained on, where somebody recorded it
+    #: (serving-atr-inference#100). Carried, not filtered on — and empty means
+    #: *unrecorded*, not "nothing": a fine-tune inherits its base's training
+    #: data, so a base with no record cannot be said not to have seen the
+    #: held-out pages. ``base_models.provenance`` keeps those two apart.
+    training_datasets: list[str] = []
 
 
 class SharedRegistry:

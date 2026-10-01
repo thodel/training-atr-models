@@ -336,7 +336,46 @@ at 1.97 frames per character, just under its own warn threshold of 2.0. The
 baseline sits at the bottom of the one direction that held over both seeds of the
 first search. h64 is in the sweep as the **control**, not as a candidate.
 
-### Sweep 2 — pre-processing, properly
+### Sweep 2 — fine-tuning against from-scratch (written, not yet run)
+
+`config/sweeps/kraken-medieval-finetune-vs-scratch-02.yaml`. Two cells: from
+scratch against a fine-tune of `kraken-catmus_medieval`, same four corpora, same
+digest, same budget, ladder 2→1.
+
+This was sweep 3 and was pulled forward, which the previous version of this
+section recommended in a sentence and this file now acts on: `GET /bases` has
+ranked kraken bases by script before century since #44, a fine-tune of a fitting
+base can beat every architecture variant trained from scratch, and if it does,
+**the whole search space above is the wrong question**. Two cells answer it.
+Cheap to test, expensive to postpone.
+
+Three things about it that are decisions rather than mechanics:
+
+* **The base is `kraken-catmus_medieval`, and it is not a script match.** It is
+  one of the fifteen kraken registry entries whose name and record agree —
+  serving-atr-inference#101 found 28 of 43 naming something their DOI does not
+  contain, so for most of the registry the name is not evidence about the
+  weights. The bastarda and cursive models that *would* match these German
+  chancery hands are exactly the entries #101 showed to be wrong about
+  themselves, and starting a published number from an id known to lie is that
+  issue's own mistake. So: a general medieval base, and whether it helps a
+  German chancery corpus at all is part of what the two cells measure.
+* **Both arms run here**, including from scratch, although sweep 1 has a cell
+  with the same hyperparameters. The rule sweep 1 wrote for its own h64 control
+  applies to itself: a comparison across sweeps is what the noise-floor work
+  forbids.
+* **`spec` is not an axis in it.** `ketos train` ignores `--spec` when `--load`
+  is given, so a fine-tune cell labelled h192 would have trained at whatever
+  height the base has. `sweep_manifest` refuses the two axes together rather
+  than letting the leaderboard print a column half its rows never used.
+
+And one thing that is neither: a fine-tune inherits its base's training data, so
+a base that saw the held-out pages leaks the way #100 did, one step further back.
+`scripts/check_sweep.py --registry config/models.yaml` reports what the registry
+records for each base; for this one it records nothing, which is the honest
+answer and not a clean one.
+
+### Sweep 3 — pre-processing, properly
 
 Whatever sweep 1 says about `--augment` is a binary answer to a question
 Ströbel's 1.6-point gap suggests is richer than binary. If augmentation helps,
@@ -344,19 +383,9 @@ this sweep asks *which* augmentation, and adds `normalization` (NFD/NFC) and
 h96 — the first height above the warn threshold, dropped from sweep 1 only to
 keep rung 0 at twelve.
 
-Run it first instead if sweep 1's augmentation effect is the largest thing on its
-leaderboard: the axis with a live effect is worth splitting before one without.
-
-### Sweep 3 — fine-tuning against from-scratch
-
-`GET /bases` has ranked kraken bases by script before century since #44. A
-fine-tune of a fitting base can beat every architecture variant trained from
-scratch — and if it does, the whole search space above is the wrong question.
-
-This is cheap to test and expensive to postpone. **Consider running a two-cell
-version of it before sweep 2**: one from-scratch winner of sweep 1 against one
-fine-tune of the best-ranked base, same budget. The answer changes what the rest
-of the programme is about.
+Run it before sweep 2 instead if sweep 1's augmentation effect is the largest
+thing on its leaderboard: the axis with a live effect is worth splitting before
+one without.
 
 ### Sweep 4 — depth, and the batch/learning-rate pair
 
@@ -366,7 +395,7 @@ by linear scaling and is therefore one axis with it rather than two — 128/256/
 against a rate that moves with it.
 
 Last, because both are refinements of a shape that sweeps 1–3 will have settled
-or discarded.
+or discarded — and because sweep 2 can make the question moot.
 
 ### What does not come back
 

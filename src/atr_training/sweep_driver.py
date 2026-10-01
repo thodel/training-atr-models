@@ -360,7 +360,10 @@ class SweepDriver:
             "engine": self.manifest.engine,
             "model_id": f"{self.manifest.name}-r{rung}-{config.config_id}",
             "datasets": [dict(spec) for spec in self.manifest.datasets],
-            "base_model": self.manifest.base_model,
+            # From the config, not the manifest: when `base_model` is an axis
+            # (#118) each cell has its own, and a cell that chose `null` must
+            # train from scratch rather than fall back to the sweep's base.
+            "base_model": config.base_model,
             "params": params,
             "notes": (f"sweep {self.manifest.name} rung {rung}, config "
                       f"{config.config_id}, budget {steps} optimizer steps, data "

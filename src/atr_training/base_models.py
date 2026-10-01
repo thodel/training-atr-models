@@ -56,10 +56,12 @@ class RegistryLike(Protocol):
 
 __all__ = [
     "BaseModelError",
+    "Provenance",
     "ResolvedBase",
     "DOI_RE",
     "HF_REPO_RE",
     "RegistryLike",
+    "provenance",
     "resolve_base_model",
 ]
 
@@ -122,6 +124,71 @@ def _closest_kraken_base_ids(registry: RegistryLike | None, ref: str) -> str:
     shown = ranked[:SUGGESTION_LIMIT]
     rest = len(known) - len(shown)
     return f"{shown}" + (f" and {rest} more" if rest else "")
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """What is known about what a base has already seen (#100, for #118).
+
+    A fine-tune inherits its base's training data. #100 exists because a model
+    whose DOI was right had still seen the test set — and a base that saw the
+    held-out pages leaks the same way, one step further back, where nobody
+    looks. #101 is the other half: 28 of 43 kraken entries name something their
+    DOI does not contain, so "the name says medieval German" is not evidence
+    about what it trained on.
+
+    So the three answers are kept apart, and the middle one is the point:
+
+    ``recorded``   the registry lists ``training_datasets`` for it.
+    ``unrecorded`` the entry exists and says nothing. **Not** "clean" — the
+                   honest reading of every entry written before that field
+                   existed, and the state #100 came out of.
+    ``unknown``    no registry, or no such entry: nothing was looked up.
+    """
+
+    base: str
+    state: str
+    datasets: tuple[str, ...] = ()
+    detail: str = ""
+
+    @property
+    def leak_checkable(self) -> bool:
+        """Whether a person can hold this against the held-out set at all."""
+        return self.state == "recorded"
+
+    def describe(self) -> str:
+        if self.state == "recorded":
+            return (f"{self.base}: trained on {len(self.datasets)} recorded "
+                    f"dataset(s) — hold them against config/heldout_eval_documents.json")
+        if self.state == "unrecorded":
+            return (f"{self.base}: the registry records no training_datasets, so "
+                     "a fine-tune of it cannot be said not to have seen the "
+                     "held-out pages (#100)")
+        return f"{self.base}: not looked up — {self.detail or 'no registry'}"
+
+
+def provenance(base_model: str | None, registry: RegistryLike | None = None,
+               registry_error: str | None = None) -> Provenance | None:
+    """What the registry records about ``base_model``'s training data.
+
+    ``None`` for a run from scratch, which has no base and therefore no
+    inherited leak. Never raises: this reports, and a sweep that cannot read a
+    registry must still be checkable.
+    """
+    ref = (base_model or "").strip()
+    if not ref:
+        return None
+    if registry is None:
+        return Provenance(base=ref, state="unknown",
+                          detail=registry_error or "no registry was available")
+    entry = registry.get(ref)
+    if entry is None:
+        return Provenance(base=ref, state="unknown",
+                          detail="no entry with that id; it may be a DOI or a path")
+    recorded = tuple(str(d) for d in (getattr(entry, "training_datasets", None) or ()))
+    if recorded:
+        return Provenance(base=ref, state="recorded", datasets=recorded)
+    return Provenance(base=ref, state="unrecorded")
 
 
 def resolve_base_model(
