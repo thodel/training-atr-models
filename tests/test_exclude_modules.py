@@ -179,3 +179,51 @@ def test_the_collator_passes_one_image_list_per_text():
         collator(batch)
     assert processor.seen == [[processor.seen[0][0]], [processor.seen[1][0]]]
     assert len(processor.seen) == 2 and all(len(g) == 1 for g in processor.seen)
+
+
+# ── a tower is not always nested (#135) ─────────────────────────────────────
+#: Read off each base's ``model.safetensors.index.json`` on 2026-10-01, counting
+#: the weights whose parent module is one of ``target_modules``. The point of the
+#: table is the last row: everything before it is nested under ``model.``, and
+#: olmOCR's encoder is not nested at all.
+REAL_MODULE_PATHS = {
+    "Qwen/Qwen3-VL-4B-Instruct": ("model.language_model.layers.0.mlp.gate_proj", False),
+    "Qwen/Qwen3.5-4B": ("model.layers.0.self_attn.q_proj", False),
+    "google/gemma-4-E4B-it": ("model.vision_tower.layers.1.mlp.up_proj", True),
+    "allenai/olmOCR-2-7B-1025 (decoder)": ("model.layers.0.mlp.gate_proj", False),
+    "allenai/olmOCR-2-7B-1025 (encoder)": ("visual.blocks.0.mlp.gate_proj", True),
+}
+
+
+def test_the_default_excludes_a_top_level_vision_tower():
+    """olmOCR is a Qwen2.5-VL, and its encoder sits at the top level.
+
+    The pattern used to demand a leading dot (``.*\\.(vision_tower|...)\\..*``),
+    which matches a tower under ``model.`` and nothing at the root. olmOCR's 96
+    tower modules are ``visual.blocks.N.…``, so every one of them would have been
+    adapted — silently, because ``target_modules`` matching by suffix never says
+    what it hit.
+    """
+    for base, (path, excluded) in REAL_MODULE_PATHS.items():
+        assert bool(re.fullmatch(DEFAULT_EXCLUDE_MODULES, path)) is excluded, base
+
+
+def test_widening_the_default_changed_nothing_for_the_bases_already_measured():
+    """Qwen3-VL and Qwen3.5 keep every module they had.
+
+    This is what makes the change safe to apply to a comparison already in
+    flight: in both bases all matches are under ``model.`` and none has a tower
+    marker in its path, so adding ``visual`` to the alternation cannot remove a
+    module from a run that has already been measured.
+    """
+    unchanged = ["model.language_model.layers.0.mlp.gate_proj",
+                 "model.layers.0.self_attn.q_proj",
+                 "mtp.layers.0.mlp.gate_proj"]
+    for path in unchanged:
+        assert not re.fullmatch(DEFAULT_EXCLUDE_MODULES, path), path
+
+
+def test_a_name_that_merely_begins_with_visual_is_not_a_tower():
+    """``visual`` is a path component, not a prefix: the alternation is followed
+    by a literal dot, so ``visualiser`` is left alone."""
+    assert not re.fullmatch(DEFAULT_EXCLUDE_MODULES, "model.visualiser.layers.0.q_proj")
