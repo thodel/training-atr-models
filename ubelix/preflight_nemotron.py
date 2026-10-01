@@ -24,6 +24,7 @@ pre-download was complete.
 
 Reads two sample corpora for the measured tiling; writes nothing but the HF cache.
 """
+import ast
 import inspect
 import json
 import os
@@ -138,16 +139,26 @@ except Exception as exc:
     # that decide whether our trainer can call it are answerable from the text.
     try:
         from transformers.utils import cached_file
-        src = Path(cached_file(BASE, "modeling.py")).read_text()
-        # The file defines several forwards — a squared ReLU and an RMSNorm come
-        # first. Taking the first one measures the wrong function and answers no
-        # to both questions, which is how this check lied on its first run.
+        source = Path(cached_file(BASE, "modeling.py")).read_text()
+        # Parsed, not split on substrings. The file defines several forwards — a
+        # squared ReLU and an RMSNorm come first — so taking the first one measures
+        # the wrong function, which is how this check lied on its first run. Two
+        # further ways string-splitting gets it wrong, both found in review: a class
+        # sliced to the end of the file answers for the NEXT class when the target
+        # defines no forward, and isolating the signature with "):" fails on the
+        # ordinary annotated form `) -> Union[...]:`, which silently turns "the
+        # signature names image_flags" into "the body mentions it somewhere".
         name = (raw_cfg["auto_map"]["AutoModel"]).rsplit(".", 1)[-1]
-        klass = src.split("class %s(" % name, 1)[1]
-        body = klass.split("    def forward(", 1)[1].split("\n    def ", 1)[0]
+        klass = next(node for node in ast.parse(source).body
+                     if isinstance(node, ast.ClassDef) and node.name == name)
+        func = next(node for node in klass.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "forward")
+        params = [arg.arg for arg in func.args.args + func.args.kwonlyargs]
+        body = ast.unparse(func.body)
         print("   read from the cached modeling.py instead (class %s):" % name)
-        print("     forward signature names image_flags:",
-              "image_flags" in body.split("):", 1)[0])
+        print("     forward accepts:", ", ".join(p for p in params if p != "self"))
+        for needed in ("pixel_values", "input_ids", "labels", "image_flags", "num_patches"):
+            print("       %-14s %s" % (needed, "yes" if needed in params else "NO"))
         print("     forward dereferences image_flags unconditionally:",
               "image_flags.squeeze" in body and "if image_flags" not in body)
         print("     forward calls torch.distributed.get_rank():",
