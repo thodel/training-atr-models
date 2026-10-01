@@ -46,7 +46,8 @@
       "eval_projects": [
         "escript_test",
         "escript_test_2"
-      ]
+      ],
+      "revision": "011e82080411a51bcb9e032e9329c919682e5f6c"
     },
     {
       "hf_repo": "dh-unibe/image-text_bullinger-autoren",
@@ -308,13 +309,15 @@
         "TRAINING_VALIDATION_SET_Vogt_Simprecht__Project-Bullinger",
         "TRAINING_VALIDATION_SET_Zwick_Johann__Proj_Bullinger",
         "TRAINING_VALIDATION_SET_von_Rümlang__Proj_Bullinger"
-      ]
+      ],
+      "revision": "85ea246a5021a5f244c392f97f2c8ac9a42cc717"
     },
     {
       "hf_repo": "dh-unibe/image-text_koenigsfelden-charters-post-1500",
       "granularity": "page",
       "all_projects": true,
-      "max_pages": 6000
+      "max_pages": 6000,
+      "revision": "fac683bee395bad466c464bfffd0e6f5299d6c4d"
     },
     {
       "hf_repo": "dh-unibe/image-text_aaeb-xiv-xvii",
@@ -669,7 +672,8 @@
         "TRAINING_VALIDATION_SET_AAEB_FFC_v3_1",
         "TRAINING_VALIDATION_SET_AAEB_mixte_v4",
         "TRAINING_VALIDATION_SET_FFC_v0_2"
-      ]
+      ],
+      "revision": "2a9b66116db32c728fd893c3c9af5c41a3fa856d"
     }
   ],
   "params": {
