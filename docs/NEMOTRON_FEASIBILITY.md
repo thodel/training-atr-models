@@ -23,17 +23,17 @@ Everything here was measured on 2026-10-01 against `vlm-train-tf5.sif`
 
 ## How to repeat it
 
-All three scripts are committed under [`ubelix/`](../ubelix). UBELIX keeps its job
-scripts in `~/ubelix/` beside the checkout rather than running them from it, so copy
-them over once:
+All three scripts are committed under [`ubelix/`](../ubelix) and run **from the
+checkout**, which `tests/test_ubelix_layout.py` enforces: `~/ubelix` on that box
+holds the container images, the logs and the specs, and a helper copied there goes
+stale.
 
 ```bash
-scp ubelix/prefetch_code.sh ubelix/preflight_nemotron.py \
-    ubelix/run_preflight_nemotron.sh ubelix:~/ubelix/
-bash ~/ubelix/prefetch_code.sh nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16 \
+cd ~/training-atr-models && git pull --ff-only
+bash ubelix/prefetch_code.sh nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16 \
     nvidia/NVIDIA-Nemotron-Nano-12B-v2-Base nvidia/C-RADIOv2-H
-bash ~/ubelix/run_preflight_nemotron.sh nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16
-OFFLINE=1 bash ~/ubelix/run_preflight_nemotron.sh nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16
+bash ubelix/run_preflight_nemotron.sh nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16
+OFFLINE=1 bash ubelix/run_preflight_nemotron.sh nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16
 ```
 
 [`ubelix/preflight_nemotron.py`](../ubelix/preflight_nemotron.py) is stage A of the
@@ -45,7 +45,8 @@ comes back clean, which it does not.
 [`ubelix/run_preflight_nemotron.sh`](../ubelix/run_preflight_nemotron.sh) is the
 apptainer invocation that produced every figure below — including the `/rs_scratch`
 bind, without which the sample corpora are invisible inside the container, because
-`/scratch/network` is a symlink to it.
+`/scratch/network` is a symlink to it. It takes `ATR_TRAIN_REPO` like the other job
+scripts.
 
 [`ubelix/prefetch_code.sh`](../ubelix/prefetch_code.sh) exists because
 `prefetch_bases.sh` — which lives on UBELIX and has never been committed — cannot
