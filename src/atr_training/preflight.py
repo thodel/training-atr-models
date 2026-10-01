@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import os
 import shutil
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = ["PreflightError", "GpuInfo", "free_disk_gb", "query_gpus", "check_disk",
-           "check_vram", "check_tmpdir", "check_datasets_cache", "datasets_cache_dir",
+           "check_vram",
+    "check_device", "check_tmpdir", "check_datasets_cache", "datasets_cache_dir",
            "mount_fstype", "NETWORK_FS"]
 
 #: Filesystems where POSIX delete semantics do not hold well enough for the
@@ -93,6 +95,41 @@ def query_gpus(nvidia_smi: str = "nvidia-smi", timeout: float = 10.0) -> list[Gp
     if not gpus:
         raise PreflightError(f"could not parse any GPU from {nvidia_smi} output: {out.stdout!r}")
     return gpus
+
+
+#: ``cuda``, ``cuda:N``, or ``cpu`` — what ``torch.device`` accepts and what the
+#: three ``device`` fields in contracts.py are ever set to.
+_CUDA_INDEX = re.compile(r"^cuda:(\d+)$")
+
+
+def check_device(device: str, cards: int) -> None:
+    """Refuse a ``device`` naming a card the job will not be given.
+
+    The child sees only its allocated cards, as ``cuda:0`` upward
+    (``CUDA_VISIBLE_DEVICES``), so on a one-card job ``cuda:1`` is an invalid
+    device ordinal — and it fails where torch first touches the card, which on a
+    VLM run is after prepare and compile. Hours, for a wrong digit that is
+    checkable at submit.
+
+    ``cpu`` passes: a compile needs no card and should not claim one
+    (docs/EVAL_SETS.md), and ``measure_noise_floor.py`` compiles that way.
+    """
+    if device == "cpu" or device == "cuda":
+        return
+    match = _CUDA_INDEX.match(device)
+    if match is None:
+        raise PreflightError(
+            f"device {device!r} is neither 'cpu', 'cuda' nor 'cuda:<n>' — torch "
+            "will refuse it where it first touches the card, which is after "
+            "prepare and compile.")
+    index = int(match.group(1))
+    if index >= cards:
+        raise PreflightError(
+            f"device {device!r} names card {index}, and this job is given "
+            f"{cards}. A runner sees only the cards allocated to it, numbered "
+            f"from 0 (CUDA_VISIBLE_DEVICES), so the highest valid device here is "
+            f"'cuda:{cards - 1}'. Which PHYSICAL card that is, the scheduler "
+            "decides; the request does not get to choose (#12).")
 
 
 def check_disk(path: str | Path, min_free_gb: float) -> None:

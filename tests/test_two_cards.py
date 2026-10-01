@@ -68,17 +68,26 @@ def test_the_cards_are_ordered_and_deduplicated():
     assert TrainerSettings(gpus=[1, 0, 1]).usable_gpus == (0, 1)
 
 
-def test_the_child_sees_the_card_it_was_given():
-    """And sees it as `cuda:0`, which is what every `device: "cuda:0"` in
+def test_the_child_sees_the_cards_it_was_given():
+    """And sees its first as `cuda:0`, which is what every `device: "cuda:0"` in
     contracts.py means."""
     both = TrainerSettings(gpus=[0, 1])
 
-    assert both.env_for_child(0)["CUDA_VISIBLE_DEVICES"] == "0"
-    assert both.env_for_child(1)["CUDA_VISIBLE_DEVICES"] == "1"
+    assert both.env_for_child([0])["CUDA_VISIBLE_DEVICES"] == "0"
+    assert both.env_for_child([1])["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_a_multi_card_job_would_need_no_new_mechanism_here():
+    """A comma-separated list is what CUDA_VISIBLE_DEVICES takes. What is
+    missing for #137 is an allocator that hands out two, not a way to pass
+    them."""
+    assert TrainerSettings(gpus=[0, 1]).env_for_child([0, 1])["CUDA_VISIBLE_DEVICES"] \
+        == "0,1"
 
 
 def test_a_job_without_a_card_falls_back_to_the_default():
     """A hand-run script, or a record from before cards were allocated."""
+    assert TrainerSettings(gpu=1).env_for_child([])["CUDA_VISIBLE_DEVICES"] == "1"
     assert TrainerSettings(gpu=1).env_for_child(None)["CUDA_VISIBLE_DEVICES"] == "1"
 
 
@@ -111,7 +120,7 @@ def test_two_jobs_run_on_two_cards(client, two_cards, spawn):  # noqa: F811
     for _ in range(2):
         app_module.schedule_once(store, two_cards, spawn=spawn, vram_check=free_gpu)
 
-    assert {store.load(first).gpu, store.load(second).gpu} == {0, 1}
+    assert {store.load(first).gpus[0], store.load(second).gpus[0]} == {0, 1}
 
 
 def test_the_preflight_checks_the_card_it_will_use(client, two_cards, spawn):  # noqa: F811
@@ -130,7 +139,7 @@ def test_the_preflight_checks_the_card_it_will_use(client, two_cards, spawn):  #
     job_id = _submit(client, "m1")
 
     assert 0 in asked and 1 in asked, asked
-    assert store.load(job_id).gpu == 1
+    assert store.load(job_id).gpus == [1]
 
 
 def test_a_job_never_lands_on_a_card_another_job_holds(client, two_cards, spawn):  # noqa: F811
@@ -144,11 +153,11 @@ def test_a_job_never_lands_on_a_card_another_job_holds(client, two_cards, spawn)
     first, second = _submit(client, "m1"), _submit(client, "m2")
 
     app_module.schedule_once(store, two_cards, spawn=spawn, vram_check=free_gpu)
-    held = store.load(first).gpu
+    held = store.load(first).gpus
     app_module.schedule_once(store, two_cards, spawn=spawn, vram_check=free_gpu)
 
-    assert store.load(second).gpu != held
-    assert held is not None
+    assert set(store.load(second).gpus).isdisjoint(held)
+    assert held, "the first job holds no card at all"
 
 
 # ── the refusals ────────────────────────────────────────────────────────────
@@ -198,7 +207,7 @@ def test_a_job_that_never_started_holds_no_card(client):  # noqa: F811
     """Refused at the door, so it never got as far as a card."""
     client.app.state.vram_check = busy_gpu
 
-    assert store_of(client).load(_submit(client, "m1")).gpu is None
+    assert store_of(client).load(_submit(client, "m1")).gpus == []
 
 
 def test_an_unallocated_record_is_not_taken_to_hold_the_default_card(
@@ -210,14 +219,14 @@ def test_an_unallocated_record_is_not_taken_to_hold_the_default_card(
     store = store_of(client)
     first = _submit(client, "m1")
     running = store.load(first)
-    running.gpu = None                      # a record from before cards existed
+    running.gpus = []                       # a record from before cards existed
     store.save(running)
     store.advance(store.load(first), "preparing")
 
     second = _submit(client, "m2")
     app_module.schedule_once(store, two_cards, spawn=spawn, vram_check=free_gpu)
 
-    assert store.load(second).gpu in (0, 1)
+    assert store.load(second).gpus and store.load(second).gpus[0] in (0, 1)
 
 
 def test_the_health_body_says_which_cards_it_trains_on(client):  # noqa: F811
@@ -256,3 +265,90 @@ def test_the_service_unit_really_does_not_pin_a_card():
                   if line.strip().startswith("Environment") and "CUDA_VISIBLE" in line]
 
     assert directives == [], directives
+
+
+# ── the request cannot name a card ──────────────────────────────────────────
+def test_a_job_can_hold_more_than_one_card():
+    """Nothing requests two today — `device_map` is hardcoded to `{"": 0}` in
+    both VLM entry points and `train_qlora` says "single card by design". The
+    record carries a list anyway, because the alternative fails in one specific
+    way: a job over two cards would hold one card according to the record and two
+    in fact, and the next job would be put on a card it is already using. That
+    is the shape of the 15.09 failure, and cheaper to carry now than to find
+    then (#137)."""
+    from atr_training.contracts import TrainJob
+
+    assert TrainJob.model_fields["gpus"].annotation == list[int]
+
+
+def test_the_held_set_is_a_union_over_the_cards_each_job_holds():
+    """With a single field it was a set of values; with a list it has to be a
+    union, or a two-card job hides its second card from the allocator."""
+    source = (ROOT / "engines" / "kraken_train_svc" / "app.py").read_text(encoding="utf-8")
+
+    assert "{card for j in running for card in j.gpus}" in source
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu", "cuda"])
+def test_a_device_the_job_will_have_is_accepted(device):
+    from atr_training.preflight import check_device
+
+    assert check_device(device, 1) is None
+
+
+def test_a_device_naming_a_card_the_job_will_not_get_is_refused():
+    """Present bug, not a latent one: `cuda:1` was accepted and failed where
+    torch first touches the card — after prepare and compile on a VLM run. Hours,
+    for a wrong digit."""
+    from atr_training.preflight import PreflightError, check_device
+
+    with pytest.raises(PreflightError, match="names card 1"):
+        check_device("cuda:1", 1)
+
+
+def test_the_refusal_says_what_the_highest_valid_device_is():
+    from atr_training.preflight import PreflightError, check_device
+
+    with pytest.raises(PreflightError, match="'cuda:1'"):
+        check_device("cuda:5", 2)
+
+
+def test_a_second_card_makes_cuda_1_valid():
+    """The check is against what this box allocates, not a constant."""
+    from atr_training.preflight import check_device
+
+    assert check_device("cuda:1", 2) is None
+
+
+def test_a_device_that_is_not_a_device_is_refused():
+    from atr_training.preflight import PreflightError, check_device
+
+    with pytest.raises(PreflightError, match="neither 'cpu', 'cuda'"):
+        check_device("mps", 1)
+
+
+def test_submit_refuses_it_at_the_door(client):  # noqa: F811
+    """400, not a job that queues and dies in `train`."""
+    body = {**BODY, "model_id": "wrong-card",
+            "params": {"device": "cuda:1"}}
+
+    response = client.post("/jobs", json=body)
+
+    assert response.status_code == 400, response.text
+    assert "names card 1" in response.json()["detail"]
+
+
+def test_submit_accepts_it_once_the_box_has_that_card(client, two_cards):  # noqa: F811
+    body = {**BODY, "model_id": "right-card",
+            "params": {"device": "cuda:1"}}
+
+    assert client.post("/jobs", json=body).status_code == 202
+
+
+def test_a_cpu_device_is_never_refused(client):  # noqa: F811
+    """A compile needs no card and should not claim one (docs/EVAL_SETS.md), and
+    `measure_noise_floor.py` compiles that way."""
+    body = {**BODY, "model_id": "on-cpu",
+            "params": {"device": "cpu"}}
+
+    assert client.post("/jobs", json=body).status_code == 202

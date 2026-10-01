@@ -81,6 +81,7 @@ from atr_training.jobstore import (
 
 from atr_training.preflight import (
     PreflightError,
+    check_device,
     check_datasets_cache,
     check_disk,
     check_tmpdir,
@@ -160,7 +161,7 @@ def _spawn(settings: TrainerSettings, job: TrainJob) -> int:
         )
     cmd = [str(python), "-m", backend.runner_module,
            "--root", str(settings.jobs_root), "--job-id", job.id]
-    env = {**os.environ, **settings.env_for_child(job.gpu)}
+    env = {**os.environ, **settings.env_for_child(job.gpus)}
     log = _store().paths(job.id).logs / "runner.out"
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("ab") as out:
@@ -267,7 +268,7 @@ def schedule_once(
     # resident yet, and asking the card would happily let a second run onto it.
     # This is the case that killed a run with 841 MiB free on 15.09
     # (serving-atr-inference#129), one layer up.
-    taken = {j.gpu for j in running if j.gpu is not None}
+    taken = {card for j in running for card in j.gpus}
     free_cards = [card for card in settings.usable_gpus if card not in taken]
     if not free_cards:
         hold(f"every card this box trains on is held: "
@@ -323,7 +324,7 @@ def schedule_once(
     # and raced the claim besides. Saved before the spawn, because the child's
     # CUDA_VISIBLE_DEVICES is read from it and because the next scheduler tick
     # must see this card as held (#12).
-    job.gpu = gpu.index
+    job.gpus = [gpu.index]
     store.save(job)
     try:
         job.pid = spawn(settings, job)
@@ -897,6 +898,15 @@ async def submit(request: TrainRequest, response: Response,
                                registry=registry, registry_error=why_not)
         except BaseModelError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # The request cannot name a card. A runner sees only what the scheduler gave
+    # it, numbered from 0, so `cuda:1` on a one-card job is an invalid device
+    # ordinal — and it fails where torch first touches the card, which on a VLM
+    # run is after prepare and compile. Hours, for a wrong digit (#12).
+    try:
+        check_device(getattr(request.params, "device", "cuda:0"),
+                     len(settings.usable_gpus))
+    except PreflightError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     # A network TMPDIR breaks temp-dir cleanup mid-compile; catch it at submit.
     try:
         check_tmpdir(os.environ.get("TMPDIR", "/tmp"))

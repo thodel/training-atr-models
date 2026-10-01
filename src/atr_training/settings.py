@@ -20,6 +20,7 @@ import re
 import socket
 from functools import lru_cache
 from pathlib import Path
+from typing import Sequence
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -386,7 +387,7 @@ class TrainerSettings(BaseSettings):
         """VRAM a job of this engine must find free before it may start."""
         return self.vlm_min_free_vram_mb if engine == "vllm" else self.min_free_vram_mb
 
-    def env_for_child(self, gpu: int | None = None) -> dict[str, str]:
+    def env_for_child(self, gpus: Sequence[int] | None = None) -> dict[str, str]:
         """Environment overrides for a spawned training process.
 
         ``expandable_segments`` because the allocator's fixed-size segments
@@ -399,10 +400,13 @@ class TrainerSettings(BaseSettings):
         already been setting it.
         """
         return {
-            # The card the scheduler allocated to this job, not a box-wide
+            # The cards the scheduler allocated to this job, not a box-wide
             # constant: two jobs on one box must see different cards, and each
-            # sees its own as `cuda:0` (#12).
-            "CUDA_VISIBLE_DEVICES": str(self.gpu if gpu is None else gpu),
+            # sees its own first card as `cuda:0` (#12). A comma-separated list
+            # is what CUDA_VISIBLE_DEVICES takes, so a multi-card job needs no
+            # new mechanism here — only an allocator that hands it two.
+            "CUDA_VISIBLE_DEVICES": (",".join(str(c) for c in gpus) if gpus
+                                     else str(self.gpu)),
             "PYTORCH_CUDA_ALLOC_CONF": self.cuda_alloc_conf,
         }
 
