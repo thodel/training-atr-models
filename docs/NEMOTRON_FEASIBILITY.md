@@ -211,9 +211,17 @@ Two caveats inside the good news:
   loading ... with an incorrect regex pattern ... This will lead to incorrect
   tokenization. You should set the 'fix_mistral_regex=True' flag`. For a
   transcription task that is not cosmetic, and nothing in our code sets that flag.
-- **`padding=True` fails**: `Asking to pad but the tokenizer does not have a padding
-  token`. Our collator always pads. A pad token has to be chosen, and choosing one
-  is a decision about the loss mask, not a default.
+- **The tokenizer has no pad token, and our fallback is the wrong one here.**
+  `padding=True` fails outright: `Asking to pad but the tokenizer does not have a
+  padding token`. In a real run it would not fail — `train_qlora.py:696` sets
+  `pad_token = eos_token` when pad is missing — and that is worse. The collator
+  masks the pad id out of the loss (`labels[labels == pad_token_id] =
+  ignore_index`), so with pad and eos the same token it masks the real end of
+  every answer, and the model is never trained to stop. Measured: Nemotron 12B
+  `pad=None`, `eos='<SPECIAL_12>'`; both Qwen bases carry distinct tokens
+  (`<|endoftext|>` against `<|im_end|>`), so this fallback has never fired in a
+  run so far. It is the same shape as the Gemma dtype bug — silent until
+  generation, after the training is paid for.
 - The template opens and closes `<think></think>`. This is a reasoning model, and
   the same property already cost us effort on the serving side.
 
@@ -241,7 +249,8 @@ Before a single training step:
 1. Container: `timm` + `einops` (cheap) for the 8B; `mamba-ssm` + `causal-conv1d`
    (CUDA build, uncertain) for the 12B. One rebuild either way.
 2. A second loader path in `train_qlora.py` and `evaluate_qlora.py`.
-3. A collator branch: build `image_flags`, drop `num_patches`, set a pad token.
+3. A collator branch: build `image_flags`, drop `num_patches`, and add a pad token
+   that is **not** the eos token.
 4. A patched or guarded copy of the vendor `forward`, for `get_rank()`.
 5. A fourth branch in `apply_visual_budget` for `max_num_tiles`, documented as a
    ceiling rather than a budget.
