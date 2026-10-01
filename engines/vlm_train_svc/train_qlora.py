@@ -218,6 +218,10 @@ class HTRCollator:
         self.ignore_index = -100
         #: Samples that tokenized past ``max_seq_len``. Counted, never truncated.
         self.over_budget = 0
+        #: The longest tokenized sequence seen, over budget or not. Over-budget
+        #: alone says how often, not how far — and "20 % of samples are 1 % over"
+        #: is a different run from "2 % are 60 % over" (#138).
+        self.longest = 0
         # The processor's own budget is set once, to the largest kind in the job.
         # With one granularity that is the whole story. In a mixed corpus (#59) it
         # is not: a line crop must not arrive with a page's budget, or the mix
@@ -269,6 +273,7 @@ class HTRCollator:
             image.close()
 
         length = int(inputs["input_ids"].shape[1])
+        self.longest = max(self.longest, length)
         if length > self.max_seq_len:
             self.over_budget += 1
             if self.over_budget <= 3 or self.over_budget % 100 == 0:
@@ -831,7 +836,14 @@ def main(argv: list[str] | None = None) -> int:
                     "train_samples": len(train_ds),
                     "val_samples": len(val_ds),
                     "epochs": args.epochs,
-                    "effective_batch_size": args.batch_size * args.accumulate_grad_batches},
+                    "effective_batch_size": args.batch_size * args.accumulate_grad_batches,
+                    # What the collator saw. Over-budget samples are not
+                    # truncated — see HTRCollator — so these are samples that
+                    # cost more than planned, and until #138 the count existed
+                    # only in a printed line kept every hundredth time.
+                    "sequence_budget": args.max_seq_len,
+                    "over_budget_samples": collator.over_budget,
+                    "max_sequence_tokens": collator.longest},
                    indent=2),
         encoding="utf-8",
     )
