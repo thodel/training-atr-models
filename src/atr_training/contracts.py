@@ -962,12 +962,20 @@ class TrainJob(BaseModel):
     #: (#15). None on the records written before the field existed; read those
     #: through :meth:`JobStore.host_of`, never directly.
     host: str | None = None
-    #: The PHYSICAL card the scheduler allocated (#12). None on a job that was
+    #: The PHYSICAL cards the scheduler allocated (#12). Empty on a job that was
     #: never started, and on every job recorded before cards were allocated —
-    #: which is why the scheduler treats None as "holds no card" rather than as
+    #: which is why the scheduler treats empty as "holds no card" rather than as
     #: "holds the default one": guessing would let a second job onto a card an
     #: older run is still using.
-    gpu: int | None = None
+    #:
+    #: A **list**, although nothing requests two cards today — ``device_map`` is
+    #: hardcoded to ``{"": 0}`` in both VLM entry points and `train_qlora` says
+    #: "single card by design". It is a list because the alternative is worse in
+    #: one specific way: a job over two cards would hold one card according to
+    #: the record and two in fact, and the next job would be put on a card it is
+    #: already using. That is the shape of the 15.09 failure, and it is cheaper
+    #: to carry a list now than to find it then (#137).
+    gpus: list[int] = Field(default_factory=list)
     #: PID of the detached runner process group leader — on ``host``.
     pid: int | None = None
     #: Why a queued job has not started yet (e.g. another job is running, or the
