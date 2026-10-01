@@ -251,8 +251,17 @@ class DatasetCounts(BaseModel):
     chars: int = 0
     samples_written: int = 0
     #: Lines whose aspect ratio marks them as probably mis-segmented (#90).
-    wide_lines: int = 0
-    max_aspect: float = 0.0
+    #: Three-valued, for the reason ``reserved_pages`` is (#119): ``n`` lines
+    #: dropped, ``0`` checked and none found, ``None`` **this prepare did not
+    #: look**. Read back from an artefact built before 17.09.2026 a default of
+    #: ``0`` states a finding about a check that never ran, and a number
+    #: measured on such a corpus is not reproducible by today's pipeline
+    #: (#115 — ``sweep_train.arrow`` still holds a 177:1 line).
+    wide_lines: int | None = None
+    #: The widest ratio seen, measured *before* the drop so the tail is
+    #: reported. ``None`` for the same reason; ``0.0`` would read as "no line
+    #: was wider than nothing".
+    max_aspect: float | None = None
 
 
 class KrakenTrainParams(BaseModel):
