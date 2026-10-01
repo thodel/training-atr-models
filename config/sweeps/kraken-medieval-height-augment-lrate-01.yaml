@@ -42,7 +42,10 @@
 #                       it is what #115 does, on one configuration, on purpose.
 #
 # THE DATA VERSION is the content key of these dataset specs under the current
-# held-out registry (`artefact_cache.key_for_specs(datasets, "kraken")`).
+# held-out registry (`artefact_cache.key_for_specs(datasets, "kraken")`). Every
+# dataset names a `revision`, so it is `pinned` — it identifies the bytes and
+# not a description of them, which matters here more than for a single run: an
+# unpinned artefact expires after seven days and this ladder runs for longer.
 # Reproduce it with:
 #
 #   python -c "import json;from atr_training.contracts import DatasetSpec;\
@@ -59,9 +62,10 @@ data:
   # from ubelix/specs/medieval-german-page-v1.json rather than retyped.
   train: medieval-german-v1 (four corpora, held-out documents dropped)
   eval: the 10 % validation partition of that corpus — identical for all twelve
-  digest: sha256:d6158afacc16fe27b6321cd5a5bfab38b1b41fa9f8658dc650d0a40ac2199373
+  digest: sha256:c8f420ec3cc0c244348b0400ca3de68dde7a6dd231ce5abaa9c69920583f14ca
   datasets:
     - hf_repo: dh-unibe/image-text_rats-und-richtebuecher_xv-xvi
+      revision: 011e82080411a51bcb9e032e9329c919682e5f6c
       granularity: page
       train_projects:
         - "Rats-undRichtebücher_MF_1_3543"
@@ -103,6 +107,7 @@ data:
         - "escript_test"
         - "escript_test_2"
     - hf_repo: dh-unibe/image-text_bullinger-autoren
+      revision: 85ea246a5021a5f244c392f97f2c8ac9a42cc717
       granularity: page
       train_projects:
         - "0008_Aberlin_Joachim"
@@ -362,10 +367,12 @@ data:
         - "TRAINING_VALIDATION_SET_Zwick_Johann__Proj_Bullinger"
         - "TRAINING_VALIDATION_SET_von_Rümlang__Proj_Bullinger"
     - hf_repo: dh-unibe/image-text_koenigsfelden-charters-post-1500
+      revision: fac683bee395bad466c464bfffd0e6f5299d6c4d
       granularity: page
       all_projects: true
       max_pages: 6000
     - hf_repo: dh-unibe/image-text_aaeb-xiv-xvii
+      revision: 2a9b66116db32c728fd893c3c9af5c41a3fa856d
       granularity: page
       train_projects:
         - "B_168_14-11_1"
@@ -777,21 +784,19 @@ notes: |
   reason. The winner therefore gets measured on german-medieval-v1 afterwards,
   the way 0.2131 was — against 882,255 characters and 188,022 errors.
 
-  NOT PINNED. None of the four datasets names a `revision`, so
-  key_for_specs(...).pinned is False: this digest identifies the specs, not the
-  bytes behind them. Two sweeps months apart could share it and different data.
-  Pin them on asteraix, where the Hub is reachable:
+  PINNED. All four datasets name a `revision`, so key_for_specs(...).pinned is
+  True and this digest identifies the bytes rather than a description of them.
+  The four commit SHAs are copied from ubelix/specs/medieval-german-page-v1.json,
+  where #135/#143 recorded them; a test compares the two files.
 
-    .venvs/kraken-train/bin/python -c "from huggingface_hub import HfApi;\
-    api=HfApi();\
-    print([(r, api.dataset_info(r).sha) for r in (
-      'dh-unibe/image-text_rats-und-richtebuecher_xv-xvi',
-      'dh-unibe/image-text_bullinger-autoren',
-      'dh-unibe/image-text_koenigsfelden-charters-post-1500',
-      'dh-unibe/image-text_aaeb-xiv-xvii')])"
+  This is not housekeeping. An unpinned artefact is reusable for seven days
+  (artefact_cache.UNPINNED_MAX_AGE_DAYS) and then refuses and rebuilds — and a
+  twelve-cell ladder runs for longer than that. Rung 1 would have been compared
+  against a validation partition rebuilt between the rungs, which is #111's
+  fourth lesson happening inside one sweep instead of between two.
 
-  Writing those into `revision:` changes the digest, which is correct — it would
-  then be a data version rather than a description of one.
+  The digest changed when the revisions went in, which is correct and is why it
+  had to happen before the first run rather than after it.
 
   NO NOISE FLOOR YET. `noise_floor` is absent on purpose: it is measured on a
   corpus and a budget and cannot exist before them (#115). Until it is there,

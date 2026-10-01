@@ -157,11 +157,24 @@ def test_the_digest_is_the_content_key_of_those_datasets(sweep):
     assert sweep.data_digest == f"sha256:{key_for_specs(specs, 'kraken').digest}"
 
 
-def test_the_corpus_is_still_not_pinned_and_the_file_says_so(sweep):
+def test_the_corpus_is_pinned(sweep):
+    """Both sweeps carry the same four revisions, so they carry the same digest
+    — which is what lets their cells be compared at all."""
     specs = [DatasetSpec.model_validate(dict(s)) for s in sweep.datasets]
 
-    assert key_for_specs(specs, "kraken").pinned is False
-    assert "NOT PINNED" in (sweep.source and SCRATCH_VS_TUNE.read_text(encoding="utf-8"))
+    assert key_for_specs(specs, "kraken").pinned is True
+    assert "PINNED" in SCRATCH_VS_TUNE.read_text(encoding="utf-8")
+
+
+def test_an_unpinned_sweep_corpus_would_expire_inside_the_ladder(sweep):
+    """Why pinning had to happen before the first run, as a number rather than
+    an opinion: an unpinned artefact is reusable for seven days, and a ladder
+    of twelve cells at 4,000 steps plus two further rungs runs for longer. The
+    rebuild would land between rungs, and rung 1 would rank against a
+    validation partition rung 0 never saw (#111, lesson 4)."""
+    from atr_training.artefact_cache import UNPINNED_MAX_AGE_DAYS
+
+    assert UNPINNED_MAX_AGE_DAYS == 7
 
 
 def test_no_noise_floor_is_claimed(sweep):

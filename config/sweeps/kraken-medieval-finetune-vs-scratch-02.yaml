@@ -71,9 +71,10 @@ data:
   train: medieval-german-v1 (four corpora, held-out documents dropped)
   eval: the 10 % validation partition of that corpus — identical for both cells
     and identical to sweep 1's, which is what makes the two comparable
-  digest: sha256:d6158afacc16fe27b6321cd5a5bfab38b1b41fa9f8658dc650d0a40ac2199373
+  digest: sha256:c8f420ec3cc0c244348b0400ca3de68dde7a6dd231ce5abaa9c69920583f14ca
   datasets:
   - hf_repo: dh-unibe/image-text_rats-und-richtebuecher_xv-xvi
+    revision: 011e82080411a51bcb9e032e9329c919682e5f6c
     granularity: page
     train_projects:
     - Rats-undRichtebücher_MF_1_3543
@@ -115,6 +116,7 @@ data:
     - escript_test
     - escript_test_2
   - hf_repo: dh-unibe/image-text_bullinger-autoren
+    revision: 85ea246a5021a5f244c392f97f2c8ac9a42cc717
     granularity: page
     train_projects:
     - 0008_Aberlin_Joachim
@@ -374,10 +376,12 @@ data:
     - TRAINING_VALIDATION_SET_Zwick_Johann__Proj_Bullinger
     - TRAINING_VALIDATION_SET_von_Rümlang__Proj_Bullinger
   - hf_repo: dh-unibe/image-text_koenigsfelden-charters-post-1500
+    revision: fac683bee395bad466c464bfffd0e6f5299d6c4d
     granularity: page
     all_projects: true
     max_pages: 6000
   - hf_repo: dh-unibe/image-text_aaeb-xiv-xvii
+    revision: 2a9b66116db32c728fd893c3c9af5c41a3fa856d
     granularity: page
     train_projects:
     - B_168_14-11_1
@@ -776,6 +780,7 @@ notes: |
   at exactly that discovery. It is inert for the from-scratch cell: `ketos_cmd`
   emits --resize only alongside --load.
 
-  NOT PINNED, same as sweep 1 and the same command in its header: none of the
-  four datasets names a `revision`, so this digest identifies the specs and not
-  the bytes. Pin them on asteraix, where the Hub is reachable.
+  PINNED, same as sweep 1 and from the same source: the four commit SHAs come
+  from ubelix/specs/medieval-german-page-v1.json (#135/#143). Both sweeps carry
+  the same four revisions and therefore the same digest, which is what lets
+  their cells be compared at all.
