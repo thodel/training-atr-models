@@ -6,7 +6,8 @@
       "hf_repo": "dh-unibe/image-text_zh-regierungsratsprotokolle",
       "granularity": "page",
       "all_projects": true,
-      "max_pages": 20000
+      "max_pages": 20000,
+      "revision": "f6a06745bb134044d5f937b22000128cc4bc24fd"
     },
     {
       "hf_repo": "dh-unibe/image-text_parlamentsdienste-protokolle",
@@ -22,7 +23,8 @@
         "1849_08",
         "637157213248534270_verkleinert"
       ],
-      "max_pages": 138
+      "max_pages": 138,
+      "revision": "5702670446f335a54505be3d238a5998cf844a04"
     },
     {
       "hf_repo": "dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix",
@@ -64,7 +66,8 @@
         "VBV_04__Sitzung_–_24_11_1848",
         "VBV_05__Sitzung_–_29_11_1848"
       ],
-      "max_pages": 52
+      "max_pages": 52,
+      "revision": "de8ad0f86cf878607eb42390ed637f4e1be70b59"
     },
     {
       "hf_repo": "dh-unibe/image-text_kurrent-xix",
@@ -119,7 +122,8 @@
         "TEST_CITlab_Tagebuch_Arnold_v1",
         "TEST_CITlab_umkc_Roland_M1",
         "TEST_CITlab_umkc_Roland_M2"
-      ]
+      ],
+      "revision": "20743e9f6982460b243e014091626da43e2b57f7"
     }
   ],
   "base_model": "Qwen/Qwen3-VL-4B-Instruct",
