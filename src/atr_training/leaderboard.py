@@ -44,7 +44,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from atr_training.sweep_driver import SweepState, steps_at_rung
 from atr_training.sweep_manifest import SweepConfig, SweepManifest
 
-__all__ = ["Row", "rows_for", "render", "band_ranks"]
+__all__ = ["Row", "Verdict", "rows_for", "render", "band_ranks", "judge"]
 
 #: What a row says about a configuration's fate at its rung.
 PROMOTED, ELIMINATED, ANOMALY, UNSCORED, RUNNING, REFUSED, PREEMPTED = (
@@ -231,6 +231,116 @@ def _floor_line(manifest: SweepManifest) -> str:
     return line
 
 
+#: What the table can conclude about #111's acceptance sentence.
+NO_BASELINE = "no_baseline"
+METRIC_MISMATCH = "metric_mismatch"
+NOTHING_SCORED = "nothing_scored"
+NO_FLOOR = "no_floor"
+BEATS = "beats"
+INSIDE_NOISE = "inside_noise"
+DOES_NOT_BEAT = "does_not_beat"
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """Did any configuration beat the reference, by more than the noise? (#111)
+
+    The epic's acceptance sentence has two halves, and the second is the one
+    nobody builds:
+
+        … eine Kraken-Konfiguration, die `kraken-medieval-german-v2` auf
+        demselben Messsatz um mehr als dieses Rauschmass schlägt — **oder es ist
+        belegt, dass keine der geprüften das tut.**
+
+    A sweep that finds nothing is a result, and only if it is written down as
+    one. So this states which of the six things is the case, including the two
+    that are refusals rather than answers.
+    """
+
+    state: str
+    sentence: str
+    best: Row | None = None
+    delta: float | None = None
+
+    @property
+    def conclusive(self) -> bool:
+        """Whether the sweep settled the question either way."""
+        return self.state in (BEATS, DOES_NOT_BEAT)
+
+
+def judge(manifest: SweepManifest, state: SweepState,
+          rows: Sequence[Row]) -> Verdict:
+    """Hold the best row against the manifest's baseline.
+
+    Refuses before it compares, twice, because both refusals are #111's own
+    opening argument: a number without a metric cannot be compared, and a
+    number from another metric must not be.
+    """
+    scored = [r for r in rows if r.raw is not None and r.status != PREEMPTED]
+    best = min(scored, key=lambda r: (-r.score, r.config_id), default=None) \
+        if scored else None
+
+    if manifest.baseline is None:
+        return Verdict(NO_BASELINE, best=best, sentence=(
+            "**no baseline** — this sweep names nothing to beat, so its ranking "
+            "is internal. #111 asks for a configuration that beats "
+            "`kraken-medieval-german-v2` on the same measurement set, or for it "
+            "to be established that none does; neither can be read off a table "
+            "with no reference on it."))
+
+    provenance = manifest.baseline_provenance or {}
+    model = provenance.get("model") or "the baseline"
+    if provenance.get("provenance") == "unstated":
+        return Verdict(METRIC_MISMATCH, best=best, sentence=(
+            f"**baseline {manifest.baseline:.4f}, metric unstated** — shown, not "
+            "compared. 0.2131 on held-out documents and 0.2131 on a validation "
+            "partition that overlaps the training projects are different claims "
+            "(#111)."))
+
+    metric = str(provenance.get("metric") or "")
+    if metric != state.metric:
+        return Verdict(METRIC_MISMATCH, best=best, sentence=(
+            f"**not comparable** — this sweep ranks on `{state.metric}` and "
+            f"{model}'s {manifest.baseline:.4f} is a `{metric}` measured on "
+            f"{provenance.get('measured_on')}. #111 opens by holding 0.2131 "
+            "against 0.111 and 0.0680 and saying the comparison is not "
+            "established, because the sets differ; this is the same thing one "
+            "level down. Measure the winner on "
+            f"{provenance.get('measured_on')} and compare there."))
+
+    if best is None:
+        return Verdict(NOTHING_SCORED, sentence=(
+            f"**nothing scored yet** — {model} stands at {manifest.baseline:.4f} "
+            "and no configuration here has produced a number to hold against "
+            "it."))
+
+    delta = manifest.baseline - best.raw          # positive = better than it
+    direction = "better" if delta > 0 else "worse"
+    floor = manifest.noise_floor
+    head = (f"`{best.config_id}` at {best.raw:.4f} against {model}'s "
+            f"{manifest.baseline:.4f} — {abs(delta):.4f} {direction}")
+
+    if not floor:
+        return Verdict(NO_FLOOR, best=best, delta=delta, sentence=(
+            f"**{head}, and no floor** — so the sign is all there is. #115 comes "
+            "first for this reason: the first search's matched pair flipped sign "
+            "on a seed change, 0.0148 apart."))
+    if abs(delta) < floor:
+        return Verdict(INSIDE_NOISE, best=best, delta=delta, sentence=(
+            f"**inside the noise** — {head}, and the floor is {floor:.4f}. Not a "
+            "win and not a loss: this material at this budget cannot tell the two "
+            "apart, which is a finding about the sweep and not about the model."))
+    if delta > 0:
+        return Verdict(BEATS, best=best, delta=delta, sentence=(
+            f"**beats {model}** — {head}, against a floor of {floor:.4f}. "
+            "#111's acceptance sentence, met by this configuration. Measure it on "
+            f"{provenance.get('measured_on')} before it is published."))
+    return Verdict(DOES_NOT_BEAT, best=best, delta=delta, sentence=(
+        f"**none of the {len(scored)} configurations beats {model}** — the best, "
+        f"{head}, against a floor of {floor:.4f}. That is #111's second half: "
+        "established, not merely unobserved."))
+
+
 def _commits(rows: Sequence[Row]) -> str:
     seen = sorted({r.commit[:12] for r in rows if r.commit})
     if not seen:
@@ -267,6 +377,8 @@ def render(manifest: SweepManifest, state: SweepState,
     lines.append(f"**data** `{manifest.data_digest}` — {manifest.train} / {manifest.eval}.")
     lines.append("")
     lines.append(_floor_line(manifest))
+    lines.append("")
+    lines.append(judge(manifest, state, rows).sentence)
     lines.append("")
     lines.append(_commits(rows))
     lines.append("")
