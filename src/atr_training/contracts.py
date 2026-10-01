@@ -880,6 +880,23 @@ class Progress(BaseModel):
     #: training split alone.
     short_samples: int | None = None
     max_sample_chars: int | None = None
+    #: VLM: samples whose tokenized sequence exceeded ``max_seq_len``, and the
+    #: longest one seen (#138). Recorded for the same reason ``long_samples``
+    #: above is: the number existed only as a line the training subprocess
+    #: printed, kept at most every hundredth time, and a run that OOMed could not
+    #: be read against how far over budget its corpus had been.
+    #:
+    #: Note what this is NOT: ``max_seq_len`` does not truncate. The collator
+    #: passes an over-budget sample through whole and says so, because truncating
+    #: a multimodal sequence severs the image tokens from the placeholders that
+    #: index them and yields an invalid sample rather than a short one — which
+    #: killed 20260814T192904Z at step 2 of 774 (#86). So these count samples
+    #: that cost more than planned, not samples that lost their tail.
+    over_budget_samples: int | None = None
+    max_sequence_tokens: int | None = None
+    #: The ``max_seq_len`` the two numbers above were measured against, so the
+    #: record stays readable after the default moves.
+    sequence_budget: int | None = None
     #: The cached artefact (#109) this run's compiled corpus lives in, and
     #: whether this job built it or reused one. Set on both paths, because after
     #: compile the arrows are in the cache rather than in the job directory anyone

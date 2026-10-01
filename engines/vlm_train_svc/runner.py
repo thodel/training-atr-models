@@ -299,6 +299,7 @@ class Pipeline(BasePipeline):
             # what, on the record that reports the failure, is the difference
             # between a run somebody can resume and one thrown away by hand.
             raise StageFailed(f"{exc}\n\n{describe_survivors(out_dir)}") from exc
+        self._record_sequence_budget(job, out_dir)
         adapter = find_adapter(out_dir)
         if adapter is None:
             raise StageFailed(
@@ -384,6 +385,45 @@ class Pipeline(BasePipeline):
         logger.info("benchmark {}: {} pages -> {}",
                     benchmark.project, pages_written, jsonl)
         return jsonl
+
+    def _record_sequence_budget(self, job: TrainJob, out_dir: Path) -> None:
+        """Carry what the collator saw onto the job record (#138).
+
+        ``max_seq_len`` does not truncate — the collator passes an over-budget
+        sample through whole, because truncating a multimodal sequence severs the
+        image tokens from the placeholders indexing them and produces an invalid
+        sample rather than a short one (#86). So these numbers do not say data was
+        lost; they say some samples cost more than the budget planned for, which
+        is what a reader of an OOM needs and could not have.
+
+        Never fails the stage: the summary is written after the adapter, so a run
+        that trained and could not write it has still trained.
+        """
+        summary = out_dir / "training_summary.json"
+        try:
+            written = json.loads(summary.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("no sequence-budget numbers from {} ({}) — "
+                           "over_budget_samples stays unknown", summary.name, exc)
+            return
+
+        job.progress.sequence_budget = written.get("sequence_budget")
+        job.progress.over_budget_samples = written.get("over_budget_samples")
+        job.progress.max_sequence_tokens = written.get("max_sequence_tokens")
+        self.store.save(job)
+
+        over, longest = (job.progress.over_budget_samples,
+                         job.progress.max_sequence_tokens)
+        budget = job.progress.sequence_budget
+        if over and budget:
+            logger.warning(
+                "{} sample(s) tokenized past max_seq_len={}, the longest to {} "
+                "({:.0f}% over). Not truncated — they cost more memory than the "
+                "budget planned for, which is what to read an OOM against (#138)",
+                over, budget, longest, 100 * (longest / budget - 1))
+        elif budget:
+            logger.info("every sample fitted max_seq_len={} (longest {})",
+                        budget, longest)
 
     def _test(self, job: TrainJob, adapter: Path, val_jsonl: Path,
               record: StageRecord) -> Metrics:
