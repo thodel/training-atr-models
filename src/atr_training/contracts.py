@@ -329,7 +329,15 @@ class KrakenTrainParams(BaseModel):
 #: Never adapt the vision or audio encoder. A regex, because peft matches an
 #: exclusion *list* by suffix and would silently exclude nothing; see
 #: :attr:`VlmTrainParams.exclude_modules`.
-DEFAULT_EXCLUDE_MODULES = r".*\.(vision_tower|audio_tower)\..*"
+#:
+#: Three names, and the alternation at the front rather than ``.*\.``: a tower is
+#: not always nested. Qwen2.5-VL — and therefore ``allenai/olmOCR-2-7B-1025``,
+#: which is one — carries its encoder at the **top level**, as
+#: ``visual.blocks.0.mlp.gate_proj``, so a pattern that demands a leading dot
+#: matches none of its 96 tower modules. Read off the weight index on
+#: 2026-10-01: 292 of olmOCR's weights carry one of our ``target_modules``
+#: names, 196 under ``model.`` and 96 under ``visual.``.
+DEFAULT_EXCLUDE_MODULES = r"(?:^|.*\.)(vision_tower|audio_tower|visual)\..*"
 
 
 class VlmTrainParams(BaseModel):
@@ -389,7 +397,9 @@ class VlmTrainParams(BaseModel):
     #: The default freezes the vision and audio encoders, which is what every run
     #: so far has done without saying so: ``target_modules`` matches by suffix
     #: too, and in Qwen3-VL-4B and Qwen3.5-4B all 252 and 128 matches are inside
-    #: ``model.language_model`` — their towers do not use these names. Gemma 4's
+    #: ``model.language_model`` — their towers do not use these names. Qwen2.5-VL
+    #: does: 96 of olmOCR-2-7B's 292 matches sit in a top-level ``visual.``
+    #: subtree, which is why the pattern also anchors at the start. Gemma 4's
     #: do: E4B has 112 in ``model.vision_tower`` and 36 in ``model.audio_tower``,
     #: wrapped in ``Gemma4ClippableLinear``, which peft refuses outright
     #: (training-atr-models#95). So this default changes nothing for any measured
