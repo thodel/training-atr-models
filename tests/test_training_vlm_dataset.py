@@ -421,6 +421,26 @@ class TestApplyVisualBudget:
         with pytest.raises(VisualBudgetError, match="no knob here"):
             apply_visual_budget(processor, 4096)
 
+    def test_a_tiling_processor_is_refused_although_it_looks_configurable(self):
+        """Llama-Nemotron, measured 2026-10-01 (docs/NEMOTRON_FEASIBILITY.md).
+
+        ``NemotronNanoVLV2ImageProcessor`` carries ``image_size=512``,
+        ``max_num_tiles=12`` and ``use_thumbnail=True``: three attributes that read
+        like a budget and are not one. ``max_num_tiles`` is a *ceiling* on a grid the
+        vendor's aspect-ratio heuristic picks inside, so the same setting cost a
+        481x202 line crop 256 tokens at 1 and 2,816 at 12. Refusing is right. This
+        test exists so that a fourth branch here is a decision rather than a
+        side-effect: anyone adding one has to change this name.
+        """
+        class Tiling:
+            image_size = 512
+            max_num_tiles = 12
+            use_thumbnail = True
+            num_image_token = 256
+
+        with pytest.raises(VisualBudgetError, match="no knob here"):
+            apply_visual_budget(FakeProcessor(Tiling()), 262144)
+
     def test_a_processor_with_no_image_processor_is_refused(self):
         with pytest.raises(VisualBudgetError, match="no image_processor"):
             apply_visual_budget(FakeProcessor(None), 4096)
