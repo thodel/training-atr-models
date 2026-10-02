@@ -28,12 +28,18 @@ import ast
 import inspect
 import json
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1"
-JOBS = Path(os.environ.get("PREFLIGHT_JOBS", "/scratch/network/users/th19c587/runs/jobs"))
+#: train.sbatch exports this as it builds the job root from $USER; honour it first,
+#: then $USER, and never a named account — ubelix/status.sh and train.sbatch both
+#: build the same path from the account that runs them.
+JOBS = Path(os.environ.get("ATR_TRAIN_JOBS_ROOT")
+            or os.environ.get("PREFLIGHT_JOBS")
+            or "/scratch/network/users/%s/runs/jobs" % os.environ.get("USER", "unknown"))
 LINE_JOB = os.environ.get("PREFLIGHT_LINE_JOB", "20260925T060317Z-ladder-med-gemma4-e4b")
 PAGE_JOB = os.environ.get("PREFLIGHT_PAGE_JOB",
                           "20260923T202356Z-qwen3vl-medieval-german-page-v1")
@@ -47,6 +53,19 @@ def head(label, title):
 
 def fail(exc, limit=200):
     print("   -> %s: %s" % (type(exc).__name__, str(exc)[:limit]), flush=True)
+
+
+def vendor_source():
+    """``(filename, text)`` of the module the config's ``auto_map`` names for AutoModel.
+
+    Derived from the ref rather than assumed to be ``modeling.py``: both Nemotron
+    repos happen to use that name, and the next family will not.
+    """
+    from transformers.utils import cached_file
+    ref = (json.loads(Path(cached_file(BASE, "config.json")).read_text())
+           .get("auto_map") or {}).get("AutoModel")
+    module = ref.rsplit(".", 1)[0] + ".py"
+    return ref, module, Path(cached_file(BASE, module)).read_text()
 
 
 def sample(job, kind):
@@ -110,7 +129,11 @@ try:
                 walk(item)
 
     walk(raw)
-    print("   foreign code repos required:", sorted(foreign) or "none")
+    # What the config NAMES in an auto_map, which is not the same as what gets
+    # fetched: a repo the vendor code reaches through its own from_pretrained, or
+    # names in a plain field, is invisible here. The fetch happens when the model is
+    # built, and this stage never builds one.
+    print("   foreign code repos named in an auto_map:", sorted(foreign) or "none")
 except Exception as exc:
     fail(exc, 400)
     traceback.print_exc()
@@ -138,8 +161,9 @@ except Exception as exc:
     # The class would not import. The file is still on disk, and the two questions
     # that decide whether our trainer can call it are answerable from the text.
     try:
-        from transformers.utils import cached_file
-        source = Path(cached_file(BASE, "modeling.py")).read_text()
+        # Re-derived rather than reused: the primary path may have failed before it
+        # bound anything, and a NameError here would say nothing about the model.
+        ref, module, source = vendor_source()
         # Parsed, not split on substrings. The file defines several forwards — a
         # squared ReLU and an RMSNorm come first — so taking the first one measures
         # the wrong function, which is how this check lied on its first run. Two
@@ -148,14 +172,14 @@ except Exception as exc:
         # defines no forward, and isolating the signature with "):" fails on the
         # ordinary annotated form `) -> Union[...]:`, which silently turns "the
         # signature names image_flags" into "the body mentions it somewhere".
-        name = (raw_cfg["auto_map"]["AutoModel"]).rsplit(".", 1)[-1]
+        name = ref.rsplit(".", 1)[-1]
         klass = next(node for node in ast.parse(source).body
                      if isinstance(node, ast.ClassDef) and node.name == name)
         func = next(node for node in klass.body
                     if isinstance(node, ast.FunctionDef) and node.name == "forward")
         params = [arg.arg for arg in func.args.args + func.args.kwonlyargs]
         body = ast.unparse(func.body)
-        print("   read from the cached modeling.py instead (class %s):" % name)
+        print("   read from the cached %s instead (class %s):" % (module, name))
         print("     forward accepts:", ", ".join(p for p in params if p != "self"))
         for needed in ("pixel_values", "input_ids", "labels", "image_flags", "num_patches"):
             print("       %-14s %s" % (needed, "yes" if needed in params else "NO"))
@@ -227,16 +251,27 @@ if ip is not None and hasattr(ip, "max_num_tiles"):
         "%s %d" % (k, max(1, round(v / tile_px)))
         for k, v in sorted(VLM_PIXEL_BUDGET.items(), key=lambda kv: kv[1])))
     original = ip.max_num_tiles
-    # A line strip at the line budget is the interesting case: one tile is a square,
-    # so the grid has no way to keep an 18:1 aspect ratio. The block budget is shown
-    # beside it because it is the cheapest grid that can.
+    # One tile is a square, so a wide strip can only be squashed into it; the next
+    # grid that keeps the aspect ratio costs several tiles. The block budget is shown
+    # beside the line budget for that reason — but only when it actually changes the
+    # input: fit_pixels never upscales, so a crop already under both budgets reaches
+    # the processor identically and a second row would repeat the first as if it were
+    # a second measurement.
+    shown = set()
     for kind, budget_kind in (("line", "line"), ("line", "block"), ("page", "page")):
         image = images.get(kind)
         if image is not None:
             px = VLM_PIXEL_BUDGET[budget_kind]
             fitted = fit_pixels(image, px)
-            print("   %s crop fitted to the %s budget (%s px):"
-                  % (kind, budget_kind, "x".join(map(str, fitted.size))))
+            if (kind, fitted.size) in shown:
+                print("   %s crop at the %s budget: %s px, identical to a row above "
+                      "(already under the budget, so fitting is a no-op) — skipped"
+                      % (kind, budget_kind, "x".join(map(str, fitted.size))))
+                continue
+            shown.add((kind, fitted.size))
+            print("   %s crop fitted to the %s budget (%s px, aspect %.2f:1):"
+                  % (kind, budget_kind, "x".join(map(str, fitted.size)),
+                     fitted.size[0] / fitted.size[1]))
             for tiles in TILE_CANDIDATES:
                 ip.max_num_tiles = tiles
                 try:
@@ -251,8 +286,12 @@ if ip is not None and hasattr(ip, "max_num_tiles"):
                     print("     max_num_tiles=%-3d %s: %s"
                           % (tiles, type(exc).__name__, str(exc)[:90]))
     ip.max_num_tiles = original
+elif ip is None:
+    print("   skipped: section 3 could not build an image processor at all, so there "
+          "is nothing here to measure through")
 else:
-    print("   no max_num_tiles on this image processor — nothing to measure here")
+    print("   %s has no max_num_tiles: this family does not tile, and its budget is "
+          "whatever section 4 found" % type(ip).__name__)
 
 # -------------------------------------------------------- 6. image list form
 head("6.", "image list form: one list per text, or one flat list per batch")
@@ -270,13 +309,19 @@ if proc is not None and images:
         fail(exc)
     if text is not None:
         for label, arg in (("nested [[img]]", [[image]]), ("flat [img]", [image])):
-            try:
-                out = proc(text=[text], images=arg, return_tensors="pt", padding=True)
-                print("   %-16s OK  keys=%s input_ids=%s pixel_values=%s"
-                      % (label, sorted(out.keys()), tuple(out["input_ids"].shape),
-                         tuple(out["pixel_values"].shape)))
-            except Exception as exc:
-                print("   %-16s %s: %s" % (label, type(exc).__name__, str(exc)[:120]))
+            for pad in (True, False):
+                # padding=True is what the collator passes, so its failure IS a
+                # finding; padding=False then still shows the key set, which decides
+                # whether anything our collator forwards is unknown to forward().
+                try:
+                    out = proc(text=[text], images=arg, return_tensors="pt", padding=pad)
+                    print("   %-16s padding=%-5s OK  keys=%s input_ids=%s pixel_values=%s"
+                          % (label, pad, sorted(out.keys()), tuple(out["input_ids"].shape),
+                             tuple(out["pixel_values"].shape)))
+                    break
+                except Exception as exc:
+                    print("   %-16s padding=%-5s %s: %s"
+                          % (label, pad, type(exc).__name__, str(exc)[:110]))
 else:
     print("   skipped: no processor, or no sample images")
 
@@ -299,9 +344,33 @@ if proc is not None:
         print("   stop ids:", stops, "->", [proc.tokenizer.decode([s]) for s in stops])
     except Exception as exc:
         fail(exc)
+pattern = VlmTrainParams().exclude_modules
 print("   target_modules:  ", VlmTrainParams().target_modules)
-print("   exclude_modules: ", VlmTrainParams().exclude_modules)
-print("   note: this family names its tower 'vision_model', which that regex does "
-      "not match. Whether anything is hit there is stage B.")
+print("   exclude_modules: ", pattern)
+# The module tree needs the weights, so point 5 of the checklist is stage B. What is
+# answerable here is narrower and still useful: the names this model gives its own
+# submodules, read out of the vendor source, and whether that regex covers them. An
+# earlier version of this script asserted the answer in prose for any base instead.
+try:
+    towers = set()
+    for node in ast.walk(ast.parse(vendor_source()[2])):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        called = ast.unparse(node.value.func)
+        for target in node.targets:
+            attr = ast.unparse(target)
+            if attr.startswith("self.") and called.split(".")[0].startswith("Auto"):
+                towers.add(attr[len("self."):])
+    if towers:
+        for name in sorted(towers):
+            probe = "%s.layers.0.q_proj" % name
+            print("     %-28s excluded by that regex: %s"
+                  % (probe, bool(re.match(pattern, probe))))
+        print("     (names read from the vendor source, not from a loaded module tree)")
+    else:
+        print("     no submodule built by an Auto* class found in the vendor source")
+except Exception as exc:
+    print("     the vendor source could not be read, so there are no names to test")
+    fail(exc)
 
 print("\n== done", flush=True)
