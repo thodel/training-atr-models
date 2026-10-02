@@ -37,8 +37,12 @@ OFFLINE=1 bash ubelix/run_preflight_nemotron.sh nvidia/NVIDIA-Nemotron-Nano-12B-
 ```
 
 [`ubelix/preflight_nemotron.py`](../ubelix/preflight_nemotron.py) is stage A of the
-eight-point pre-flight: the six points that need nothing but the small files. Points
-5 (`target_modules` against the real module tree) and 8 (a 4-bit forward and an
+eight-point pre-flight. Those eight points are numbered in
+[#135](https://github.com/thodel/training-atr-models/issues/135) — container, pixel
+budget, cell size, assistant header, `target_modules`, image-list form, stop tokens,
+dtypes — and **the section numbers below are this document's own, not theirs.** Stage
+A covers the six that need nothing but the small files; the checklist's point 5
+(`target_modules` against the real module tree) and point 8 (a 4-bit forward and an
 evaluation pass) need the weights and are stage B — worth paying for only if stage A
 comes back clean, which it does not.
 
@@ -123,7 +127,12 @@ inside the model. There is no training-shaped entry point for the 8B.
 
 ## 3. The training forward is not callable from our trainer
 
-Measured against the resolved class for the 8B and the cached source for the 12B:
+Measured twice over, by two different routes. For the 8B the class imports, so the
+figures below are `inspect.signature` and `inspect.getsource` of the real
+`Llama_Nemotron_Nano_VL.forward`. For the 12B the class cannot import (`mamba-ssm`),
+so the script parses the vendor module with `ast`, finds that class and its
+`forward`, and reads the parameter names off the syntax tree — it prints the same
+fields, and they agree:
 
 ```
    forward accepts: pixel_values, input_ids, attention_mask, position_ids,
@@ -139,8 +148,11 @@ Both are true of both sizes. Each is fatal on a single-GPU QLoRA run:
 - **`image_flags` is required and nothing produces it.** The processor returns
   `pixel_values` and `num_patches`; `forward` dereferences `image_flags.squeeze(-1)`
   with no `None` guard. Our collator would hand it `None`.
-- **`num_patches` is returned and not accepted.** The collator passes the
-  processor's output through, so it would arrive as an unexpected keyword.
+- **`num_patches` is returned and not accepted.** Measured through the full
+  `NemotronNanoVLV2Processor` — the object our collator calls, not its image
+  processor: `keys=['attention_mask', 'input_ids', 'num_patches', 'pixel_values']`.
+  Our collator passes that output straight through, so `num_patches` would arrive as
+  a keyword `forward` does not take.
 - **`torch.distributed.get_rank()` is called unconditionally**, inside `forward`,
   to print a debug line. With no process group initialised it raises. Note that
   `generate()` avoids both — so inference works and training does not, which is
@@ -172,10 +184,14 @@ What breaks it is that `max_num_tiles` bounds the grid without choosing it. The
 vendor heuristic picks the grid, and the two sizes use different heuristics — the
 8B also doubles every image before tiling.
 
-## 5. Tokens per granularity: measured, not computed
+## 5. Tokens per granularity: the tiles are measured, the per-tile figure is read
 
-Real samples: a 481×202 line crop from the medieval line corpus, and a 2775×4190
-page fitted to the page budget at 1178×1779.
+Real samples through the real image processor: a 481×202 line crop from the medieval
+line corpus, and a 2775×4190 page fitted to the page budget at 1178×1779. The tile
+count and the `pixel_values` shape are measured. The 256 tokens per tile are **read**
+from `num_image_token` on the 12B's processor and **computed** from `config.json` on
+the 8B, which does not expose that attribute — the token column is therefore the
+product of a measurement and a constant, not a count of emitted tokens.
 
 | image | `max_num_tiles` | tiles (incl. thumbnail) | visual tokens | our arms |
 |---|---:|---:|---:|---:|
@@ -200,8 +216,12 @@ this project to avoid.
 
 ## 6. What already works
 
-Not everything is bad news. For the 12B, three of the eight points pass today —
-3 (cell size), 4 (assistant header) and 7 (stop tokens):
+Not everything is bad news. For the 12B, three of the checklist's eight points pass
+today — 3 (cell size), 4 (assistant header) and 7 (stop tokens) — and a fourth,
+6 (image-list form), is settled: **both forms are accepted**, the nested
+`[[img]]` our collator sends and the flat `[img]`, each producing
+`input_ids=(1, 2848)` and `pixel_values=(11, 3, 512, 512)`. That is the one place
+this family is easier than Gemma 4, which refuses the flat form outright.
 
 ```
    rendered prompt contains '<image>': True
@@ -217,7 +237,7 @@ assistant header our loss mask depends on is present in a real training render.
 Stop tokens resolve. Offline, all of this still works from the pre-downloaded cache,
 which means the download recipe in `prefetch_code.sh` is complete.
 
-Two caveats inside the good news:
+Three caveats inside the good news:
 
 - **The tokenizer warns that it will tokenise incorrectly.** `The tokenizer you are
   loading ... with an incorrect regex pattern ... This will lead to incorrect
@@ -230,12 +250,29 @@ Two caveats inside the good news:
   masks the pad id out of the loss (`labels[labels == pad_token_id] =
   ignore_index`), so with pad and eos the same token it masks the real end of
   every answer, and the model is never trained to stop. Measured: Nemotron 12B
-  `pad=None`, `eos='<SPECIAL_12>'`; both Qwen bases carry distinct tokens
-  (`<|endoftext|>` against `<|im_end|>`), so this fallback has never fired in a
-  run so far. It is the same shape as the Gemma dtype bug — silent until
+  `pad=None`, `eos='<SPECIAL_12>'`. All six bases this project has fine-tuned carry
+  distinct tokens — Qwen3-VL-8B, Qwen3.5-4B and Qwen3.5-9B `<|endoftext|>` against
+  `<|im_end|>`, gemma-4-E4B-it and gemma-4-12B-it `<pad>` against `<eos>`,
+  olmOCR-2-7B `<|endoftext|>` against `<|im_end|>` — so this fallback has never
+  fired in a run so far. It is the same shape as the Gemma dtype bug — silent until
   generation, after the training is paid for.
 - The template opens and closes `<think></think>`. This is a reasoning model, and
   the same property already cost us effort on the serving side.
+
+And one measurement that is neither good nor bad news yet. `DEFAULT_EXCLUDE_MODULES`
+is `(?:^|.*\.)(vision_tower|audio_tower|visual)\..*`, and the names this model gives
+its own submodules are `language_model` and `vision_model`, read out of the vendor
+source. Probed directly:
+
+```
+     language_model.layers.0.q_proj excluded by that regex: False
+     vision_model.layers.0.q_proj   excluded by that regex: False
+```
+
+So the tower is **not** frozen by the default, as it is for Gemma 4 and olmOCR-2.
+Whether anything inside it actually carries one of our seven names needs the module
+tree, which is stage B — but if it does, a run would train the vision encoder
+without saying so.
 
 ## 7. The vendor code is unpinned
 
@@ -248,11 +285,21 @@ https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16:
 ```
 
 For every other family in this project, pinning a revision (#143) protects the
-*data*. Here it would protect the *code that runs*: the 12B pulls executable files
-from three repos — itself, `nvidia/C-RADIOv2-H` and
-`nvidia/NVIDIA-Nemotron-Nano-12B-v2-Base` — and two of those are named nowhere in
-its own file listing. A run whose results we intend to publish must pin all three,
-and our `DatasetSpec.revision` has no counterpart for a base model.
+*data*. Here it would protect the *code that runs*. Two different things are known,
+and they should not be run together:
+
+- **Observed.** The files transformers reported re-downloading —
+  `modeling_nemotron_h.py` and `evs.py` — came from the **VL repo itself**, as the
+  notice above says. That repo's code is unpinned and changed under us.
+- **Named, not yet observed.** The config's `auto_map` entries name two further
+  repos, `nvidia/C-RADIOv2-H` for the vision tower and
+  `nvidia/NVIDIA-Nemotron-Nano-12B-v2-Base` for the language model, neither of which
+  appears in the VL repo's file listing. Those are fetched when the model is
+  *built*, which stage A never reaches — so stage A cannot say they were pulled,
+  only that they are required.
+
+Either way a run whose results we intend to publish has three repos of executable
+code to pin, and our `DatasetSpec.revision` has no counterpart for a base model.
 
 ## 8. What a run would cost, and what it would buy
 
@@ -283,7 +330,9 @@ than producing a number that invites the wrong comparison.
 tokens against 2 048, no distortion — and the work above is a day or two, most of it
 reusable. But it is only worth spending once the olmOCR arms have said whether a
 different family moves the number at all. If olmOCR's pages land near
-qwen3.5-4b's 0.4160, a seventh family is a cost without a question behind it.
+qwen3.5-4b's 0.4160 CER on the medieval page set (the table in
+[#135](https://github.com/thodel/training-atr-models/issues/135)), a seventh family
+is a cost without a question behind it.
 
 **If F7 does go ahead, take the 12B, not the 8B,** despite the heavier container
 work: it has a real `AutoProcessor`, a working chat template, a locatable assistant
