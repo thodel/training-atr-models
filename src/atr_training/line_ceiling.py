@@ -50,8 +50,10 @@ __all__ = [
     "CeilingAudit",
     "LineTail",
     "UNCHECKED",
+    "ArrowCut",
     "aspects_from_arrow",
     "audit",
+    "cut_arrow",
     "summarise",
 ]
 
@@ -262,10 +264,9 @@ def aspects_from_arrow(path: str | Path, limit: int | None = None) -> list[float
     path = Path(path)
     with pa.memory_map(str(path), "rb") as handle:
         table = pa.ipc.open_file(handle).read_all()
-    column = _image_column(table)
+    column, field = _image_column(table)
     out: list[float] = []
-    for blob in table.column(column):
-        raw = blob.as_py()
+    for raw in _blobs(table, column, field):
         if not raw:
             continue
         with Image.open(BytesIO(raw)) as image:
@@ -277,19 +278,223 @@ def aspects_from_arrow(path: str | Path, limit: int | None = None) -> list[float
     return out
 
 
-def _image_column(table) -> str:
-    """The column holding the line crops.
+@dataclass(frozen=True)
+class ArrowCut:
+    """What applying the ceiling to a compiled corpus did, or would do."""
+
+    lines_before: int
+    removed: int
+    widest_before: float
+    widest_after: float
+    #: Characters the old alphabet had and the new one does not. Dropping 5 % of
+    #: lines can take a rare character with it, and the codec is built from this
+    #: histogram — so a model trained on the cut corpus can never emit them. Not
+    #: a reason to refuse, a reason to say so.
+    characters_lost: tuple[str, ...] = ()
+    written: Path | None = None
+
+    @property
+    def lines_after(self) -> int:
+        return self.lines_before - self.removed
+
+    @property
+    def share(self) -> float:
+        return 100.0 * self.removed / max(1, self.lines_before)
+
+    def __str__(self) -> str:
+        where = f" -> {self.written}" if self.written else " (dry run)"
+        lost = (f", {len(self.characters_lost)} character(s) lost: "
+                f"{''.join(self.characters_lost)}" if self.characters_lost else "")
+        return (f"{self.removed} of {self.lines_before} lines over the ceiling "
+                f"({self.share:.2f} %), widest {self.widest_before:.1f}:1 -> "
+                f"{self.widest_after:.1f}:1{lost}{where}")
+
+
+def cut_arrow(src: str | Path, dest: str | Path | None = None, *,
+              ceiling: float = MAX_LINE_ASPECT, dry_run: bool = False) -> ArrowCut:
+    """Write ``src`` without the lines whose **image** exceeds ``ceiling``.
+
+    The ceiling on the PageXML (``pagexml.MAX_LINE_ASPECT``, applied by
+    ``prepare``) bounds the ``Coords`` box. kraken pads a batch to its widest
+    member *as extracted*, and the two are not the same quantity: measured on the
+    German sweep corpus, the boxes top out at exactly 60.0:1 with none above,
+    while the extracted images reach 177:1 with 4.97 % above (#145). So the box
+    ceiling is necessary and not sufficient, and this is where the binding
+    quantity can be measured — after the compile, exactly, rather than predicted
+    before it. Neither the box width nor the baseline's arc length predicts it;
+    the discrepancy sits in the height ketos normalises to, and that is not yet
+    explained.
+
+    **The metadata is rebuilt, not copied.** ``alphabet`` is a character
+    histogram that the codec is built from, and ``counts`` says how many lines
+    the file holds; carrying either over unchanged would leave a file describing
+    the corpus it used to be. The alphabet is recounted from the kept texts, so a
+    character that only occurred on a removed line disappears from it — reported
+    in ``characters_lost`` rather than passed over.
+
+    Two passes over the file: the keep mask and the new alphabet cannot be known
+    until every row has been read, and the metadata has to be written before the
+    rows.
+    """
+    try:
+        import pyarrow as pa
+    except ImportError as exc:                       # pragma: no cover — box only
+        raise RuntimeError(
+            "cutting a compiled corpus needs pyarrow, which is not installed "
+            "here. Run this in the training venv: "
+            ".venvs/kraken-train/bin/python") from exc
+    from collections import Counter
+    from io import BytesIO
+
+    from PIL import Image
+
+    src = Path(src)
+    if dest is not None:
+        dest = Path(dest)
+        if dest.resolve() == src.resolve():
+            raise RuntimeError(
+                f"refusing to write {dest} over its own input. A cut corpus is a "
+                "different data version and needs its own digest (#113); "
+                "overwriting would leave every number measured on the old one "
+                "pointing at a file that no longer holds that corpus.")
+    if dest is None and not dry_run:
+        raise RuntimeError("cut_arrow needs a destination unless dry_run is set")
+
+    with pa.memory_map(str(src), "rb") as handle:
+        table = pa.ipc.open_file(handle).read_all()
+        column, field = _image_column(table)
+        keep: list[bool] = []
+        widest_before = widest_after = 0.0
+        alphabet: Counter = Counter()
+        texts = _texts(table, column, field)
+        for raw, text in zip(_blobs(table, column, field), texts):
+            if not raw:
+                keep.append(False)
+                continue
+            with Image.open(BytesIO(raw)) as image:
+                width, height = image.size
+            aspect = width / height if height else 0.0
+            widest_before = max(widest_before, aspect)
+            if aspect > ceiling:
+                keep.append(False)
+                continue
+            keep.append(True)
+            widest_after = max(widest_after, aspect)
+            alphabet.update(text or "")
+
+        removed = sum(1 for k in keep if not k)
+        lost = _characters_lost(table.schema, alphabet)
+        result = ArrowCut(lines_before=len(keep), removed=removed,
+                          widest_before=widest_before, widest_after=widest_after,
+                          characters_lost=lost)
+        if dry_run:
+            return result
+
+        filtered = table.filter(pa.array(keep))
+        schema = filtered.schema.with_metadata(
+            _rebuilt_metadata(table.schema, alphabet, filtered.num_rows))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with pa.OSFile(str(dest), "wb") as sink:
+            with pa.ipc.new_file(sink, schema) as writer:
+                writer.write_table(filtered.replace_schema_metadata(schema.metadata))
+    return ArrowCut(lines_before=result.lines_before, removed=result.removed,
+                    widest_before=result.widest_before,
+                    widest_after=result.widest_after,
+                    characters_lost=result.characters_lost, written=dest)
+
+
+def _texts(table, column: str, field: str | None) -> list[str]:
+    """Every line's transcription, in file order; empty where there is none."""
+    if field is None:
+        for name in ("text", "lines", "transcription"):
+            if name in table.schema.names and name != column:
+                return [v.as_py() or "" for v in table.column(name)]
+        return [""] * table.num_rows
+    return [(v.as_py() or {}).get("text") or "" for v in table.column(column)]
+
+
+def _old_alphabet(schema) -> dict:
+    import json
+
+    raw = (schema.metadata or {}).get(b"lines")
+    if not raw:
+        return {}
+    try:
+        return dict(json.loads(raw.decode()).get("alphabet") or {})
+    except (ValueError, AttributeError):
+        return {}
+
+
+def _characters_lost(schema, alphabet) -> tuple[str, ...]:
+    before = set(_old_alphabet(schema))
+    if not before:
+        return ()
+    return tuple(sorted(before - set(alphabet)))
+
+
+def _rebuilt_metadata(schema, alphabet, rows: int) -> dict:
+    """The source metadata with ``alphabet`` and ``counts`` made true again."""
+    import json
+
+    metadata = dict(schema.metadata or {})
+    raw = metadata.get(b"lines")
+    if not raw:
+        return metadata
+    try:
+        record = json.loads(raw.decode())
+    except ValueError:
+        return metadata
+    record["alphabet"] = dict(sorted(alphabet.items()))
+    counts = dict(record.get("counts") or {})
+    if "all" in counts:
+        counts["all"] = rows
+    record["counts"] = counts
+    metadata[b"lines"] = json.dumps(record).encode("utf-8")
+    return metadata
+
+
+def _image_column(table) -> tuple[str, str | None]:
+    """``(column, field)`` holding the line crops; ``field`` for a struct column.
 
     Found rather than assumed: ketos has named it differently across versions,
     and a wrong guess here would report "no usable line geometry" for a corpus
     that is fine — which is exactly the kind of false clean this module exists
     to avoid.
+
+    **kraken 7.0.2 writes a struct**, and only looking for a top-level binary
+    column missed it: a real compiled corpus has
+    ``lines: struct<text: string, im: binary>`` beside three boolean split masks,
+    so this raised "does not look like a compiled ketos dataset" about every
+    dataset the pipeline produces. Measured on `german_test.arrow`, 01.10.2026 —
+    the audit had never been run against a real one, which is why the message
+    read as a verdict on the data rather than on the reader (#145).
     """
     import pyarrow as pa
 
+    def binary(kind) -> bool:
+        return pa.types.is_binary(kind) or pa.types.is_large_binary(kind)
+
     for field in table.schema:
-        if pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type):
-            return field.name
+        if binary(field.type):
+            return field.name, None
+    for field in table.schema:
+        if pa.types.is_struct(field.type):
+            for member in field.type:
+                if binary(member.type):
+                    return field.name, member.name
     raise RuntimeError(
-        f"no binary column in {table.schema.names} — this does not look like a "
-        "compiled ketos dataset, so its line geometry cannot be read")
+        f"no binary column or struct field in {table.schema.names} — this does "
+        "not look like a compiled ketos dataset, so its line geometry cannot be "
+        "read")
+
+
+def _blobs(table, column: str, field: str | None):
+    """Every line's image bytes, in file order."""
+    values = table.column(column)
+    if field is None:
+        for value in values:
+            yield value.as_py()
+        return
+    for value in values:
+        row = value.as_py()
+        yield None if row is None else row.get(field)
