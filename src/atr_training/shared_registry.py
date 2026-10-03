@@ -46,7 +46,7 @@ class RegistryUnavailable(RuntimeError):
 
 
 class BaseEntry(BaseModel):
-    """The four fields a base-model lookup needs, plus script/class/century metadata.
+    """The fields a base-model lookup needs, plus script/class/century metadata.
 
     ``scripts``, ``languages`` and ``centuries`` are carried from the registry file
     (directly from ``config/models.yaml``) so that a ``GET /bases`` query can filter
@@ -57,6 +57,13 @@ class BaseEntry(BaseModel):
 
     id: str
     engine: str
+    #: The Zenodo record's title, verbatim. Read so a model card can say WHAT a
+    #: base is instead of repeating the id that names it — the id is what
+    #: serving-atr-inference#101 showed to be unreliable on its own
+    #: (`kraken-early_modern_german` loaded CATMuS Medieval for months).
+    description: str | None = None
+    #: The three weight references, in the order a card prefers them.
+    hf_repo: str | None = None
     zenodo_id: str | None = None
     local_path: str | None = None
     #: Carried, not filtered on. A disabled model is still a valid base.

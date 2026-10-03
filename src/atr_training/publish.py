@@ -34,13 +34,17 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Literal, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Protocol, Sequence
 
 import yaml
 
 from atr_training.contracts import utcnow
 from atr_training.corpus_defects import defects_for
+
+if TYPE_CHECKING:  # the registry is read lazily; see _registry()
+    from atr_training.shared_registry import BaseEntry, SharedRegistry
 
 __all__ = [
     "PublishError",
@@ -300,13 +304,88 @@ def _plain(value: Any) -> str:
     return "—" if value is None else str(value)
 
 
+@lru_cache(maxsize=1)
+def _registry() -> "SharedRegistry | None":
+    """The curated registry from the share, for resolving a base given as its id.
+
+    The same file ``resolve_base_model`` reads
+    (:attr:`~atr_training.settings.TrainerSettings.models_config`, written by
+    idhefix), so a card and a training request agree on what an id means.
+
+    Best-effort on purpose: an upload must not fail because the share hiccupped,
+    and a card that cannot resolve an id says so (see :func:`_base_cell`) rather
+    than guessing. Cached because one publish run writes many cards.
+    """
+    try:
+        from atr_training.settings import TrainerSettings
+        from atr_training.shared_registry import load_shared_registry
+
+        return load_shared_registry(TrainerSettings().models_config)
+    except Exception:                                  # noqa: BLE001 — never fatal
+        return None
+
+
+def _resolved_base(base: str) -> "BaseEntry | None":
+    """The registry entry a base id names, if the curated file knows it."""
+    registry = _registry()
+    return registry.get(base) if registry is not None else None
+
+
+def _is_hub_repo(ref: str) -> bool:
+    """``owner/name`` — the only shape the hub's ``base_model:`` can resolve.
+
+    A Zenodo DOI has a slash too and is not one; a gateway registry id has none
+    and is not one either. Either in the frontmatter advertises a link that goes
+    nowhere, and worse: `kraken-medieval-german-v2` shipped
+    ``base_model: kraken-early_modern_german`` for months, a registry id whose
+    DOI was CATMuS Medieval (serving-atr-inference#101). A base belongs in the
+    card either as a resolvable link or as a plain statement — never as a name
+    the reader cannot check.
+    """
+    return "/" in ref and not ref.startswith("10.")
+
+
+def _base_cell(base: str | None) -> str:
+    """The provenance row's base: what the weights are, and where they live.
+
+    A registry id names nothing by itself — that is how a card came to claim
+    `kraken-early_modern_german` for CATMuS Medieval
+    (serving-atr-inference#101). So an id is looked up in the registry and
+    reported as its title plus the reference the registry resolves it to: a DOI,
+    a hub repo, or the path of weights trained here. The id stays in the line,
+    because it is what the training request asked for.
+    """
+    if not base:
+        return "trained from scratch"
+    if base.startswith("10."):
+        return f"[`{base}`](https://doi.org/{base})"
+    if _is_hub_repo(base):
+        return f"[`{base}`](https://huggingface.co/{base})"
+
+    spec = _resolved_base(base)
+    if spec is None:
+        return (f"`{base}` — a gateway registry id the curated registry does not "
+                f"know; it names no weights by itself")
+    if spec.zenodo_id:
+        where = f"[`{spec.zenodo_id}`](https://doi.org/{spec.zenodo_id})"
+    elif spec.local_path:
+        where = f"local weights `{spec.local_path}`"
+    elif spec.hf_repo:
+        where = f"[`{spec.hf_repo}`](https://huggingface.co/{spec.hf_repo})"
+    else:
+        where = "no weights reference in the registry"
+    title = spec.description or spec.id
+    return f"**{title}** — {where}, requested as `{base}`"
+
+
 def _frontmatter(model: TrainedModel, licence: str | None) -> str:
     """The card's YAML header — the part the hub reads rather than displays.
 
     ``datasets:`` is the machine-readable half of the model↔dataset connection:
     it is what makes the model appear on its training corpus' page and the corpus
     on the model's. ``base_model:`` does the same for the checkpoint a fine-tune
-    started from.
+    started from — but **only** where the base is a hub repo, because that is the
+    only shape the field resolves (serving-atr-inference#101, #203, #206).
 
     Fields we cannot know are left out rather than guessed. In particular there
     is no default ``license``: an unlicensed repo is an honest one, a wrongly
@@ -322,8 +401,16 @@ def _frontmatter(model: TrainedModel, licence: str | None) -> str:
     header["tags"] = [
         "htr", "ocr", "handwritten-text-recognition", "historical-documents", model.engine,
     ]
+    # Only a hub repo: see _is_hub_repo. A DOI is stated in the provenance table
+    # instead, where it can be read for what it is; a registry id earns the field
+    # when it resolves to a hub repo, which is a relation the hub can follow.
     if model.base_model:
-        header["base_model"] = model.base_model
+        if _is_hub_repo(model.base_model):
+            header["base_model"] = model.base_model
+        else:
+            resolved = _resolved_base(model.base_model)
+            if resolved is not None and resolved.hf_repo:
+                header["base_model"] = resolved.hf_repo
     if datasets:
         # De-duplicated, order preserved: two slices of one corpus are one link.
         header["datasets"] = list(dict.fromkeys(d.repo for d in datasets))
@@ -470,10 +557,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
     """
     metrics = model.metrics
     prompt = model.metadata.get("prompt") or model.params.get("prompt")
-    base = (f"[`{model.base_model}`](https://huggingface.co/{model.base_model})"
-            if model.base_model and "/" in model.base_model
-            else f"`{model.base_model}`" if model.base_model
-            else "trained from scratch")
+    base = _base_cell(model.base_model)
 
     lines: list[str] = [
         _frontmatter(model, licence),

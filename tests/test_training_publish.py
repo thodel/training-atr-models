@@ -221,6 +221,122 @@ def test_the_base_model_is_linked_as_well(tmp_path: Path):
     assert frontmatter(card)["base_model"] == "Qwen/Qwen3-VL-8B-Instruct"
 
 
+# ── a base the reader can check (serving-atr-inference#101, #203, #206) ──────
+CURATED = {"models": [
+    {"id": "kraken-prima", "engine": "kraken",
+     "description": "Printed Early Modern German, 15th-18th century",
+     "zenodo_id": "10.5281/zenodo.10066218"},
+    {"id": "qwen3vl-8b-hebrew", "engine": "vllm",
+     "description": "Qwen3-VL 8B, Hebrew manuscripts",
+     "hf_repo": "wjbmattingly/Qwen3-VL-8B-hebrew"},
+    {"id": "kraken-thun-v1", "engine": "kraken",
+     "local_path": "/mnt/wbkolleg_dh_1/.../kraken-thun-v1.mlmodel"},
+    {"id": "kraken-nameless", "engine": "kraken"},
+]}
+
+
+@pytest.fixture
+def curated(tmp_path_factory, monkeypatch):
+    """The curated registry idhefix publishes, as the publisher reads it.
+
+    The cache has to be cleared around the test, not just before it: `_registry`
+    is an `lru_cache`, and one publish run is one process (the runner is detached
+    per job) — which is exactly why a test must not leave its registry behind for
+    the next one.
+    """
+    from atr_training import publish
+
+    path = tmp_path_factory.mktemp("curated") / "models.yaml"
+    path.write_text(yaml.safe_dump(CURATED), encoding="utf-8")
+    monkeypatch.setenv("ATR_TRAIN_MODELS_CONFIG", str(path))
+    publish._registry.cache_clear()
+    yield path
+    publish._registry.cache_clear()
+
+
+def _with_base(metadata: dict, base: str | None) -> dict:
+    meta = json.loads(json.dumps(metadata))
+    meta["base_model"] = base
+    meta["request"]["base_model"] = base
+    return meta
+
+
+def test_a_zenodo_doi_is_linked_to_doi_org_not_to_the_hub(tmp_path: Path, curated):
+    """It was linked to `https://huggingface.co/10.5281/zenodo.…`, a URL that
+    does not exist, because the old rule was "contains a slash"."""
+    card = card_for(tmp_path, _with_base(KRAKEN_META, "10.5281/zenodo.7051644"))
+    assert "(https://doi.org/10.5281/zenodo.7051644)" in card
+    assert "huggingface.co/10.5281" not in card
+
+
+def test_a_doi_does_not_go_into_the_frontmatter(tmp_path: Path, curated):
+    """``base_model:`` resolves ``owner/name`` and nothing else, so a DOI there
+    advertises a relation the hub cannot follow."""
+    header = frontmatter(card_for(tmp_path, _with_base(KRAKEN_META, "10.5281/zenodo.7051644")))
+    assert "base_model" not in header
+
+
+def test_a_registry_id_is_reported_as_the_weights_it_names(tmp_path: Path, curated):
+    """The #101 defect: `kraken-medieval-german-v2` claimed
+    ``base_model: kraken-early_modern_german`` for months — an id whose DOI was
+    CATMuS Medieval. An id names nothing by itself, so it is resolved."""
+    card = card_for(tmp_path, _with_base(KRAKEN_META, "kraken-prima"))
+    assert "**Printed Early Modern German, 15th-18th century**" in card
+    assert "(https://doi.org/10.5281/zenodo.10066218)" in card
+    assert "requested as `kraken-prima`" in card
+    assert "base_model" not in frontmatter(card), "a DOI-backed id resolves to no hub repo"
+
+
+def test_a_registry_id_that_resolves_to_a_hub_repo_earns_the_frontmatter(tmp_path: Path, curated):
+    """Then the relation IS one the hub can follow — so it is declared."""
+    card = card_for(tmp_path, _with_base(VLM_META, "qwen3vl-8b-hebrew"),
+                    weights="adapter_model.safetensors")
+    assert frontmatter(card)["base_model"] == "wjbmattingly/Qwen3-VL-8B-hebrew"
+    assert "requested as `qwen3vl-8b-hebrew`" in card
+
+
+def test_a_registry_id_backed_by_local_weights_says_where_they_are(tmp_path: Path, curated):
+    card = card_for(tmp_path, _with_base(KRAKEN_META, "kraken-thun-v1"))
+    assert "local weights `/mnt/wbkolleg_dh_1/.../kraken-thun-v1.mlmodel`" in card
+    assert "**kraken-thun-v1**" in card, "no description: the id is the best title there is"
+
+
+def test_an_entry_without_any_weights_reference_says_that_too(tmp_path: Path, curated):
+    card = card_for(tmp_path, _with_base(KRAKEN_META, "kraken-nameless"))
+    assert "no weights reference in the registry" in card
+
+
+def test_an_id_the_registry_does_not_know_is_not_guessed_at(tmp_path: Path, curated):
+    card = card_for(tmp_path, _with_base(KRAKEN_META, "kraken-who"))
+    assert "the curated registry does not know" in card
+    assert "base_model" not in frontmatter(card)
+
+
+def test_an_unreadable_registry_does_not_fail_the_upload(tmp_path: Path, monkeypatch):
+    """Best-effort: the share hiccups, and a card that cannot resolve an id says
+    so. An upload that fails here would lose the whole publish run."""
+    from atr_training import publish
+
+    monkeypatch.setenv("ATR_TRAIN_MODELS_CONFIG", str(tmp_path / "gone.yaml"))
+    publish._registry.cache_clear()
+    try:
+        card = card_for(tmp_path, _with_base(KRAKEN_META, "kraken-prima"))
+    finally:
+        publish._registry.cache_clear()
+    assert "the curated registry does not know" in card
+
+
+def test_a_hub_repo_needs_no_registry_at_all(tmp_path: Path):
+    """The common case for a VLM fine-tune, and it must not depend on the share."""
+    card = card_for(tmp_path, VLM_META, weights="adapter_model.safetensors")
+    assert frontmatter(card)["base_model"] == "Qwen/Qwen3-VL-8B-Instruct"
+
+
+def test_from_scratch_stays_from_scratch(tmp_path: Path, curated):
+    card = card_for(tmp_path, _with_base(KRAKEN_META, None))
+    assert "| base model | trained from scratch |" in card
+
+
 def test_the_declared_score_names_the_slice_it_was_measured_on(tmp_path: Path):
     """A repo id alone would claim the whole 6.6 TB corpus; the eval projects are
     what the CER is actually about."""
