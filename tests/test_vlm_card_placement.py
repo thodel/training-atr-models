@@ -33,6 +33,19 @@ MEASURED_GIB = {"4bit_one_card": 9.25, "bf16_one_card": 17.31,
                 "bf16_two_cards": (7.84, 9.79)}
 A40_GIB = 44.42
 
+#: And during 96 page samples at batch 1 x accumulate 16, one epoch — the
+#: expensive half of the same question (`scripts/measure_vlm_arms.py`). Peak is
+#: what nvidia-smi showed, sampled every 2 s.
+MEASURED_STEPS = {
+    "4bit_one_card": {"runtime_s": 301.5, "samples_per_s": 0.318, "peak_mib": (21675,)},
+    "bf16_one_card": {"runtime_s": 247.6, "samples_per_s": 0.388, "peak_mib": (27763,)},
+    "bf16_two_cards": {"runtime_s": 249.7, "samples_per_s": 0.384, "peak_mib": (13761, 18625)},
+}
+A40_MIB = 45486
+#: The draw the step numbers come from, and the corpus it was drawn from.
+DRAW_SAMPLES = 96
+CORPUS_SAMPLES = 9441
+
 
 def _request() -> TrainRequest:
     return TrainRequest(engine="vllm", model_id="qwen3vl-placement",
@@ -106,6 +119,45 @@ def test_two_cards_hold_about_what_one_does():
     first, second = MEASURED_GIB["bf16_two_cards"]
     assert first + second == pytest.approx(MEASURED_GIB["bf16_one_card"], abs=0.5)
     assert max(first, second) < MEASURED_GIB["bf16_one_card"], "neither card holds it all"
+
+
+# ── and what a step costs ────────────────────────────────────────────────────
+def test_bf16_is_faster_than_four_bit_not_slower():
+    """The assumption worth refuting: 4-bit is cheaper. It is cheaper in memory
+    and dearer in time — nf4 dequantises every weight on every pass, and an A40
+    runs bf16 matmuls natively."""
+    four = MEASURED_STEPS["4bit_one_card"]["runtime_s"]
+    bf16 = MEASURED_STEPS["bf16_one_card"]["runtime_s"]
+
+    assert bf16 < four
+    assert (four - bf16) / four > 0.15, "a smaller margin would be within noise"
+
+
+def test_the_bf16_peak_still_leaves_room_on_one_card():
+    peak, = MEASURED_STEPS["bf16_one_card"]["peak_mib"]
+    assert peak < A40_MIB
+    assert (A40_MIB - peak) / 1024 > 15, "under 15 GiB spare is not headroom here"
+
+
+def test_the_second_card_buys_headroom_and_not_speed():
+    """Naive model parallelism serialises: one card waits while the other
+    computes. Whoever reads "two cards" as "twice as fast" should fail here."""
+    one = MEASURED_STEPS["bf16_one_card"]["runtime_s"]
+    two = MEASURED_STEPS["bf16_two_cards"]["runtime_s"]
+
+    assert abs(two - one) / one < 0.05, "within noise — no speed-up"
+    assert max(MEASURED_STEPS["bf16_two_cards"]["peak_mib"]) < \
+        MEASURED_STEPS["bf16_one_card"]["peak_mib"][0]
+
+
+def test_the_peak_was_drawn_from_a_fraction_of_the_corpus():
+    """The honest limit of the number above: 96 of the 9,441 samples, taken from
+    the head of the file. On this project an OOM has twice been the
+    distribution's tail rather than the batch size, so the 17 GiB margin is
+    headroom and not proof. Pinned so a later "it fits" has to name the draw."""
+    assert DRAW_SAMPLES == 96
+    assert CORPUS_SAMPLES == 9441
+    assert DRAW_SAMPLES / CORPUS_SAMPLES < 0.02, "a 1 % draw cannot bound the tail"
 
 
 def test_the_default_is_still_four_bit_until_a_run_says_otherwise():

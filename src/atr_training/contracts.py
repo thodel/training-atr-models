@@ -402,10 +402,17 @@ class VlmTrainParams(BaseModel):
     #: question — does an 8B train without 4-bit if 92 GB are reachable — is
     #: answered one level down: 44 is enough, NVLink is not needed for it.
     #:
-    #: The default stays ``True`` anyway, because fitting is not the claim. What
-    #: 4-bit costs is quantisation error and what it buys is 8 GiB of activation
-    #: budget — a batch-size trade (#138), and the default moves on a trained
-    #: model's CER, not on a footprint.
+    #: And it is **slower**. 96 page samples, batch 1 x accumulate 16, one epoch:
+    #: bf16 took 247.6 s against 4-bit's 301.5 s — **22 % faster** — peaking at
+    #: 27,763 MiB against 21,675 of 45,486. nf4 dequantises every weight on every
+    #: pass, and an A40 runs bf16 matmuls natively, so the quantisation was buying
+    #: memory at the cost of time.
+    #:
+    #: The default stays ``True`` until a run says otherwise, because neither
+    #: number is a CER. What is measured is that `False` fits, with 17.3 GiB free
+    #: at batch 1, and costs less time; what is not measured is what either does
+    #: to a trained model. That comparison is #138's, and it is the one that may
+    #: move this default.
     load_in_4bit: bool = True
     lora_r: int = Field(default=64, ge=1)
     lora_alpha: int = Field(default=128, ge=1)

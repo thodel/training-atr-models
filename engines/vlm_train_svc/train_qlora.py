@@ -613,13 +613,17 @@ def build_model(args, processor):
     # venv and DeepSpeed is not installed, so this is the only multi-card route
     # that needs no launcher.
     #
-    # **It is not needed for an 8B.** Measured on asteraix 03.10.2026, Qwen3-VL-8B
-    # with these adapters and gradient checkpointing: bf16 on ONE A40 holds
-    # 17.31 GiB of 44.42, leaving 27.1 GiB for activations; 4-bit holds 9.25 GiB.
-    # The same model over both cards holds 7.84 and 9.79 GiB. Two cards buy
-    # headroom, not feasibility — so a larger base is the case this branch exists
-    # for, and `max_concurrent` running two jobs on two cards is the better use of
-    # the second A40 for this one.
+    # **It is not needed for an 8B, and it is not faster.** Measured on asteraix
+    # 03.10.2026 (#137), 96 page samples, batch 1 x accumulate 16, one epoch:
+    #
+    #   4-bit, one card    301.5 s   peak 21,675 MiB
+    #   bf16,  one card    247.6 s   peak 27,763 MiB of 45,486
+    #   bf16,  both cards  249.7 s   peak 13,761 + 18,625 MiB
+    #
+    # The second card spreads the peak and buys no speed — only one card computes
+    # at a time here. So this branch exists for a base too large for one card;
+    # for an 8B the better use of the second A40 is a second job
+    # (`max_concurrent`).
     visible = torch.cuda.device_count()
     model = AutoModelForImageTextToText.from_pretrained(
         args.base_model,
