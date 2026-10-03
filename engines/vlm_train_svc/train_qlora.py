@@ -50,6 +50,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-pixels", type=int, required=True)
     p.add_argument("--max-seq-len", type=int, required=True)
     p.add_argument("--seed", type=int, default=42)
+    # Accepted and NOT used: the cards a job may touch arrive as
+    # CUDA_VISIBLE_DEVICES, which renumbers them, so the job's first card is
+    # always `cuda:0` and naming it adds nothing. Kept because `vlm_cmd` emits it
+    # and a job recorded with this argv must stay replayable (#137).
     p.add_argument("--device", default="cuda:0")
 
     p.add_argument("--epochs", type=int, default=3,
@@ -553,6 +557,35 @@ def make_continuation_callback(policy: ContinuationPolicy):
     return ContinueWhileImproving()
 
 
+def device_map_for(visible: int) -> dict[str, int] | str:
+    """Where the weights go, given how many cards this job may touch.
+
+    Its own function so the rule can be tested without a GPU and without
+    transformers: the branch is the whole decision, and it decides how a job
+    uses the second A40.
+
+    One card is `{"": 0}` and not `"auto"`, although `auto` would reach the same
+    placement — the explicit form says in the log which card was meant, and makes
+    a job that was handed one card indistinguishable from the behaviour before
+    #137.
+    """
+    return {"": 0} if visible <= 1 else "auto"
+
+
+def _params_per_device(model) -> dict[str, str]:
+    """Parameters per card, in millions — the only cheap proof that a shard happened.
+
+    A `device_map="auto"` that quietly puts everything on one card looks exactly
+    like a working one until the card runs out, so the split is printed rather
+    than assumed.
+    """
+    counts: dict[str, int] = {}
+    for _, param in model.named_parameters():
+        key = str(param.device)
+        counts[key] = counts.get(key, 0) + param.numel()
+    return {dev: f"{n / 1e6:.1f}M" for dev, n in sorted(counts.items())}
+
+
 def build_model(args, processor):
     import torch
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -567,16 +600,37 @@ def build_model(args, processor):
             bnb_4bit_use_double_quant=True,  # ~0.4 bits/param more, for free
         )
 
+    # One card unless the scheduler handed this job more than one. The job's
+    # cards arrive as CUDA_VISIBLE_DEVICES (settings.env_for_child), so the
+    # placement follows what it was given rather than a box-wide assumption, and
+    # `{"": 0}` keeps the single-card case explicit in the logs.
+    #
+    # `auto` shards by `_no_split_modules`, which Qwen3VLForConditionalGeneration
+    # declares as `['Qwen3VLTextDecoderLayer', 'Qwen3VLVisionBlock']` — checked in
+    # the vlm-train venv, not read off the library's documentation (#137). It is
+    # naive model parallelism: one layer's output crosses to the next card over
+    # NVLink, and only one card computes at a time. FSDP is importable in that
+    # venv and DeepSpeed is not installed, so this is the only multi-card route
+    # that needs no launcher.
+    #
+    # **It is not needed for an 8B.** Measured on asteraix 03.10.2026, Qwen3-VL-8B
+    # with these adapters and gradient checkpointing: bf16 on ONE A40 holds
+    # 17.31 GiB of 44.42, leaving 27.1 GiB for activations; 4-bit holds 9.25 GiB.
+    # The same model over both cards holds 7.84 and 9.79 GiB. Two cards buy
+    # headroom, not feasibility — so a larger base is the case this branch exists
+    # for, and `max_concurrent` running two jobs on two cards is the better use of
+    # the second A40 for this one.
+    visible = torch.cuda.device_count()
     model = AutoModelForImageTextToText.from_pretrained(
         args.base_model,
         quantization_config=quantization,
         dtype=torch.bfloat16,
-        # Single card by design: the unit sets CUDA_VISIBLE_DEVICES to the
-        # training GPU, so "auto" would still only ever see that one, and pinning
-        # it makes the placement explicit in the logs.
-        device_map={"": 0},
+        device_map=device_map_for(visible),
         trust_remote_code=True,
     )
+    if visible > 1:
+        print(f"[placement] {visible} cards visible, device_map=auto: "
+              f"{_params_per_device(model)}", flush=True)
     model.config.use_cache = False  # incompatible with gradient checkpointing
     if args.load_in_4bit:
         model = prepare_model_for_kbit_training(

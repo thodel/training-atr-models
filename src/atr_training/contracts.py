@@ -356,7 +356,14 @@ class VlmTrainParams(BaseModel):
     tuned in) except where this machine forces a different choice — each such
     deviation is noted on the field. The memory arguments below were made when
     training shared a card with the serving engines; since 16.09.2026 a run owns
-    its card, and none of them has been re-measured.
+    its card.
+
+    **One of them has now been measured** (#137, 03.10.2026): the footprint, see
+    :attr:`load_in_4bit`. The rest — ``batch_size``, ``accumulate_grad_batches``,
+    ``max_seq_len`` — have not, and that is #138. They are a search over one axis
+    (batch × accumulation is the effective batch, and
+    :func:`atr_training.convergence.epochs_for` reads the product), not four
+    fields to turn up one at a time.
     """
 
     model_config = ConfigDict(protected_namespaces=())
@@ -385,9 +392,20 @@ class VlmTrainParams(BaseModel):
     prompt: str = VLM_PROMPT
 
     # ── QLoRA ────────────────────────────────────────────────────────────────
-    #: 4-bit NF4 + double quant. False = LoRA on a bf16 base, which did not fit an
-    #: 8B beside the serving engines on the shared box. Not re-measured on a card
-    #: this run owns alone.
+    #: 4-bit NF4 + double quant. ``False`` = LoRA on a bf16 base, which did not fit
+    #: an 8B beside the serving engines on the shared box.
+    #:
+    #: **Measured on a card a run owns alone** (asteraix, 03.10.2026, #137):
+    #: Qwen3-VL-8B with the default adapters and gradient checkpointing, before
+    #: the first step, holds **17.31 GiB of 44.42** in bf16 against **9.25 GiB**
+    #: in 4-bit. So bf16 fits with 27.1 GiB left for activations, and the epic's
+    #: question — does an 8B train without 4-bit if 92 GB are reachable — is
+    #: answered one level down: 44 is enough, NVLink is not needed for it.
+    #:
+    #: The default stays ``True`` anyway, because fitting is not the claim. What
+    #: 4-bit costs is quantisation error and what it buys is 8 GiB of activation
+    #: budget — a batch-size trade (#138), and the default moves on a trained
+    #: model's CER, not on a footprint.
     load_in_4bit: bool = True
     lora_r: int = Field(default=64, ge=1)
     lora_alpha: int = Field(default=128, ge=1)
