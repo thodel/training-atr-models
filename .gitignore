@@ -18,3 +18,6 @@ config/models.local.yaml
 # NOT ignored in a public repo, one `git add -A` away from publishing the key.
 .env.*
 !.env.example
+
+# eval run outputs
+eval/outputs/

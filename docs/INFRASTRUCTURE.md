@@ -220,7 +220,7 @@ document.
 |---|---|---|---|
 | idhefix gateway → here, `:8204` | `/train/*`: submit, read, cancel jobs; `/train/gpu` | `X-API-Key` = `ATR_TRAIN_API_KEY`, the same name and value on both hosts; source must be in the allowlist | `ATR_TRAIN_API_KEY`, `ATR_TRAIN_ALLOWED_CLIENTS=130.92.59.240` |
 | here → idhefix gateway, `:8200/ocr` | promotion gate, one held-out page | `X-API-Key` = idhefix's `ATR_API_KEY`, plus the header `X-ATR-Promotion-Gate: 1` | `ATR_TRAIN_GATEWAY_URL`, `ATR_TRAIN_GATEWAY_API_KEY` |
-| here → idhefix gateway, `:8200/recognize` | `eval/`, **planned** with #11 | as above | as above |
+| here → idhefix gateway, `:8200/recognize` | `eval/`: CER per model over the deployed path (#11) | as above | as above |
 | here ↔ share | job records, weights, registry, HF cache | filesystem | `ATR_TRAIN_JOBS_ROOT`, `ATR_TRAIN_TRAINED_ROOT`, `ATR_TRAIN_REGISTRY_ROOT` |
 | here → UBELIX `submit02.unibe.ch:22` | **planned** with #17: submitting and watching Slurm jobs | a dedicated key, not yet installed | none yet |
 

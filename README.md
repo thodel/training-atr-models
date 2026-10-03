@@ -150,7 +150,7 @@ Drei HTTP-Kanten, keine geteilte Python-Abhängigkeit:
 |---|---|
 | `/train/*`-Proxy | idhefix → asteraix:8204 |
 | Promotion-Gate | asteraix → idhefix:8200/ocr |
-| `eval/` (kommt mit #11) | asteraix → idhefix:8200/recognize |
+| `eval/` (#11) | asteraix → idhefix:8200/recognize |
 
 Die **Gewichte** queren gar kein Netz: beide Maschinen mounten
 `/mnt/wbkolleg_dh_1`.
