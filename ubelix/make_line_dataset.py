@@ -133,10 +133,22 @@ def card(out: str, repo: str, revision: str, lines: int, chars: int, summary: st
     return "\n".join(parts) + "\n"
 
 
-def build(repo: str, revision: str, max_pages: int, workdir: Path) -> tuple[list[dict], str]:
-    """Crop every transcribed line of ``repo`` and return the rows to publish."""
-    spec = DatasetSpec(hf_repo=repo, granularity="line", all_projects=True,
-                       max_pages=max_pages, revision=revision)
+def build(repo: str, revision: str, max_pages: int, workdir: Path,
+          projects: list[str] | None = None) -> tuple[list[dict], str]:
+    """Crop every transcribed line of ``repo`` and return the rows to publish.
+
+    ``projects`` names the project directories to read instead of all of them.
+    Needed where a dataset holds more than one shape of the same material:
+    `image-text_sg-missiven` carries `sg-missiven` as pages and
+    `sg-missiven-singleline` as line crops, and materializing the second as pages
+    would ask a PageXML parser to read rows that have no PageXML.
+    """
+    if projects:
+        spec = DatasetSpec(hf_repo=repo, granularity="line", train_projects=list(projects),
+                           max_pages=max_pages, revision=revision)
+    else:
+        spec = DatasetSpec(hf_repo=repo, granularity="line", all_projects=True,
+                           max_pages=max_pages, revision=revision)
     spec = expand_all_projects(spec)
     files = data_files_for(spec)
     train_files = files.get("train") or next(iter(files.values()))
@@ -177,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", required=True, help="the dataset repo to create, e.g. owner/name-lines")
     p.add_argument("--max-pages", type=int, required=True,
                    help="bound on pages read; DatasetSpec refuses all_projects without one")
+    p.add_argument("--projects", default=None,
+                   help="comma-separated project directories to read; default is all of them")
     p.add_argument("--dry-run", action="store_true", help="build and report, do not push")
     # The pages and crops land here before they are packed. /tmp on the login node
     # has ~18 GB and `materialize` wants 50 free, so the default is scratch.
@@ -193,13 +207,16 @@ def main(argv: list[str] | None = None) -> int:
                 or "/scratch/network/users/%s/line-datasets" % os.environ.get("USER", "unknown"))
     base.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="line-ds-", dir=str(base)) as tmp:
-        rows, summary = build(args.repo, args.revision, args.max_pages, Path(tmp))
+        chosen = [x.strip() for x in args.projects.split(",") if x.strip()] if args.projects else None
+        rows, summary = build(args.repo, args.revision, args.max_pages, Path(tmp), chosen)
         if not rows:
             print(f"no transcribed lines in {args.repo} — nothing to publish ({summary})",
                   file=sys.stderr)
             return 1
         chars = sum(len(r["text"]) for r in rows)
         print(f"\n== {args.repo} -> {args.out}")
+        if chosen:
+            print(f"   projects: {', '.join(chosen)}")
         print(f"   {len(rows)} line(s), {chars} characters, "
               f"{sum(len(r['image']['bytes']) for r in rows) / 1e6:.1f} MB of crops")
         print(f"   source: {summary}")
