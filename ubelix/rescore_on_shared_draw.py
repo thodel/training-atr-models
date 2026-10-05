@@ -49,10 +49,17 @@ def main(argv: list[str] | None = None) -> int:
     if not draw.is_file():
         print(f"no draw at {draw}", file=sys.stderr)
         return 2
-    adapter = Path(args.adapter) if args.adapter else find_adapter(
-        Path(settings.checkpoint_root) / args.job)
+    # The record carries an absolute `checkpoint_dir`; prefer it. Deriving the path
+    # from `settings.checkpoint_root` needs ATR_TRAIN_CHECKPOINT_ROOT to be exported
+    # too, and when it is not the default is `$HOME/atr-cache/checkpoints`, which
+    # holds nothing — job 17300890 died in five seconds reporting "no adapter" for a
+    # run whose adapter was on disk the whole time.
+    root = (Path(args.adapter) if args.adapter
+            else Path(job.checkpoint_dir) if job.checkpoint_dir
+            else Path(settings.checkpoint_root) / args.job)
+    adapter = root if args.adapter else find_adapter(root)
     if adapter is None:
-        print(f"no adapter for {args.job}", file=sys.stderr)
+        print(f"no adapter under {root} for {args.job}", file=sys.stderr)
         return 2
 
     report = store.paths(args.job).data / f"eval_report.{args.draw_from}.json"
