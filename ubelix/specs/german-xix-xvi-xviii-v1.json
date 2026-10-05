@@ -1,0 +1,125 @@
+{
+  "model_id": "qwen3.5-4b-german-xix-xvi-xviii-v1",
+  "engine": "vllm",
+  "base_model": "Qwen/Qwen3.5-4B",
+  "datasets": [
+    {
+      "hf_repo": "dh-unibe/image-text_zh-regierungsratsprotokolle",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "f6a06745bb134044d5f937b22000128cc4bc24fd"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_parlamentsdienste-protokolle",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "5702670446f335a54505be3d238a5998cf844a04"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "de8ad0f86cf878607eb42390ed637f4e1be70b59"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_kurrent-xix",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "20743e9f6982460b243e014091626da43e2b57f7"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_sg-missiven",
+      "granularity": "line",
+      "train_projects": [
+        "sg-missiven"
+      ],
+      "revision": "495fc94c5f616d9a9161917021c75e7d6f0bf258"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_rats-und-richtebuecher_xv-xvi",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "011e82080411a51bcb9e032e9329c919682e5f6c"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_koenigsfelden-charters-post-1500",
+      "granularity": "line",
+      "all_projects": true,
+      "max_pages": 6000,
+      "revision": "fac683bee395bad466c464bfffd0e6f5299d6c4d"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_koenigsfelden-charters-part-2",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "1d67552f4470c9d9b11ffb09b0b6a104eef185d1"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_koenigsfelden-charters-part-3",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "a679a48c94fe330284f37121356b85fefa63dc87"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_koenigsfelden-adhr-colmar",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "3cffcc9143da1b8248316a9605bda8680887da67"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_historisches-grundbuch-basel_xix-xx_train",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "897509cae41d53fd43d9f5cd0ad5a0e8079e5893"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_german-20th-century",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "47a16a5077a062942237f9817471f60a60993689"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_bullinger-autoren",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "85ea246a5021a5f244c392f97f2c8ac9a42cc717"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_aaeb-xiv-xvii",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "2a9b66116db32c728fd893c3c9af5c41a3fa856d"
+    },
+    {
+      "hf_repo": "dh-unibe/image-text_aaeb-xiv-xvii-part-2",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "ce2739fce41c0b8f8673127525839842411020b0"
+    },
+    {
+      "hf_repo": "dh-unibe/transkribus-exports-bullinger-handschrift",
+      "granularity": "line",
+      "all_projects": true,
+      "revision": "90322d62a611a4a637e6e8fcf9ddb2319e9785f3"
+    },
+    {
+      "hf_repo": "dh-unibe/data-towerbooks-textlines",
+      "granularity": "line",
+      "source": "line",
+      "all_projects": true,
+      "revision": "33917aeb228a1730849e92a1b52278b8ac058f9c"
+    }
+  ],
+  "params": {
+    "granularity": "line",
+    "epochs": 1,
+    "batch_size": 16,
+    "accumulate_grad_batches": 1,
+    "eval_samples": 200,
+    "load_in_4bit": false,
+    "max_seq_len": 1024,
+    "workers": 8,
+    "optim": "paged_adamw_8bit",
+    "save_steps": 2000
+  }
+}

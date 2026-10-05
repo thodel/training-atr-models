@@ -7,6 +7,8 @@
 #   REPO_ID=dh-unibe/image-text_x REV=<40-hex> OUT=dh-unibe/image-text_x-lines \
 #     sbatch ubelix/make_line_dataset.sbatch
 #
+# PROJECTS, comma-separated, reads only those project directories — needed where
+# one dataset holds the same material in two shapes.
 # MAX_PAGES bounds what is read; DatasetSpec refuses all_projects without one.
 # The default is above every one of these datasets, so it means "everything" and
 # the job reports what that turned out to be.
@@ -37,4 +39,4 @@ apptainer exec --bind /storage --bind /scratch --bind /rs_scratch \
   --env HF_TOKEN="${HF_TOKEN:-}" --env USER="$USER" \
   "$HOME/ubelix/vlm-train-tf5.sif" /opt/vlm-train/bin/python \
   "$REPO/ubelix/make_line_dataset.py" --repo "$REPO_ID" --revision "$REV" \
-  --out "$OUT" --max-pages "${MAX_PAGES:-200000}"
+  --out "$OUT" --max-pages "${MAX_PAGES:-200000}" ${PROJECTS:+--projects "$PROJECTS"}
