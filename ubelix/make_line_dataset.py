@@ -43,6 +43,75 @@ from atr_training.prepare import HFPageSource, materialize
 from atr_training.vlm_dataset import samples_for
 
 
+def source_body(repo: str, revision: str) -> str:
+    """The source card's prose, without its YAML frontmatter.
+
+    The frontmatter declares the *source's* features and split sizes, which are
+    wrong for a line-level copy — `push_to_hub` writes correct ones. The prose is
+    the part worth carrying over: it names the archives, the period and the
+    projects, and that provenance should not be lost because the rows were cut
+    differently.
+    """
+    from huggingface_hub import hf_hub_download
+    try:
+        path = hf_hub_download(repo, "README.md", repo_type="dataset", revision=revision)
+    except Exception as exc:  # a dataset without a card is not an error here
+        logger.warning("{}: no README to carry over ({})", repo, exc)
+        return ""
+    text = Path(path).read_text(encoding="utf-8")
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            text = text[end + 4:]
+    return text.strip()
+
+
+def card(out: str, repo: str, revision: str, lines: int, chars: int, summary: str) -> str:
+    """The new dataset's card: our adapted summary, then the source's own prose."""
+    body = source_body(repo, revision)
+    parts = [
+        "# %s" % out.split("/")[-1],
+        "",
+        "**Line-level variant** of [`%s`](https://hf.co/datasets/%s) at revision "
+        "`%s`. One row per transcribed line — the cropped line image and its "
+        "transcription — so the material can be read without a PageXML parser or a "
+        "line segmenter." % (repo, repo, revision),
+        "",
+        "| | |",
+        "|---|---|",
+        "| Lines | %d |" % lines,
+        "| Characters | %d |" % chars,
+        "| Source | [`%s`](https://hf.co/datasets/%s) |" % (repo, repo),
+        "| Source revision | `%s` |" % revision,
+        "",
+        "What the source reported while being read: `%s`" % summary,
+        "",
+        "The crops are cut by the same code that feeds this project's training runs "
+        "(`cropping.write_crops` in "
+        "[thodel/training-atr-models](https://github.com/thodel/training-atr-models)), "
+        "so a line here is byte-identical to the line a trainer sees.",
+        "",
+        "## Columns",
+        "",
+        "`image` — the line crop, JPEG bytes. `text` — its transcription. "
+        "`page` — the PageXML the line came from. `line_index` — position in the "
+        "cropping order. `project` — the source project, where the source records "
+        "one. `source_repo`, `source_revision` — the pinned origin of every row.",
+        "",
+        "Deliberately narrower than `dh-unibe/data-towerbooks-textlines`, which also "
+        "carries `line_id`, `region_id` and two reading orders: those live in the "
+        "PageXML and this project's sample does not keep them, so publishing them "
+        "would mean inventing them.",
+    ]
+    if body:
+        parts += ["", "---", "",
+                  "## The source dataset's own description",
+                  "",
+                  "Carried over unchanged from [`%s`](https://hf.co/datasets/%s):" % (repo, repo),
+                  "", body]
+    return "\n".join(parts) + "\n"
+
+
 def build(repo: str, revision: str, max_pages: int, workdir: Path) -> tuple[list[dict], str]:
     """Crop every transcribed line of ``repo`` and return the rows to publish."""
     spec = DatasetSpec(hf_repo=repo, granularity="line", all_projects=True,
@@ -132,7 +201,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"   dry run: wrote {local} ({local.stat().st_size / 1e6:.1f} MB), nothing pushed")
             return 0
         ds.push_to_hub(args.out, private=True)
+        from huggingface_hub import HfApi
+        text = card(args.out, args.repo, args.revision, len(rows), chars, summary)
+        HfApi().upload_file(
+            path_or_fileobj=text.encode("utf-8"), path_in_repo="README.md",
+            repo_id=args.out, repo_type="dataset",
+            commit_message="Describe the line-level variant, and keep the source's own description")
         print(f"   pushed as PRIVATE to https://hf.co/datasets/{args.out}")
+        print(f"   card: {len(text)} characters, source description "
+              f"{'carried over' if 'own description' in text else 'unavailable'}")
     return 0
 
 
