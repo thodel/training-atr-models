@@ -37,11 +37,15 @@ flowchart TB
   venvs -- "uploads: trained models, page datasets<br/>private · by hand or auto-publish" --> hf
 ```
 
-Beschrieben in fünf Dokumenten (englisch):
+Beschrieben in sechs Dokumenten (englisch):
 
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — asteraix im Detail: der
   Dienst und sein Launcher, die drei venvs, der Lebenslauf eines Jobs, was
   lokal und was auf dem Share liegt, die Karten, UBELIX.
+- [`docs/WHERE_A_RUN_RUNS.md`](docs/WHERE_A_RUN_RUNS.md) — asteraix oder
+  UBELIX: der Entscheidungsbaum für jede Engine, und warum die Grösse einen Lauf
+  nach UBELIX drängt statt davon weg (eine A40 hat 44.42 GiB, eine H100 80 GB).
+  asteraix ist die Ausnahme fürs Warten, nicht für die Grösse (#157).
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — Deploy, Abbrechen und neu
   Einreichen, `.env` ändern, Logs, Registrierung von Hand, fremde Job-Einträge
   schliessen.
