@@ -32,13 +32,19 @@ import argparse
 import os
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 
 from atr_training.contracts import DatasetSpec
 from atr_training.cropping import write_crops
-from atr_training.hf_source import data_files_for, expand_all_projects
+from atr_training.hf_source import (
+    data_files_for,
+    expand_all_projects,
+    list_projects,
+    whole_split_glob,
+)
 from atr_training.prepare import HFPageSource, materialize
 from atr_training.vlm_dataset import samples_for
 
@@ -133,53 +139,195 @@ def card(out: str, repo: str, revision: str, lines: int, chars: int, summary: st
     return "\n".join(parts) + "\n"
 
 
-def build(repo: str, revision: str, max_pages: int, workdir: Path,
-          projects: list[str] | None = None) -> tuple[list[dict], str]:
-    """Crop every transcribed line of ``repo`` and return the rows to publish.
+def train_globs(repo: str, revision: str, max_pages: int,
+                projects: list[str] | None) -> list[str]:
+    """The ``data_files`` globs to read, for either dataset layout.
 
-    ``projects`` names the project directories to read instead of all of them.
-    Needed where a dataset holds more than one shape of the same material:
-    `image-text_sg-missiven` carries `sg-missiven` as pages and
-    `sg-missiven-singleline` as line crops, and materializing the second as pages
-    would ask a PageXML parser to read rows that have no PageXML.
+    Most dh-unibe exports are laid out ``data/<split>/<project>/``, and
+    ``all_projects`` enumerates those directories. Two are not:
+    `image-text_koenigsfelden-charters-part-3` and
+    `transkribus-exports-bullinger-handschrift` hold flat shards
+    (``data/train-00000-of-00002.parquet``), so the enumeration finds nothing and
+    `expand_all_projects` raises — which is how both lost their jobs. They are
+    page-shaped all the same, so the fallback is the whole split, asked for
+    explicitly here rather than by weakening the guard in
+    :func:`hf_source.data_files_for`: an *empty* selection must still never mean
+    "everything", because on a repo that does have project directories that
+    silently reads 6.6 TB.
     """
     if projects:
         spec = DatasetSpec(hf_repo=repo, granularity="line", train_projects=list(projects),
                            max_pages=max_pages, revision=revision)
-    else:
-        spec = DatasetSpec(hf_repo=repo, granularity="line", all_projects=True,
-                           max_pages=max_pages, revision=revision)
-    spec = expand_all_projects(spec)
-    files = data_files_for(spec)
-    train_files = files.get("train") or next(iter(files.values()))
-    logger.info("{}: {} data file glob(s)", repo, len(train_files))
+        files = data_files_for(expand_all_projects(spec))
+        return files.get("train") or next(iter(files.values()))
 
-    rows = HFPageSource(cache=True).stream(repo, train_files, revision=revision)
+    if not list_projects(repo, "train", revision):
+        logger.info("{}: no project directories — reading the whole split", repo)
+        return [whole_split_glob("train")]
+
+    spec = DatasetSpec(hf_repo=repo, granularity="line", all_projects=True,
+                       max_pages=max_pages, revision=revision)
+    files = data_files_for(expand_all_projects(spec))
+    return files.get("train") or next(iter(files.values()))
+
+
+@dataclass
+class Built:
+    """Crops on disk, plus how to read them back one at a time.
+
+    ``records`` is a generator, not a list, because holding every crop's JPEG in
+    memory at once is what killed four of the sixteen jobs on 05.10.2026 — all
+    four died at the hand-over from cropping to `Dataset.from_list`, and
+    `rats-und-richtebuecher` got as far as crop 139'707 of 139'708 before the
+    OOM killer took it. Slurm's `MaxRSS` under-reported it (9–47 GB against a
+    48 G request) because it samples every 30 s and missed the spike. The crops
+    are already on disk; reading them back one at a time keeps peak memory flat
+    and lets `Dataset.from_generator` write Arrow incrementally.
+    """
+
+    manifest: list[tuple[str, str, str, str]]
+    workdir: Path
+    summary: str
+    repo: str
+    revision: str
+
+    @property
+    def lines(self) -> int:
+        return len(self.manifest)
+
+    @property
+    def chars(self) -> int:
+        return sum(len(text) for _, text, _, _ in self.manifest)
+
+    @property
+    def crop_bytes(self) -> int:
+        return sum((self.workdir / rel).stat().st_size for rel, _, _, _ in self.manifest)
+
+    def records(self):
+        for index, (rel, text, page, project) in enumerate(self.manifest):
+            path = self.workdir / rel
+            yield {
+                "image": {"bytes": path.read_bytes(), "path": Path(rel).name},
+                "text": text,
+                "page": page,
+                "line_index": index,
+                "project": project,
+                "source_repo": self.repo,
+                "source_revision": self.revision,
+            }
+
+
+def build(repo: str, revision: str, max_pages: int, workdir: Path,
+          projects: list[str] | None = None) -> Built:
+    """Crop every transcribed line of ``repo`` and return what to publish.
+
+    ``projects`` names the project directories to read instead of all of them.
+    Needed where a dataset holds more than one shape of the same material:
+    `image-text_sg-missiven` carries `sg-missiven` as pages and
+    `sg-missiven-singleline` as the same pages with the text in one line, and
+    neither carries line coordinates.
+    """
+    globs = train_globs(repo, revision, max_pages, projects)
+    logger.info("{}: {} data file glob(s)", repo, len(globs))
+
+    rows = HFPageSource(cache=True).stream(repo, globs, revision=revision)
     pages = materialize(rows, workdir, role="pool", max_pages=max_pages)
     logger.info("{}: {}", repo, pages.summary)
     if not pages.xml_paths:
-        return [], pages.summary
+        return Built([], workdir, pages.summary, repo, revision)
 
     samples = samples_for(pages.xml_paths, "line", root=workdir)
     logger.info("{}: {} line sample(s) before cropping", repo, len(samples))
-    crops_dir = workdir / "crops"
-    cropped = write_crops(samples, workdir, crops_dir)
+    if not samples:
+        # The pool counts a "transcribed line" from the PageXML's text alone
+        # (`pagexml.page_stats`), so a page-level export with no <Coords> reports
+        # thousands of lines and yields none to crop: `image-text_sg-missiven` said
+        # 25'814 lines over 3'334 pages and produced 0 samples, with "worst aspect
+        # 0:1" as the only hint. Say so here rather than let the caller read the
+        # pool's promise as a contradiction.
+        logger.warning("{}: the source reports lines but carries no line coordinates — "
+                       "a line dataset needs segmentation first", repo)
+        return Built([], workdir, pages.summary, repo, revision)
 
-    out: list[dict] = []
-    for index, sample in enumerate(cropped):
-        path = workdir / sample.image
-        if not path.is_file():
-            continue
-        out.append({
-            "image": {"bytes": path.read_bytes(), "path": Path(sample.image).name},
-            "text": sample.text,
-            "page": sample.page or "",
-            "line_index": index,
-            "project": sample.source or "",
-            "source_repo": repo,
-            "source_revision": revision,
-        })
-    return out, pages.summary
+    cropped = write_crops(samples, workdir, workdir / "crops")
+
+    manifest = [
+        (sample.image, sample.text, sample.page or "", sample.source or "")
+        for sample in cropped
+        if (workdir / sample.image).is_file()
+    ]
+    return Built(manifest, workdir, pages.summary, repo, revision)
+
+
+def claim_private(out: str, allow_public: bool) -> bool:
+    """Make sure ``out`` is a private repo *before* any image is uploaded.
+
+    On 05.10.2026 three of these datasets went up public although every commit of
+    this script has asked for `private=True`. One cause is documented:
+    ``push_to_hub``'s own docstring says the flag "is ignored if the repo already
+    exists", and a pilot run had created that repo earlier. Two had no explanation
+    — same code, same token, repo created by the push itself, public anyway.
+
+    So the flag is not a safeguard, and a check *after* the upload is not one
+    either: by then the archival images are on a public URL. This runs first, and
+    refuses rather than guesses. It does not change anybody's visibility: making a
+    dataset public is a decision taken by hand, and so is undoing it.
+    """
+    from huggingface_hub import HfApi
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    api = HfApi()
+    try:
+        info = api.dataset_info(out)
+    except RepositoryNotFoundError:
+        api.create_repo(out, repo_type="dataset", private=True, exist_ok=True)
+        try:
+            created = api.dataset_info(out)
+        except Exception as exc:  # noqa: BLE001 — cannot verify ⇒ do not upload
+            print(f"created {out} but could not read back its visibility: {exc}",
+                  file=sys.stderr)
+            return False
+        if created.private:
+            print(f"   target: created {out} as PRIVATE")
+            return True
+        print(f"created {out} and the hub reports it PUBLIC despite private=True — "
+              "refusing to upload. Set it private in the HF UI, then re-run.",
+              file=sys.stderr)
+        return False
+    except Exception as exc:  # noqa: BLE001 — "could not look" is not "not there"
+        print(f"could not check whether {out} is private ({type(exc).__name__}: {exc}); "
+              "refusing to upload rather than guess", file=sys.stderr)
+        return False
+
+    if info.private:
+        print(f"   target: {out} exists and is PRIVATE")
+        return True
+    if allow_public:
+        print(f"   target: {out} is PUBLIC — uploading anyway (--allow-public)")
+        return True
+    print(f"{out} already exists and is PUBLIC. push_to_hub(private=True) cannot "
+          "change that — the flag is ignored for an existing repo — so the crops "
+          "would become public. Set it private in the HF UI, or pass --allow-public "
+          "if that is what you want.", file=sys.stderr)
+    return False
+
+
+def confirm_private(out: str) -> bool:
+    """Read the visibility back after the push, and say so if it is public."""
+    from huggingface_hub import HfApi
+    try:
+        info = HfApi().dataset_info(out)
+    except Exception as exc:  # noqa: BLE001
+        print(f"pushed to {out} but could not confirm its visibility: {exc}",
+              file=sys.stderr)
+        return False
+    if info.private:
+        return True
+    print(f"pushed to {out} and the hub now reports it PUBLIC. The crops are "
+          "readable by anyone. Make it private in the HF UI "
+          f"(https://hf.co/datasets/{out}/settings) and check what else that run "
+          "published.", file=sys.stderr)
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -192,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--projects", default=None,
                    help="comma-separated project directories to read; default is all of them")
     p.add_argument("--dry-run", action="store_true", help="build and report, do not push")
+    p.add_argument("--allow-public", action="store_true",
+                   help="push even though the target repo is already public "
+                        "(refused by default; see claim_private)")
     # The pages and crops land here before they are packed. /tmp on the login node
     # has ~18 GB and `materialize` wants 50 free, so the default is scratch.
     p.add_argument("--workdir", default=None,
@@ -203,24 +354,26 @@ def main(argv: list[str] | None = None) -> int:
         print("--revision must be a full 40-character SHA", file=sys.stderr)
         return 2
 
+    if not args.dry_run and not claim_private(args.out, args.allow_public):
+        return 1
+
     base = Path(args.workdir or os.environ.get("ATR_TRAIN_SCRATCH")
                 or "/scratch/network/users/%s/line-datasets" % os.environ.get("USER", "unknown"))
     base.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="line-ds-", dir=str(base)) as tmp:
         chosen = [x.strip() for x in args.projects.split(",") if x.strip()] if args.projects else None
-        rows, summary = build(args.repo, args.revision, args.max_pages, Path(tmp), chosen)
-        if not rows:
-            print(f"no transcribed lines in {args.repo} — nothing to publish ({summary})",
-                  file=sys.stderr)
+        built = build(args.repo, args.revision, args.max_pages, Path(tmp), chosen)
+        if not built.lines:
+            print(f"no transcribed lines in {args.repo} — nothing to publish "
+                  f"({built.summary})", file=sys.stderr)
             return 1
-        chars = sum(len(r["text"]) for r in rows)
         print(f"\n== {args.repo} -> {args.out}")
         if chosen:
             print(f"   projects: {', '.join(chosen)}")
-        print(f"   {len(rows)} line(s), {chars} characters, "
-              f"{sum(len(r['image']['bytes']) for r in rows) / 1e6:.1f} MB of crops")
-        print(f"   source: {summary}")
-        print(f"   example: {rows[0]['text'][:70]!r}")
+        print(f"   {built.lines} line(s), {built.chars} characters, "
+              f"{built.crop_bytes / 1e6:.1f} MB of crops")
+        print(f"   source: {built.summary}")
+        print(f"   example: {built.manifest[0][1][:70]!r}")
 
         from datasets import Dataset, Features, Image, Value
         features = Features({
@@ -232,7 +385,10 @@ def main(argv: list[str] | None = None) -> int:
             "source_repo": Value("string"),
             "source_revision": Value("string"),
         })
-        ds = Dataset.from_list(rows, features=features)
+        # from_generator, not from_list: see Built.records. The cache goes next to
+        # the crops, because $HOME on UBELIX is not sized for 140'000 line images.
+        ds = Dataset.from_generator(
+            built.records, features=features, cache_dir=str(Path(tmp) / "arrow"))
         if args.dry_run:
             local = Path.cwd() / (args.out.split("/")[-1] + ".parquet")
             ds.to_parquet(str(local))
@@ -240,14 +396,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         ds.push_to_hub(args.out, private=True)
         from huggingface_hub import HfApi
-        text = card(args.out, args.repo, args.revision, len(rows), chars, summary)
+        text = card(args.out, args.repo, args.revision, built.lines, built.chars, built.summary)
         HfApi().upload_file(
             path_or_fileobj=text.encode("utf-8"), path_in_repo="README.md",
             repo_id=args.out, repo_type="dataset",
             commit_message="Describe the line-level variant, and keep the source's own description")
-        print(f"   pushed as PRIVATE to https://hf.co/datasets/{args.out}")
         print(f"   card: {len(text)} characters, source description "
               f"{'carried over' if 'own description' in text else 'unavailable'}")
+        if not confirm_private(args.out):
+            return 1
+        print(f"   pushed as PRIVATE to https://hf.co/datasets/{args.out}")
     return 0
 
 
