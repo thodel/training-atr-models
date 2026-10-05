@@ -66,10 +66,31 @@ def source_body(repo: str, revision: str) -> str:
     return text.strip()
 
 
+def existing_frontmatter(out: str) -> str:
+    """The YAML block `push_to_hub` wrote for the new dataset, verbatim.
+
+    Replacing the whole README loses it, and with it the declared features and
+    split sizes the dataset viewer needs — the hub answers that with "empty or
+    missing yaml metadata in repo card" and a dataset nobody can preview. Only
+    the prose below it is ours to write.
+    """
+    from huggingface_hub import hf_hub_download
+    try:
+        text = Path(hf_hub_download(out, "README.md", repo_type="dataset")).read_text("utf-8")
+    except Exception as exc:
+        logger.warning("{}: no card to take frontmatter from ({})", out, exc)
+        return ""
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", 3)
+    return text[:end + 4] if end != -1 else ""
+
+
 def card(out: str, repo: str, revision: str, lines: int, chars: int, summary: str) -> str:
-    """The new dataset's card: our adapted summary, then the source's own prose."""
+    """The new dataset's card: its own frontmatter, our summary, the source's prose."""
     body = source_body(repo, revision)
-    parts = [
+    head = existing_frontmatter(out)
+    parts = ([head, ""] if head else []) + [
         "# %s" % out.split("/")[-1],
         "",
         "**Line-level variant** of [`%s`](https://hf.co/datasets/%s) at revision "
