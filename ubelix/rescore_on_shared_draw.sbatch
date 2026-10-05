@@ -1,10 +1,15 @@
 #!/bin/bash
 # Re-score one finished run's adapter on another run's evaluation draw.
 #
-# Generation only — no training, no record change. Minutes, not hours, so it asks
-# for an hour and the gratis QoS rather than a preemptable H100.
+# Generation only — no training, no record change, so the gratis QoS rather than a
+# preemptable H100.
+#
+# An hour is enough for a line arm (200 crops, a few minutes) and **not** for a
+# page arm: 164 pages of roughly 1 200 reference characters each ran past 40
+# minutes with the generation loop still going. Pass TIME for those.
 #
 #   JOB=<id> DRAW_FROM=<id> sbatch ubelix/rescore_on_shared_draw.sbatch
+#   JOB=<id> DRAW_FROM=<id> sbatch --time=04:00:00 ubelix/rescore_on_shared_draw.sbatch
 #
 # Run from the checkout: ~/ubelix holds the container images, the logs and the
 # specs, and a helper copied there goes stale (tests/test_ubelix_layout.py).
@@ -17,7 +22,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=60G
-#SBATCH --time=01:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/storage/homefs/%u/ubelix/logs/%x-%j.out
 set -euo pipefail
 REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
