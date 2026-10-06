@@ -44,6 +44,24 @@ SPEC=${SPEC:?set SPEC=/path/to/spec.json}
 
 export HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub
 
+# The *arrow* cache goes to scratch, the downloads stay on the share.
+#
+# `HF_HOME` alone puts both under it, and on 05.10.2026 that cost a job: the
+# research fileset stood at 11.83 T of a 12 T hard limit, so materializing
+# `image-text_zh-regierungsratsprotokolle` (153'035 pages) died in
+# `datasets/arrow_writer.py` with `OSError: [Errno 122] Disk quota exceeded`,
+# which `datasets` re-raised as a bare `DatasetGenerationError` — a storage
+# problem wearing a data problem's clothes (job 17328122).
+#
+# The split is deliberate. `$HF_HOME/hub` is 780 G of downloaded parquet that
+# the whole `wbkolleg_dh_1` group benefits from and that is expensive to fetch
+# again; it stays. `$HF_HOME/datasets` is 371 G of arrow that this stage
+# rewrites anyway, and it is the part that grows without bound; it moves to
+# scratch, which has 13.7 T free against a 15 T quota. Scratch is purge-eligible,
+# which for a cache costs time and nothing else.
+export HF_DATASETS_CACHE=$S/hf_datasets
+mkdir -p "$HF_DATASETS_CACHE"
+
 # HF token, if one is present. Read from a PRIVATE file in $HOME, never from
 # $HF_HOME/token: HF_HOME points at the group-readable research share, so the
 # default location would expose the token to everyone in wbkolleg_dh_1.
@@ -77,7 +95,8 @@ run() {
   apptainer exec \
     --bind /storage/research:/storage/research \
     --bind /scratch:/scratch --bind /rs_scratch:/rs_scratch \
-    --env HF_HOME="$HF_HOME" --env HF_TOKEN="${HF_TOKEN:-}" \
+    --env HF_HOME="$HF_HOME" --env HF_DATASETS_CACHE="$HF_DATASETS_CACHE" \
+    --env HF_TOKEN="${HF_TOKEN:-}" \
     --env ATR_TRAIN_JOBS_ROOT="$ATR_TRAIN_JOBS_ROOT" \
     --env ATR_TRAIN_CHECKPOINT_ROOT="$ATR_TRAIN_CHECKPOINT_ROOT" \
     --env ATR_TRAIN_TRAINED_ROOT="$ATR_TRAIN_TRAINED_ROOT" \

@@ -87,3 +87,48 @@ def test_the_documented_submission_goes_through_submit_sh(name):
     head = (UBELIX / name).read_text(encoding="utf-8").split("\nset ", 1)[0]
     assert "ubelix/submit.sh ubelix/" + name in head
     assert not re.search(r"^#\s+sbatch\b", head, re.M)
+
+
+# ── where the arrow cache lands (job 17328122) ───────────────────────────────
+#: The stages that read a whole corpus through `datasets`, and so materialize
+#: arrow. `HF_HOME` alone puts that under the research fileset, which on
+#: 05.10.2026 stood at 11.83 T of a 12 T hard limit: job 17328122 died in
+#: `arrow_writer.py` with `OSError: [Errno 122] Disk quota exceeded`, and
+#: `datasets` re-raised it as a bare `DatasetGenerationError`.
+MATERIALIZING = ["prepare.sbatch", "train.sbatch", "make_line_dataset.sbatch"]
+RESEARCH_FILESET = "/storage/research/"
+
+
+@pytest.mark.parametrize("name", MATERIALIZING)
+def test_the_arrow_cache_is_not_on_the_research_fileset(name):
+    """Downloads may live on the share; arrow may not.
+
+    `$HF_HOME/hub` is 780 G of parquet the whole group benefits from and stays.
+    `$HF_HOME/datasets` is the part that grows without bound, and it is the part
+    that stopped a job — so every stage that materializes must name a cache of
+    its own, off the fileset that is nearly full.
+    """
+    text = (UBELIX / name).read_text(encoding="utf-8")
+    assert "HF_DATASETS_CACHE" in text, (
+        f"{name} sets HF_HOME but not HF_DATASETS_CACHE, so arrow lands under the "
+        "research fileset — the Errno 122 of job 17328122"
+    )
+    line = next(ln for ln in text.splitlines()
+                if ln.strip().startswith("export HF_DATASETS_CACHE="))
+    value = line.split("=", 1)[1]
+    assert RESEARCH_FILESET not in value, (
+        f"{name} points HF_DATASETS_CACHE back at the research fileset: {value!r}"
+    )
+    assert "/scratch/" in value or "$S" in value, (
+        f"{name} should put arrow on scratch, which has room; got {value!r}"
+    )
+
+
+@pytest.mark.parametrize("name", MATERIALIZING)
+def test_the_cache_reaches_the_container(name):
+    """Exported outside and not passed in is the same as not set at all."""
+    text = (UBELIX / name).read_text(encoding="utf-8")
+    assert "--env HF_DATASETS_CACHE=" in text, (
+        f"{name} exports HF_DATASETS_CACHE but never hands it to apptainer, so the "
+        "container falls back to $HF_HOME/datasets"
+    )

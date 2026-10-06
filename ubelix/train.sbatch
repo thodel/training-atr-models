@@ -44,6 +44,14 @@ JOB_ID=${JOB_ID:-$(cat "$S/runs/last-prepared.jobid" 2>/dev/null)}
 
 export HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub
 
+# Same split as prepare.sbatch, for the same reason: the research fileset is at
+# 11.83 T of a 12 T hard limit, and an arrow cache that grows into it stops jobs
+# with `Errno 122` disguised as a `DatasetGenerationError`. Downloads stay on the
+# share, arrow goes to scratch. Both stages must agree, or the GPU stage
+# re-materializes what prepare already wrote.
+export HF_DATASETS_CACHE=$S/hf_datasets
+mkdir -p "$HF_DATASETS_CACHE"
+
 # HF token, if one is present. Read from a PRIVATE file in $HOME, never from
 # $HF_HOME/token: HF_HOME points at the group-readable research share, so the
 # default location would expose the token to everyone in wbkolleg_dh_1.
@@ -78,7 +86,8 @@ run() {
   apptainer exec --nv \
     --bind /storage/research:/storage/research \
     --bind /scratch:/scratch --bind /rs_scratch:/rs_scratch \
-    --env HF_HOME="$HF_HOME" --env HF_TOKEN="${HF_TOKEN:-}" \
+    --env HF_HOME="$HF_HOME" --env HF_DATASETS_CACHE="$HF_DATASETS_CACHE" \
+    --env HF_TOKEN="${HF_TOKEN:-}" \
     --env ATR_TRAIN_JOBS_ROOT="$ATR_TRAIN_JOBS_ROOT" \
     --env ATR_TRAIN_CHECKPOINT_ROOT="$ATR_TRAIN_CHECKPOINT_ROOT" \
     --env ATR_TRAIN_TRAINED_ROOT="$ATR_TRAIN_TRAINED_ROOT" \
