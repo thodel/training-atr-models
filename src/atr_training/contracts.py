@@ -941,6 +941,32 @@ class Progress(BaseModel):
     #: The ``max_seq_len`` the two numbers above were measured against, so the
     #: record stays readable after the default moves.
     sequence_budget: int | None = None
+    #: Peak GPU memory of the training loop, per card, in MiB — ``{"gpu0":
+    #: {"reserved_mib": …, "allocated_mib": …}}``. Read from the allocator's
+    #: high-water marks after the last step, with the marks reset just before the
+    #: first so model load does not count (#163).
+    #:
+    #: It exists because the first branch of ``docs/WHERE_A_RUN_RUNS.md`` — does
+    #: this run fit on one A40's 44.42 GiB — was a number nobody had tabulated:
+    #: one hand-run measurement for one 8B model on page samples, and none at all
+    #: for kraken or trocr. Every run now contributes a row.
+    #:
+    #: ``reserved`` is the deciding figure on the torch side — the caching
+    #: allocator keeps freed blocks, so the reserve is what the process holds;
+    #: ``allocated`` sits beside it because the difference is fragmentation.
+    #:
+    #: A **floor**, not occupancy: the CUDA context and every non-torch allocation
+    #: are outside these marks, and ``expandable_segments:True`` (set for every
+    #: training child, see :meth:`Settings.env_for_child`) accounts the reserve
+    #: differently from the driver. So it ranks batch geometries against each
+    #: other and does not by itself settle whether a run fits the 45,486 MiB an
+    #: A40 makes usable — for that the comparable number is the nvidia-smi sample
+    #: taken by ``scripts/measure_vlm_arms.py``.
+    #:
+    #: Empty on a CPU run and on every engine that trains in a grandchild
+    #: process: kraken drives ``ketos`` as an external CLI and imports no torch,
+    #: so its peak can only be sampled from outside.
+    peak_gpu_mib: dict[str, dict[str, int]] = Field(default_factory=dict)
     #: The cached artefact (#109) this run's compiled corpus lives in, and
     #: whether this job built it or reused one. Set on both paths, because after
     #: compile the arrows are in the cache rather than in the job directory anyone

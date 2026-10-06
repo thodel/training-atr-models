@@ -410,7 +410,20 @@ class Pipeline(BasePipeline):
         job.progress.sequence_budget = written.get("sequence_budget")
         job.progress.over_budget_samples = written.get("over_budget_samples")
         job.progress.max_sequence_tokens = written.get("max_sequence_tokens")
+        peak = written.get("peak_gpu_mib")
+        if isinstance(peak, dict):
+            job.progress.peak_gpu_mib = peak
         self.store.save(job)
+
+        # The first branch of docs/WHERE_A_RUN_RUNS.md needs this per (engine,
+        # size, granularity), and it had one row from one hand-run script (#163).
+        # Logged as well as recorded, because the question "would this have fitted
+        # on an A40" is usually asked of a log before anyone opens the record.
+        for card, marks in (job.progress.peak_gpu_mib or {}).items():
+            logger.info("{}: peak {} MiB reserved ({} MiB allocated) over the "
+                        "training loop — a FLOOR, the CUDA context is outside it; "
+                        "an A40 makes 45,486 MiB usable", card,
+                        marks.get("reserved_mib"), marks.get("allocated_mib"))
 
         over, longest = (job.progress.over_budget_samples,
                          job.progress.max_sequence_tokens)
