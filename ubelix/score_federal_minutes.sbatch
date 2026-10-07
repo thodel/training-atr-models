@@ -28,6 +28,17 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 SIF=${SIF:-$HOME/ubelix/vlm-train.sif}
 : "${JOB_ID:?}" "${TAG:?}"
+# PROMPT=training_render asks the model to continue from the training render
+# instead of from add_generation_prompt=True. Only one family needs it so far:
+# gemma-4-12B-it's generation prompt opens an empty thinking channel that its
+# training render never contains, and that arm scored 22.94 % with 17,027
+# insertions where its E4B sibling, which has no such block, scored 10.24 %.
+# For Qwen the two renders agree, so the flag is a no-op there.
+case "${PROMPT:-generation}" in
+  training_render) PROMPT_FLAG=--prompt-from-training-render ;;
+  generation)      PROMPT_FLAG= ;;
+  *) echo "PROMPT must be generation or training_render, got '${PROMPT}'" >&2; exit 2 ;;
+esac
 case "${QUANT:-bf16}" in
   4bit) QUANT_FLAG=--load-in-4bit ;;
   bf16) QUANT_FLAG=--no-load-in-4bit ;;
@@ -36,7 +47,7 @@ esac
 E=$S/runs/jobs/evalset-federal-minutes
 BASE=$(python3 -c "import json;print(json.load(open('$S/runs/jobs/$JOB_ID/job.json'))['request']['base_model'])")
 if [ -s "$HOME/.hf_token" ]; then HF_TOKEN=$(tr -d '[:space:]' < "$HOME/.hf_token"); export HF_TOKEN; fi
-echo "== $TAG: $JOB_ID ($BASE) ${QUANT:-bf16} on $(hostname) $(date -Is)"
+echo "== $TAG: $JOB_ID ($BASE) ${QUANT:-bf16} prompt=${PROMPT:-generation} on $(hostname) $(date -Is)"
 apptainer exec --nv \
   --bind /storage/research:/storage/research --bind /scratch:/scratch --bind /rs_scratch:/rs_scratch \
   --env HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub \
@@ -47,5 +58,6 @@ apptainer exec --nv \
     --base-model "$BASE" --data-root "$E" \
     --prompt "Transcribe the handwritten text in this image exactly as written." \
     --granularity line --max-pixels 262144 --max-seq-len 1024 --seed 42 \
-    --device cuda:0 --max-samples 2751 --max-new-tokens 256 "$QUANT_FLAG"
+    --device cuda:0 --max-samples 2751 --max-new-tokens 256 "$QUANT_FLAG" \
+    ${PROMPT_FLAG:+"$PROMPT_FLAG"}
 echo "== done $(date -Is)"

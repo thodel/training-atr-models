@@ -60,6 +60,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "scoring (serving-atr-inference/docs/CHURRO_PLAN.md §1.1)")
     p.add_argument("--granularity", default="line",
                    choices=["line", "block", "page", "mixed"])
+    p.add_argument("--prompt-from-training-render", action="store_true",
+                   help="ask the model to continue from the training render rather "
+                        "than from add_generation_prompt=True; see generation_prompt")
     p.add_argument("--kind-pixels", default=None,
                    help="per-kind visual budget, e.g. line=262144,page=2097152; each "
                         "sample is fitted to its own kind's budget, as in training")
@@ -297,8 +300,52 @@ def _pixels_in_model_dtype(inputs: dict, model) -> dict:
     return {**inputs, "pixel_values": pixels.to(dtype)}
 
 
+def generation_prompt(processor, prompt: str, system: str | None,
+                     from_training_render: bool) -> str:
+    """The text the model is asked to continue from.
+
+    ``add_generation_prompt=True`` is the obvious source and is wrong for at least
+    one family. Measured on 2026-10-07, transformers 5.17.0:
+
+    ===========================  =====================================================
+    base                         what the generation prompt appends
+    ===========================  =====================================================
+    ``gemma-4-12B-it``           ``<|turn>model\n<|channel>thought\n<channel|>``
+    ``gemma-4-E4B-it``           ``<|turn>model\n``
+    ===========================  =====================================================
+
+    The training render ends ``<|turn>model\n<answer><turn|>`` for both. So the 12B
+    is asked at inference to continue *inside a thinking channel it never saw while
+    training*, and a model told to think writes text that is not a transcription:
+    on the Federal Council benchmark that arm scored 22.94 % with **17 027
+    insertions** against 4 783 deletions, where its E4B sibling — same corpus, same
+    recipe, no thought block — scored 10.24 % with 2 039 insertions.
+
+    With ``from_training_render`` the prompt is instead the training render cut at
+    the point where the answer begins, which is by construction what the model was
+    trained to continue. For Qwen that is byte-identical to the generation prompt;
+    the flag therefore changes nothing for any number measured so far, which is why
+    it is opt-in rather than the default.
+    """
+    if not from_training_render:
+        return processor.apply_chat_template(
+            chat_example(prompt, system=system), tokenize=False,
+            add_generation_prompt=True, **CHAT_TEMPLATE_KWARGS)
+    rendered = processor.apply_chat_template(
+        chat_example(prompt, _ANSWER_SENTINEL, system=system), tokenize=False,
+        add_generation_prompt=False, **CHAT_TEMPLATE_KWARGS)
+    cut = rendered.find(_ANSWER_SENTINEL)
+    if cut < 0:
+        raise SystemExit(
+            "--prompt-from-training-render was asked for, but this chat template "
+            "does not render the assistant's text, so the point the model was "
+            "trained to continue from cannot be found")
+    return rendered[:cut]
+
+
 def transcribe(model, processor, image_path: Path, prompt: str, max_new_tokens: int,
-               system: str | None = None, max_pixels: int | None = None) -> str:
+               system: str | None = None, max_pixels: int | None = None,
+               prompt_from_training_render: bool = False) -> str:
     import torch
     from PIL import Image
 
@@ -309,9 +356,8 @@ def transcribe(model, processor, image_path: Path, prompt: str, max_new_tokens: 
         # measure it at a budget it never trained at (#59).
         if max_pixels:
             image = fit_pixels(image, max_pixels)
-        text = processor.apply_chat_template(
-            chat_example(prompt, system=system), tokenize=False,
-            add_generation_prompt=True, **CHAT_TEMPLATE_KWARGS)
+        text = generation_prompt(processor, prompt, system,
+                                 prompt_from_training_render)
         inputs = processor(text=[text], images=[image], return_tensors="pt")
     inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
     inputs = _pixels_in_model_dtype(inputs, model)
@@ -380,7 +426,8 @@ def main(argv: list[str] | None = None) -> int:
     for index, sample in enumerate(samples, 1):
         raw = transcribe(model, processor, root / sample.image,
                          args.prompt, args.max_new_tokens, system=system,
-                         max_pixels=kind_pixels.get(sample.source_type or "line"))
+                         max_pixels=kind_pixels.get(sample.source_type or "line"),
+                         prompt_from_training_render=args.prompt_from_training_render)
         if _looks_truncated(raw, processor, args.max_new_tokens):
             at_cap += 1
         prediction = raw
@@ -451,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         # read `load_in_4bit=None` because the field did not exist, while the
         # arms being added to that set trained — and are scored — in 4-bit.
         "load_in_4bit": bool(args.load_in_4bit),
+        "prompt_from_training_render": bool(args.prompt_from_training_render),
         # Named so a reader cannot mistake a capped run for a full one.
         "eval_cap": args.max_samples,
         # How the scored pages were chosen. A CER is not comparable with one

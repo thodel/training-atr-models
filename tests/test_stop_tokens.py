@@ -73,9 +73,11 @@ class FakeProcessor:
                             add_generation_prompt=False, **kwargs) -> str:
         answer = next((m["content"][0]["text"] for m in messages
                        if m["role"] == "assistant"), None)
-        if answer is None:
-            return "<u>T."
-        return f"<u>T.<a>{answer}{self._tail}"
+        if answer is not None:
+            return f"<u>T.<a>{answer}{self._tail}"
+        # A template that honours the flag, because the function under test is
+        # about exactly that flag.
+        return "<u>T." + ("<a>" if add_generation_prompt else "")
 
 
 def qwen_like():
@@ -152,3 +154,47 @@ def test_a_broken_template_is_survived_not_raised():
     proc = Broken(tok, "")
     assert turn_end_ids(proc, tok) == []
     assert stop_token_ids(tok, proc) == [1645, 1643]
+
+
+# ── where the model is asked to continue from (#77, the 12B insertion case) ──
+def test_the_generation_prompt_default_is_unchanged():
+    """Opt-in: every number measured so far used add_generation_prompt=True."""
+    from vlm_train_svc.evaluate_qlora import generation_prompt
+
+    tok, proc = qwen_like()
+    assert generation_prompt(proc, "Transcribe.", None, False) == "<u>T.<a>"
+    assert generation_prompt(proc, "Transcribe.", None, True) == "<u>T.<a>", \
+        "for a family whose two renders agree, the flag must be a no-op"
+
+
+def test_the_training_render_drops_gemmas_thought_block():
+    """The measured cause of 17,027 insertions: the 12B's generation prompt opens
+    a thinking channel that its training render never contains."""
+    from vlm_train_svc.evaluate_qlora import generation_prompt
+
+    class Thinking(FakeProcessor):
+        def apply_chat_template(self, messages, tokenize=False,
+                                add_generation_prompt=False, **kwargs):
+            answer = next((m["content"][0]["text"] for m in messages
+                           if m["role"] == "assistant"), None)
+            if answer is not None:
+                return f"<u>T.<a>{answer}{self._tail}"
+            return "<u>T." + ("<a><thought>" if add_generation_prompt else "")
+
+    tok, _ = gemma_like()
+    proc = Thinking(tok, "<turn|>\n")
+    assert generation_prompt(proc, "Transcribe.", None, False).endswith("<thought>")
+    assert generation_prompt(proc, "Transcribe.", None, True) == "<u>T.<a>"
+
+
+def test_a_template_that_hides_the_answer_is_refused():
+    from vlm_train_svc.evaluate_qlora import generation_prompt
+
+    class Swallows(FakeProcessor):
+        def apply_chat_template(self, messages, tokenize=False,
+                                add_generation_prompt=False, **kwargs):
+            return "<u>T."
+
+    tok, _ = qwen_like()
+    with pytest.raises(SystemExit, match="does not render the assistant"):
+        generation_prompt(Swallows(tok, ""), "Transcribe.", None, True)
