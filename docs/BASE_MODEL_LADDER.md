@@ -26,18 +26,50 @@ measurement then killed — and §4 of this document was itself wrong for a day.
 
 ## 1. What is already measured
 
-One seed, one page-level split, one epoch, line granularity, `load_in_4bit:
-false`.
+One seed, one page-level split, one epoch, line granularity. `load_in_4bit:
+false` for every Qwen arm; the Gemma arm is the exception and the table says so.
 
 **19th century** (964 472 lines), CER on the held-out [Federal Council
 benchmark](https://doi.org/10.5281/zenodo.4746342), 2 751 lines:
 
-| Base | Params | Benchmark CER |
-|---|---:|---:|
-| `Qwen/Qwen3.5-0.8B` | 0.87 B | 11.15 % |
-| `Qwen/Qwen3.5-2B` | 2.27 B | 8.95 % |
-| `Qwen/Qwen3.5-4B` | 4.66 B | **6.80 %** |
-| `Qwen/Qwen3-VL-4B-Instruct` | 4.44 B | 7.65 % |
+| Base | Params | Benchmark CER | WER | length ratio | at cap | 4-bit |
+|---|---:|---:|---:|---:|---:|---|
+| `Qwen/Qwen3.5-4B` | 4.66 B | **6.80 %** | 23.42 % | 1.000 | 0 | no |
+| `Qwen/Qwen3-VL-4B-Instruct` | 4.44 B | 7.65 % | 24.58 % | 1.002 | 1 | no |
+| `Qwen/Qwen3.5-2B` | 2.27 B | 8.95 % | 26.24 % | 1.001 | 2 | no |
+| `google/gemma-4-E4B-it` | 8.00 B / **≈4.5 B eff.** | **10.24 %** | 28.74 % | 1.004 | 3 | **yes** |
+| `Qwen/Qwen3.5-0.8B` | 0.87 B | 11.15 % | 30.65 % | 0.998 | 0 | no |
+
+`google/gemma-4-12B-it` is being scored on the same set as this is written; its
+line is missing, not omitted.
+
+**Gemma 4 loses on this corpus, and not narrowly.** At ~4.5 B of transformer
+behind its per-layer embeddings — the same effective size as the two 4B Qwens
+(§4a) — E4B lands **below Qwen3.5-2B** and barely above the 0.87B. Against the
+best Qwen it is 3.44 points worse, which is five times the 0.6-point selection
+noise measured in §4a. The failure is not a shape failure: length ratio 1.004 and
+three of 2 751 lines at the generation cap say it writes the right quantity of
+text and stops where it should. It reads less well.
+
+**One confound, and it is ours.** Every Qwen number here was produced in bf16;
+the Gemma arm trained and was scored in **4-bit**, because that is what its
+fanout override set. What 4-bit costs in accuracy is unmeasured on this corpus
+(#138 is that question; #137 measured only that it is *slower* on an A40). So
+3.44 points is an upper bound on Gemma's deficit, not a clean number — and the
+report now records `load_in_4bit` so that the next reader sees this without
+having to dig for it.
+
+Two further things this measurement settles, both about the method rather than
+the model:
+
+- **It is the first Gemma number anyone outside could reproduce.** Everything
+  before it was scored on a draw of our own; 10.24 % is on 2 751 published lines
+  that no run of ours has ever trained on.
+- **It contradicts the in-domain ordering.** On the medieval corpus' own split,
+  `gemma-4-12B` beat `qwen3vl-medieval-german-v3` (12.16 % against 13.65 %, #77).
+  On a neutral set in another century, the E4B arm is behind every Qwen above
+  0.87 B. Those are not in conflict — different corpus, different arm, different
+  draw — but they are a warning against reading either as "the family question".
 
 **Medieval** (four corpora, 1300–1600, 306 582 lines): `qwen3vl-medieval-german-v3`
 reads held-out pages at **11.1 %**. The smaller Qwen3.5 arms of that generation

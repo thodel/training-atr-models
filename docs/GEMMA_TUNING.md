@@ -34,6 +34,32 @@ Two of those are self-inflicted and are the reason this plan exists: Gemma was
 given **half the visual tokens it ships with**, and it was **prompted at
 evaluation with a sequence absent from its training**. Neither is a Gemma defect.
 
+## 1a. And on a set nobody has trained on
+
+Added 07.10.2026. `ladder-xix-gemma4-e4b` on the published [Federal Council
+benchmark](https://doi.org/10.5281/zenodo.4746342), all 2 751 lines, beside the
+Qwen arms of the same corpus:
+
+| Base | Params | CER | WER | length ratio | at cap |
+|---|---:|---:|---:|---:|---:|
+| `Qwen/Qwen3.5-4B` | 4.66 B | **6.80 %** | 23.42 % | 1.000 | 0 |
+| `Qwen/Qwen3-VL-4B-Instruct` | 4.44 B | 7.65 % | 24.58 % | 1.002 | 1 |
+| `Qwen/Qwen3.5-2B` | 2.27 B | 8.95 % | 26.24 % | 1.001 | 2 |
+| `google/gemma-4-E4B-it` | ≈4.5 B eff. | 10.24 % | 28.74 % | 1.004 | 3 |
+| `Qwen/Qwen3.5-0.8B` | 0.87 B | 11.15 % | 30.65 % | 0.998 | 0 |
+
+This is the number the plan was missing: everything in §1 was measured on a draw
+of our own. **It makes the case for tuning stronger, not weaker.** The deficit on
+a neutral set is 3.44 points against the best Qwen — larger than the 3.2 points
+measured in-domain on the medieval corpus — and it was produced with both
+handicaps §1 names still in place: the 140-token budget and the thought block the
+training never saw. 4-bit against the Qwens' bf16 is a third difference, and it
+runs the same way.
+
+So the experiments in §3 are not a search for a small improvement. They are the
+difference between "Gemma reads worse than a 2B Qwen" and knowing what Gemma
+reads like at all.
+
 ## 2. What the external guidance says
 
 Collected 2026-09-26. Treated as claims, not settings.
