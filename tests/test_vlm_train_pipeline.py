@@ -118,7 +118,7 @@ class FakeRunner:
     def _kind(self, cmd: list[str]) -> str:
         return "train" if "train_qlora" in cmd[cmd.index("-m") + 1] else "test"
 
-    def run(self, cmd, log_path: Path, env=None):
+    def run(self, cmd, log_path: Path, env=None, on_start=None):
         self.commands.append(list(cmd))
         self.env = env
         kind = self._kind(cmd)

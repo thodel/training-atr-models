@@ -45,6 +45,7 @@ import os
 import pwd
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, field
 
 #: Give up rather than hang a request on a wedged driver.
@@ -285,3 +286,125 @@ def card_rows(cards: list, *, services_expected: bool) -> list[dict]:
             p["used_mib"] for p in procs if p["orphaned"])
         rows.append(row)
     return rows
+
+
+# ── peak over time, for an engine that holds no torch handle (#163) ─────────
+@dataclass
+class Peak:
+    """The high-water mark of one subprocess tree, and how trustworthy it is.
+
+    Two numbers per card, because they answer different questions and only one
+    of them is this job's:
+
+    * ``own_mib`` sums the compute apps whose ancestor chain contains the pid we
+      spawned. That is this run's footprint, and on a shared card it is the only
+      honest figure.
+    * ``card_mib`` is what the card reported in use at the same instant,
+      neighbours included. It is the number an OOM measures itself against, and
+      the one comparable to the 45,486 MiB an A40 makes usable.
+
+    ``attributed`` is false when no compute app was ever traced back to our pid
+    while the card was nonetheless busy — which happens if the engine runs behind
+    a PID namespace, so ``own_mib`` would read 0 and mean "could not look", not
+    "used nothing". #165's rule, in the one place it would otherwise bite
+    silently.
+    """
+
+    own_mib: dict[int, int] = field(default_factory=dict)
+    card_mib: dict[int, int] = field(default_factory=dict)
+    readings: int = 0
+    failures: int = 0
+    attributed: bool = False
+
+    def summary(self) -> str:
+        if not self.readings:
+            return f"no GPU reading taken ({self.failures} failure(s))"
+        cards = sorted(set(self.own_mib) | set(self.card_mib))
+        parts = [f"gpu{i}: {self.own_mib.get(i, 0)} MiB own / "
+                 f"{self.card_mib.get(i, 0)} MiB on the card" for i in cards]
+        tail = "" if self.attributed else " — NOT attributed to our pid, treat 'own' as unknown"
+        return f"peak over {self.readings} reading(s): " + "; ".join(parts) + tail
+
+
+class PeakSampler:
+    """Poll nvidia-smi for as long as a subprocess runs, and keep the maximum.
+
+    For engines that never touch torch from Python: ``kraken`` drives ``ketos``
+    as an external CLI (``ketos_cmd.train_cmd``), so there is no allocator to ask
+    and no number in the log either — ketos renders through ``rich``. The peak
+    #163 asks for can only be sampled from outside, which is what this does.
+
+    The attribution is the module's own idiom, from :func:`inspect`: a GPU
+    process belongs to this job when the pid we spawned appears in its ancestor
+    chain. ``start_new_session=True`` (see ``ProcessRunner.run``) makes that pid a
+    session leader, so every descendant ketos forks stays reachable through
+    ``/proc``.
+
+    Never raises into the caller: a stage must not fail because a measurement
+    could not be taken. Failures are counted and surfaced in
+    :meth:`Peak.summary`.
+    """
+
+    def __init__(self, pid: int, *, interval_s: float = 2.0) -> None:
+        self.pid = pid
+        self.interval_s = interval_s
+        self.peak = Peak()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "PeakSampler":
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> Peak:
+        self._stop.set()
+        if self._thread is not None:
+            # Bounded: one nvidia-smi call has TIMEOUT_S to answer, and a stage
+            # must not be held open by a sampler that cannot finish.
+            self._thread.join(timeout=TIMEOUT_S + 2)
+        return self.peak
+
+    # The caller spawns the process and only then knows the pid, so start/stop are
+    # the primary interface; `with` is for the measurement scripts, which do both
+    # in one place.
+    def __enter__(self) -> "PeakSampler":
+        return self.start()
+
+    def __exit__(self, *exc) -> None:
+        self.stop()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self._once()
+            self._stop.wait(self.interval_s)
+        # One last look: a short stage can finish inside the first interval, and
+        # a peak of nothing would be the worst kind of measurement — plausible.
+        self._once()
+
+    def _once(self) -> None:
+        try:
+            apps = _smi(APP_QUERY, per_app=True)
+            uuids = [r[0] for r in _smi("uuid", per_app=False)]
+            used = [_int(r[0]) for r in _smi("memory.used", per_app=False)]
+        except Exception:  # noqa: BLE001 — a reading that failed is not a stage that failed
+            self.peak.failures += 1
+            return
+
+        index_of = {uuid: i for i, uuid in enumerate(uuids)}
+        own: dict[int, int] = {}
+        for row in apps:
+            pid_s, used_s, uuid = (row + [""] * 3)[:3]
+            index = index_of.get(uuid)
+            if index is None:
+                continue
+            if self.pid in _ancestors(_int(pid_s)):
+                own[index] = own.get(index, 0) + _int(used_s)
+
+        self.peak.readings += 1
+        if own:
+            self.peak.attributed = True
+        for index, mib in own.items():
+            self.peak.own_mib[index] = max(self.peak.own_mib.get(index, 0), mib)
+        for index, mib in enumerate(used):
+            self.peak.card_mib[index] = max(self.peak.card_mib.get(index, 0), mib)

@@ -1008,6 +1008,18 @@ class StageRecord(BaseModel):
     #: The code this stage actually ran with, which on a resumed or requeued job
     #: need not be the code the job was created with (#147).
     code: CodeVersion | None = None
+    #: Peak GPU memory sampled from outside while this stage's subprocess ran,
+    #: per card: ``{"gpu0": {"own_mib": …, "card_mib": …}}``. Per stage rather
+    #: than per job because the two peaks differ and the smaller one is not the
+    #: harmless one: the OOM that forced :func:`vlm_dataset.drop_long_samples`
+    #: happened in an *eval* loop, eleven hours into a run whose training steps
+    #: had all fitted.
+    #:
+    #: ``own_mib`` sums only compute apps whose ancestor chain contains the pid
+    #: this stage spawned; ``card_mib`` is what the card reported in use at the
+    #: same moment, neighbours included. Empty where no reading could be taken —
+    #: see :class:`gpu.Peak`, which distinguishes that from a measured zero.
+    peak_gpu_mib: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class TrainJob(BaseModel):

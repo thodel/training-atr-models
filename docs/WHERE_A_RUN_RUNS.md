@@ -144,6 +144,29 @@ pin holds across the queue but not across that resume.
   number nobody has tabulated. #137 measured one point — an 8B VLM on page
   samples, 27 763 MiB peak — from 96 of 9 441 samples, and said so: that figure
   is a lower bound, not a guarantee. kraken and trocr have no such figure at all.
+
+  **Since 07.10.2026 the gap is the measurement, not the means (#163).** Every
+  stage now samples the card while its subprocess runs and records the peak on
+  `StageRecord.peak_gpu_mib`, with the job's maximum on `Progress.peak_gpu_mib`.
+  Two numbers per card: `own_mib`, the compute apps whose ancestor chain contains
+  the pid the stage spawned, and `card_mib`, what the card reported in use at the
+  same instant. VLM runs add the allocator's own marks, `reserved_mib` and
+  `allocated_mib`, into the same row — a floor, because the CUDA context lies
+  outside them and `expandable_segments:True` accounts the reserve differently
+  from the driver.
+
+  This is how kraken gets a figure at all: it drives `ketos` as an external CLI
+  and imports no torch, and its log carries no numbers because ketos renders
+  through `rich`. **No kraken number exists yet** — the first one arrives with
+  the next kraken run, and until a point is in the table a run of that engine
+  goes to UBELIX rather than being guessed at. Where the ancestry cannot be
+  traced — a PID namespace would do it — `own_mib` is omitted rather than written
+  as 0, because "could not look" is not "used nothing" (#165).
+
+  `scripts/measure_vlm_arms.py --worst-case` is the other half: it replaces the
+  head of the file with the longest transcriptions and the largest crops, which
+  is where the peak lives. Without it a figure is a lower bound however carefully
+  it was sampled.
 - **Whether a run on asteraix can be reported.** It writes no job record, so it
   appears in no report and no comparison (#156). A rule that sends work there and
   loses its provenance is a bad trade; this gap bounds how much work should move
