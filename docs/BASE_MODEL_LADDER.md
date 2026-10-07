@@ -39,9 +39,31 @@ benchmark](https://doi.org/10.5281/zenodo.4746342), 2 751 lines:
 | `Qwen/Qwen3.5-2B` | 2.27 B | 8.95 % | 26.24 % | 1.001 | 2 | no |
 | `google/gemma-4-E4B-it` | 8.00 B / **≈4.5 B eff.** | **10.24 %** | 28.74 % | 1.004 | 3 | **yes** |
 | `Qwen/Qwen3.5-0.8B` | 0.87 B | 11.15 % | 30.65 % | 0.998 | 0 | no |
+| `google/gemma-4-12B-it` | 11.96 B | 22.94 % | 39.45 % | **0.894** | 11 | **yes** |
 
-`google/gemma-4-12B-it` is being scored on the same set as this is written; its
-line is missing, not omitted.
+**The 12B arm is not a scaling result, it is a broken run.** Its error budget is
+**17 027 insertions** against 4 783 deletions and 4 567 substitutions — on
+114 960 reference characters, it invents 15 % of the text. Compare the two arms
+that read normally: E4B is 2 039 / 2 529 / 7 202 and Qwen3.5-4B is
+1 437 / 1 388 / 4 995, both substitution-dominated, which is what a reading error
+looks like. Insertion-dominated is what a *generation* error looks like.
+
+Its length ratio of 0.894 cannot be read as "it writes too little". A model with
+three times more insertions than deletions and a total length *below* the
+reference is writing far too much on some lines and losing text on others — the
+two-peaked distribution this project has now met three times, and the mean hides
+it again. `truncated_cer` is 0.200, so the eleven lines at the generation cap are
+not the story either.
+
+**Do not read 22.94 % as "12B is worse than E4B at scale".** The same base reads
+the medieval corpus at **12.16 %** and beats `qwen3vl-medieval-german-v3` there
+(#77). What distinguishes this arm is its history: `16830477` trained across
+**four attempts over five days**, twice preempted and twice walled, and it is the
+only arm in this table that was interrupted at all. Whether a repeatedly resumed
+run can end up in this state is a hypothesis, not a finding — but it is the one
+worth testing before any conclusion about 12B on this corpus, and it is cheaper
+to test than to argue: one uninterrupted run on asteraix, which is what
+`docs/WHERE_A_RUN_RUNS.md` §1 exists to decide.
 
 **Gemma 4 loses on this corpus, and not narrowly.** At ~4.5 B of transformer
 behind its per-layer embeddings — the same effective size as the two 4B Qwens
