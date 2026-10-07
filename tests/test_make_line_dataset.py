@@ -141,7 +141,7 @@ def test_a_source_without_coordinates_publishes_nothing(tmp_path, monkeypatch):
     assert "25814" in out.summary
 
 
-# ── visibility ──────────────────────────────────────────────────────────────
+# ── visibility: public is the normal case for a dataset ─────────────────────
 class NotFound(Exception):
     """Stands in for huggingface_hub.errors.RepositoryNotFoundError."""
 
@@ -153,7 +153,7 @@ class FakeApi:
         self.state = state
         self.on_create = on_create
         self.raises = raises
-        self.created = False
+        self.created = None
 
     def dataset_info(self, repo_id, **kw):
         if self.raises is not None:
@@ -163,7 +163,7 @@ class FakeApi:
         return type("Info", (), {"private": self.state})()
 
     def create_repo(self, repo_id, **kw):
-        self.created = True
+        self.created = kw.get("private")
         self.state = self.on_create
 
 
@@ -191,42 +191,60 @@ def api(monkeypatch):
     return install
 
 
-def test_public_target_is_refused_before_any_upload(api, capsys):
-    """The check that was missing: three datasets went up public on 05.10.2026."""
-    fake = api(FakeApi(state=False))
-    assert mld.claim_private("dh-unibe/x-lines", allow_public=False) is False
-    assert "PUBLIC" in capsys.readouterr().err
-    assert not fake.created
+# The default: public, because a line-level copy exists to be usable.
+def test_a_new_dataset_is_created_public_by_default(api):
+    fake = api(FakeApi(state=None, on_create=False))
+    assert mld.settle_visibility("dh-unibe/x-lines", want_private=False) is True
+    assert fake.created is False, "create_repo must be asked for a public repo"
 
 
-def test_public_target_can_be_overridden_deliberately(api):
+def test_an_existing_public_target_is_simply_used(api):
+    """No refusal: public is what we wanted."""
     api(FakeApi(state=False))
-    assert mld.claim_private("dh-unibe/x-lines", allow_public=True) is True
+    assert mld.settle_visibility("dh-unibe/x-lines", want_private=False) is True
 
 
-def test_private_target_passes(api):
-    api(FakeApi(state=True))
-    assert mld.claim_private("dh-unibe/x-lines", allow_public=False) is True
+def test_an_unreachable_hub_does_not_stop_a_public_run(api, capsys):
+    """Nothing is at stake: the result would be public either way."""
+    api(FakeApi(state=None, raises=OSError("connection reset")))
+    assert mld.settle_visibility("dh-unibe/x-lines", want_private=False) is True
+    assert "public is the default" in capsys.readouterr().out
 
 
-def test_missing_target_is_created_private(api):
+# `--private`: the deliberate exception, and there the old refusals apply.
+def test_private_is_requested_at_creation(api):
     fake = api(FakeApi(state=None, on_create=True))
-    assert mld.claim_private("dh-unibe/x-lines", allow_public=False) is True
-    assert fake.created
+    assert mld.settle_visibility("dh-unibe/x-lines", want_private=True) is True
+    assert fake.created is True
 
 
-def test_a_creation_that_comes_out_public_refuses(api, capsys):
-    """`private=True` is what was asked for in every commit, and it was not honoured."""
+def test_a_creation_that_comes_out_public_refuses_when_private_was_asked(api, capsys):
+    """`private=True` was not honoured three times on 05.10.2026."""
     api(FakeApi(state=None, on_create=False))
-    assert mld.claim_private("dh-unibe/x-lines", allow_public=False) is False
+    assert mld.settle_visibility("dh-unibe/x-lines", want_private=True) is False
     assert "refusing to upload" in capsys.readouterr().err
 
 
-def test_an_unreachable_hub_refuses(api, capsys):
-    """"Could not look" is not "not there" — and uploading is not undoable."""
+def test_an_existing_public_target_refuses_when_private_was_asked(api, capsys):
+    """push_to_hub cannot turn it private, so saying it would be a lie."""
+    api(FakeApi(state=False))
+    assert mld.settle_visibility("dh-unibe/x-lines", want_private=True) is False
+    assert "Set it private in the HF UI" in capsys.readouterr().err
+
+
+def test_an_unreachable_hub_refuses_when_private_was_asked(api, capsys):
+    """"Could not look" is not "is private", and uploading is not undoable."""
     api(FakeApi(state=None, raises=OSError("connection reset")))
-    assert mld.claim_private("dh-unibe/x-lines", allow_public=False) is False
+    assert mld.settle_visibility("dh-unibe/x-lines", want_private=True) is False
     assert "refusing to upload rather than guess" in capsys.readouterr().err
+
+
+# An existing repo keeps what it has — the house rule from publish_to_hub.py.
+def test_an_existing_private_target_is_kept_private(api, capsys):
+    fake = api(FakeApi(state=True))
+    assert mld.settle_visibility("dh-unibe/x-lines", want_private=False) is True
+    assert fake.created is None, "an existing repo is never re-created"
+    assert "kept as it is" in capsys.readouterr().out
 
 
 def test_confirm_private_reports_a_public_result(api, capsys):

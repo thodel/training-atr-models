@@ -1,4 +1,4 @@
-"""Build a line-level dataset from a page-shaped one, and push it private.
+"""Build a line-level dataset from a page-shaped one and push it to the hub.
 
 The datasets this project trains on are page-shaped: one row per scan, with the
 PageXML beside it. The training pipeline cuts the lines itself, so a line-shaped
@@ -259,19 +259,32 @@ def build(repo: str, revision: str, max_pages: int, workdir: Path,
     return Built(manifest, workdir, pages.summary, repo, revision)
 
 
-def claim_private(out: str, allow_public: bool) -> bool:
-    """Make sure ``out`` is a private repo *before* any image is uploaded.
+def settle_visibility(out: str, want_private: bool) -> bool:
+    """Decide the target's visibility before any image is uploaded.
 
-    On 05.10.2026 three of these datasets went up public although every commit of
-    this script has asked for `private=True`. One cause is documented:
-    ``push_to_hub``'s own docstring says the flag "is ignored if the repo already
-    exists", and a pilot run had created that repo earlier. Two had no explanation
-    — same code, same token, repo created by the push itself, public anyway.
+    **Public is the normal case for a dataset** (Tobias, 07.10.2026): a line-level
+    copy exists so the material can be used without a PageXML parser, and a copy
+    nobody can open does not serve that. ``--private`` is the deliberate
+    exception, for a source whose terms require it.
 
-    So the flag is not a safeguard, and a check *after* the upload is not one
-    either: by then the archival images are on a public URL. This runs first, and
-    refuses rather than guesses. It does not change anybody's visibility: making a
-    dataset public is a decision taken by hand, and so is undoing it.
+    Models are the other way round and stay so — see
+    ``scripts/publish_to_hub.py``: private unless ``--public``, and made public by
+    hand in the web interface.
+
+    Two rules from that same house pattern apply here as well:
+
+    * **An existing repo keeps its visibility.** It is reported and not changed,
+      in either direction. ``push_to_hub``'s own docstring says the ``private``
+      flag "is ignored if the repo already exists", so pretending otherwise would
+      be a promise this code cannot keep — and on 05.10.2026 it did not: three
+      datasets went up public although every commit asked for ``private=True``.
+    * **Visibility is only set at creation.** Which is the one moment the flag
+      works.
+
+    The refusal built for the opposite default survives, behind the flag: with
+    ``--private``, a target that is or comes out public stops the run before the
+    first image, and a hub that cannot be reached stops it too, because "could not
+    look" is not "is private". Without the flag neither case matters.
     """
     from huggingface_hub import HfApi
     from huggingface_hub.errors import RepositoryNotFoundError
@@ -280,7 +293,10 @@ def claim_private(out: str, allow_public: bool) -> bool:
     try:
         info = api.dataset_info(out)
     except RepositoryNotFoundError:
-        api.create_repo(out, repo_type="dataset", private=True, exist_ok=True)
+        api.create_repo(out, repo_type="dataset", private=want_private, exist_ok=True)
+        if not want_private:
+            print(f"   target: created {out} as public")
+            return True
         try:
             created = api.dataset_info(out)
         except Exception as exc:  # noqa: BLE001 — cannot verify ⇒ do not upload
@@ -288,32 +304,39 @@ def claim_private(out: str, allow_public: bool) -> bool:
                   file=sys.stderr)
             return False
         if created.private:
-            print(f"   target: created {out} as PRIVATE")
+            print(f"   target: created {out} as PRIVATE (--private)")
             return True
         print(f"created {out} and the hub reports it PUBLIC despite private=True — "
-              "refusing to upload. Set it private in the HF UI, then re-run.",
+              "refusing to upload because --private was asked for. Set it private "
+              "in the HF UI, then re-run.", file=sys.stderr)
+        return False
+    except Exception as exc:  # noqa: BLE001
+        if not want_private:
+            print(f"   target: could not read {out}'s visibility "
+                  f"({type(exc).__name__}) — uploading anyway, public is the default")
+            return True
+        print(f"could not check whether {out} is private ({type(exc).__name__}: {exc}); "
+              "--private was asked for, so refusing to upload rather than guess",
               file=sys.stderr)
         return False
-    except Exception as exc:  # noqa: BLE001 — "could not look" is not "not there"
-        print(f"could not check whether {out} is private ({type(exc).__name__}: {exc}); "
-              "refusing to upload rather than guess", file=sys.stderr)
-        return False
 
-    if info.private:
-        print(f"   target: {out} exists and is PRIVATE")
-        return True
-    if allow_public:
-        print(f"   target: {out} is PUBLIC — uploading anyway (--allow-public)")
-        return True
-    print(f"{out} already exists and is PUBLIC. push_to_hub(private=True) cannot "
-          "change that — the flag is ignored for an existing repo — so the crops "
-          "would become public. Set it private in the HF UI, or pass --allow-public "
-          "if that is what you want.", file=sys.stderr)
-    return False
+    state = "PRIVATE" if info.private else "public"
+    if want_private and not info.private:
+        print(f"{out} already exists and is public, and --private was asked for. "
+              "push_to_hub cannot change that — the flag is ignored for an existing "
+              "repo — so the crops would stay public. Set it private in the HF UI, "
+              "or drop --private.", file=sys.stderr)
+        return False
+    print(f"   target: {out} exists and is {state} — kept as it is")
+    return True
 
 
 def confirm_private(out: str) -> bool:
-    """Read the visibility back after the push, and say so if it is public."""
+    """Read the visibility back after the push, for a run that asked for private.
+
+    Only called with ``--private``. Without it a public result is the intent, not
+    a finding.
+    """
     from huggingface_hub import HfApi
     try:
         info = HfApi().dataset_info(out)
@@ -340,9 +363,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--projects", default=None,
                    help="comma-separated project directories to read; default is all of them")
     p.add_argument("--dry-run", action="store_true", help="build and report, do not push")
-    p.add_argument("--allow-public", action="store_true",
-                   help="push even though the target repo is already public "
-                        "(refused by default; see claim_private)")
+    p.add_argument("--private", action="store_true",
+                   help="create the dataset private. Public is the default: a "
+                        "line-level copy exists so the material can be used, and "
+                        "one nobody can open does not serve that. Use this for a "
+                        "source whose terms require it. An existing repo keeps "
+                        "whatever visibility it has, in either direction.")
     # The pages and crops land here before they are packed. /tmp on the login node
     # has ~18 GB and `materialize` wants 50 free, so the default is scratch.
     p.add_argument("--workdir", default=None,
@@ -354,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         print("--revision must be a full 40-character SHA", file=sys.stderr)
         return 2
 
-    if not args.dry_run and not claim_private(args.out, args.allow_public):
+    if not args.dry_run and not settle_visibility(args.out, args.private):
         return 1
 
     base = Path(args.workdir or os.environ.get("ATR_TRAIN_SCRATCH")
@@ -394,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             ds.to_parquet(str(local))
             print(f"   dry run: wrote {local} ({local.stat().st_size / 1e6:.1f} MB), nothing pushed")
             return 0
-        ds.push_to_hub(args.out, private=True)
+        ds.push_to_hub(args.out, private=args.private)
         from huggingface_hub import HfApi
         text = card(args.out, args.repo, args.revision, built.lines, built.chars, built.summary)
         HfApi().upload_file(
@@ -403,9 +429,12 @@ def main(argv: list[str] | None = None) -> int:
             commit_message="Describe the line-level variant, and keep the source's own description")
         print(f"   card: {len(text)} characters, source description "
               f"{'carried over' if 'own description' in text else 'unavailable'}")
-        if not confirm_private(args.out):
-            return 1
-        print(f"   pushed as PRIVATE to https://hf.co/datasets/{args.out}")
+        if args.private:
+            if not confirm_private(args.out):
+                return 1
+            print(f"   pushed as PRIVATE to https://hf.co/datasets/{args.out}")
+        else:
+            print(f"   pushed to https://hf.co/datasets/{args.out}")
     return 0
 
 
