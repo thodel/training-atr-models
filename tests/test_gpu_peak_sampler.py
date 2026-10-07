@@ -46,7 +46,7 @@ def test_only_our_own_process_tree_is_counted(monkeypatch):
 
     assert sampler.peak.own_mib == {0: 21675}, "the neighbour's 9000 MiB is not ours"
     assert sampler.peak.card_mib == {0: 31000}
-    assert sampler.peak.attributed is True
+    assert sampler.peak.own_seen is True
 
 
 def test_a_descendant_counts_because_ketos_forks(monkeypatch):
@@ -99,9 +99,9 @@ def test_an_untraceable_process_does_not_read_as_zero(monkeypatch):
     sampler = gpu.PeakSampler(77)
     sampler._once()
 
-    assert sampler.peak.attributed is False
+    assert sampler.peak.own_is_unknown is True
     assert sampler.peak.card_mib == {0: 22500}, "the card figure is still honest"
-    assert "NOT attributed" in sampler.peak.summary()
+    assert "unknown rather than zero" in sampler.peak.summary()
 
 
 def test_a_failing_smi_is_counted_and_does_not_raise(monkeypatch):
@@ -193,7 +193,7 @@ def _pipeline():
 
 def test_the_peak_lands_on_the_stage_and_on_the_job():
     job, record = _Job(), StageRecord(name="train")
-    peak = gpu.Peak(own_mib={0: 21675}, card_mib={0: 22000}, readings=5, attributed=True)
+    peak = gpu.Peak(own_mib={0: 21675}, card_mib={0: 22000}, readings=5, own_seen=True, apps_seen=True)
 
     _pipeline()._record_peak(job, record, peak)
 
@@ -209,17 +209,17 @@ def test_a_cheaper_later_stage_cannot_lower_the_job_peak():
 
     p._record_peak(job, StageRecord(name="train"),
                    gpu.Peak(own_mib={0: 27763}, card_mib={0: 28000},
-                            readings=3, attributed=True))
+                            readings=3, own_seen=True, apps_seen=True))
     p._record_peak(job, StageRecord(name="test"),
                    gpu.Peak(own_mib={0: 900}, card_mib={0: 1000},
-                            readings=3, attributed=True))
+                            readings=3, own_seen=True, apps_seen=True))
 
     assert job.progress.peak_gpu_mib["gpu0"] == {"own_mib": 27763, "card_mib": 28000}
 
 
 def test_an_unattributed_peak_omits_own_rather_than_claiming_zero():
     job, record = _Job(), StageRecord(name="train")
-    peak = gpu.Peak(own_mib={}, card_mib={0: 30000}, readings=4, attributed=False)
+    peak = gpu.Peak(own_mib={}, card_mib={0: 30000}, readings=4, own_seen=False, apps_seen=True)
 
     _pipeline()._record_peak(job, record, peak)
 
@@ -235,7 +235,7 @@ def test_torch_marks_and_sampled_marks_share_one_row():
 
     _pipeline()._record_peak(job, record,
                              gpu.Peak(own_mib={0: 28500}, card_mib={0: 29000},
-                                      readings=2, attributed=True))
+                                      readings=2, own_seen=True, apps_seen=True))
 
     assert sorted(job.progress.peak_gpu_mib["gpu0"]) == [
         "allocated_mib", "card_mib", "own_mib", "reserved_mib"]
@@ -248,3 +248,29 @@ def test_nothing_measured_leaves_the_record_untouched():
 
     assert record.peak_gpu_mib == {}
     assert job.progress.peak_gpu_mib == {}
+
+
+def test_an_idle_card_keeps_its_measured_zero(monkeypatch):
+    """Found by running the sampler against a real idle A40 (asteraix, 07.10.2026).
+
+    No process on the card means 0 MiB is a fact. Reporting it as "unknown", the
+    way the first cut did, turns a clean reading into a non-answer.
+    """
+    monkeypatch.setattr(gpu, "_smi", fake_smi(apps=[], used=[0]))
+
+    sampler = gpu.PeakSampler(77)
+    sampler._once()
+
+    assert sampler.peak.apps_seen is False
+    assert sampler.peak.own_is_unknown is False
+    assert "a measured zero, not a missing measurement" in sampler.peak.summary()
+
+
+def test_an_idle_card_does_not_lose_own_mib_on_the_record():
+    job, record = _Job(), StageRecord(name="train")
+    peak = gpu.Peak(own_mib={}, card_mib={0: 0}, readings=6,
+                    own_seen=False, apps_seen=False)
+
+    _pipeline()._record_peak(job, record, peak)
+
+    assert record.peak_gpu_mib == {"gpu0": {"own_mib": 0, "card_mib": 0}}

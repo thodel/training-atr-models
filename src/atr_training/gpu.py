@@ -303,26 +303,54 @@ class Peak:
       neighbours included. It is the number an OOM measures itself against, and
       the one comparable to the 45,486 MiB an A40 makes usable.
 
-    ``attributed`` is false when no compute app was ever traced back to our pid
-    while the card was nonetheless busy — which happens if the engine runs behind
-    a PID namespace, so ``own_mib`` would read 0 and mean "could not look", not
-    "used nothing". #165's rule, in the one place it would otherwise bite
-    silently.
+    Three outcomes, not two, and the third is the one that bites. ``own_seen``
+    means at least one compute app was traced back to our pid, so ``own_mib`` is
+    measured. ``apps_seen`` without ``own_seen`` means processes were using the
+    card and none of them could be traced to us — a PID namespace would do that —
+    so ``own_mib`` reads 0 and means "could not look". Neither flag set means no
+    process was on the card at all, and then 0 is a measured zero.
+
+    Collapsing the last two is #165's mistake: a reading that failed must not
+    arrive looking like a number. The distinction was found to be missing by
+    running this against a real idle A40 (asteraix, 07.10.2026): it reported
+    "unknown" where 0 was a fact.
+
+    Measured on the same box, same day, against a grandchild — ``sh -c`` spawning
+    a python that held 2 GiB, which is the shape ``ketos`` arrives in::
+
+        gpu0: 2354 MiB own / 2363 MiB on the card; gpu1: 0 MiB own / 4 MiB on the card
+
+    Two things that matters: the ancestor chain carries across two generations,
+    and the 9 MiB between ``own`` and ``card`` on gpu0 is the CUDA context — the
+    card sees it, the per-process figure does not. gpu1's 4 MiB belonged to a
+    neighbour and was correctly not attributed.
     """
 
     own_mib: dict[int, int] = field(default_factory=dict)
     card_mib: dict[int, int] = field(default_factory=dict)
     readings: int = 0
     failures: int = 0
-    attributed: bool = False
+    #: One of our own processes was found holding memory.
+    own_seen: bool = False
+    #: Some process — anyone's — was found holding memory.
+    apps_seen: bool = False
+
+    @property
+    def own_is_unknown(self) -> bool:
+        """The card was busy and none of it could be attributed to us."""
+        return self.apps_seen and not self.own_seen
 
     def summary(self) -> str:
         if not self.readings:
             return f"no GPU reading taken ({self.failures} failure(s))"
+        if not self.apps_seen:
+            return (f"no process on any card over {self.readings} reading(s) — "
+                    "a measured zero, not a missing measurement")
         cards = sorted(set(self.own_mib) | set(self.card_mib))
         parts = [f"gpu{i}: {self.own_mib.get(i, 0)} MiB own / "
                  f"{self.card_mib.get(i, 0)} MiB on the card" for i in cards]
-        tail = "" if self.attributed else " — NOT attributed to our pid, treat 'own' as unknown"
+        tail = (" — the card was busy but nothing traced back to our pid, so 'own' "
+                "is unknown rather than zero") if self.own_is_unknown else ""
         return f"peak over {self.readings} reading(s): " + "; ".join(parts) + tail
 
 
@@ -402,8 +430,10 @@ class PeakSampler:
                 own[index] = own.get(index, 0) + _int(used_s)
 
         self.peak.readings += 1
+        if apps:
+            self.peak.apps_seen = True
         if own:
-            self.peak.attributed = True
+            self.peak.own_seen = True
         for index, mib in own.items():
             self.peak.own_mib[index] = max(self.peak.own_mib.get(index, 0), mib)
         for index, mib in enumerate(used):

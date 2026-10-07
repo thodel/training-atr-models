@@ -429,10 +429,11 @@ class BasePipeline(ABC):
             sampled = {f"gpu{index}": {"own_mib": peak.own_mib.get(index, 0),
                                        "card_mib": peak.card_mib.get(index, 0)}
                        for index in sorted(set(peak.own_mib) | set(peak.card_mib))}
-            if not peak.attributed:
-                # #165: 0 MiB "own" after a reading that saw a busy card means the
-                # ancestry could not be traced — a PID namespace, most likely —
-                # and must not be read as "used nothing".
+            if peak.own_is_unknown:
+                # #165: the card was busy and none of it traced back to our pid —
+                # a PID namespace, most likely. 0 MiB would read as "used
+                # nothing" when it means "could not look", so the key goes away.
+                # An *idle* card is a different case and keeps its measured zero.
                 for marks in sampled.values():
                     marks.pop("own_mib", None)
             record.peak_gpu_mib = sampled
