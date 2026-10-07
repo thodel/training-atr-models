@@ -1,7 +1,14 @@
 #!/bin/bash
 # Score ONE finished adapter on the Federal Council held-out test set
 # (Hodel & Schoch 2021, doi:10.5281/zenodo.4746342), all 2,751 lines.
-#   sbatch --export=ALL,JOB_ID=<id>,TAG=<tag>[,SIF=...] score_federal_minutes.sbatch
+#   sbatch --export=ALL,JOB_ID=<id>,TAG=<tag>[,SIF=...][,QUANT=4bit] score_federal_minutes.sbatch
+#
+# QUANT picks how the base is loaded, and it has to match how the arm was
+# TRAINED: an adapter fitted over a 4-bit base belongs over a 4-bit base when it
+# is scored. The default stays bf16, which is what the seven reports already on
+# this eval set were produced with — every one of them trained in bf16 too. A
+# fanned-out arm with `load_in_4bit=true` needs QUANT=4bit, or the number lands
+# in the same table at a different quantisation and nothing says so.
 #SBATCH --job-name=fedmin1
 #SBATCH --account=gratis
 #SBATCH --partition=gpu
@@ -21,10 +28,15 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 SIF=${SIF:-$HOME/ubelix/vlm-train.sif}
 : "${JOB_ID:?}" "${TAG:?}"
+case "${QUANT:-bf16}" in
+  4bit) QUANT_FLAG=--load-in-4bit ;;
+  bf16) QUANT_FLAG=--no-load-in-4bit ;;
+  *)    echo "QUANT must be 4bit or bf16, got '${QUANT}'" >&2; exit 2 ;;
+esac
 E=$S/runs/jobs/evalset-federal-minutes
 BASE=$(python3 -c "import json;print(json.load(open('$S/runs/jobs/$JOB_ID/job.json'))['request']['base_model'])")
 if [ -s "$HOME/.hf_token" ]; then HF_TOKEN=$(tr -d '[:space:]' < "$HOME/.hf_token"); export HF_TOKEN; fi
-echo "== $TAG: $JOB_ID ($BASE) on $(hostname) $(date -Is)"
+echo "== $TAG: $JOB_ID ($BASE) ${QUANT:-bf16} on $(hostname) $(date -Is)"
 apptainer exec --nv \
   --bind /storage/research:/storage/research --bind /scratch:/scratch --bind /rs_scratch:/rs_scratch \
   --env HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub \
@@ -35,5 +47,5 @@ apptainer exec --nv \
     --base-model "$BASE" --data-root "$E" \
     --prompt "Transcribe the handwritten text in this image exactly as written." \
     --granularity line --max-pixels 262144 --max-seq-len 1024 --seed 42 \
-    --device cuda:0 --max-samples 2751 --max-new-tokens 256 --no-load-in-4bit
+    --device cuda:0 --max-samples 2751 --max-new-tokens 256 "$QUANT_FLAG"
 echo "== done $(date -Is)"
