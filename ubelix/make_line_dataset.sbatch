@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build one line-level dataset from a page-shaped one and push it private.
+# Build one line-level dataset from a page-shaped one and push it to the hub.
+# Public by default; set PRIVATE=1 for a source whose terms require it.
 #
 # CPU only: materialize, crop, pack parquet, upload. No GPU is involved, so this
 # goes to epyc2 like the prepare stage rather than competing for a card.
@@ -45,4 +46,5 @@ apptainer exec --bind /storage --bind /scratch --bind /rs_scratch \
   --env HF_TOKEN="${HF_TOKEN:-}" --env USER="$USER" \
   "$HOME/ubelix/vlm-train-tf5.sif" /opt/vlm-train/bin/python \
   "$REPO/ubelix/make_line_dataset.py" --repo "$REPO_ID" --revision "$REV" \
-  --out "$OUT" --max-pages "${MAX_PAGES:-200000}" ${PROJECTS:+--projects "$PROJECTS"}
+  --out "$OUT" --max-pages "${MAX_PAGES:-200000}" ${PROJECTS:+--projects "$PROJECTS"} \
+  ${PRIVATE:+--private}
