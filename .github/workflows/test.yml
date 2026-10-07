@@ -40,7 +40,10 @@ jobs:
       - name: Install orchestration dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          # mcp is the one extra beyond dev: the results MCP's server tests
+          # (tests/test_results_mcp_server.py) skip without it, and a skipped
+          # test is not a gate.
+          pip install -e ".[dev,mcp]"
 
       - name: Run the test suite
         run: pytest -q
