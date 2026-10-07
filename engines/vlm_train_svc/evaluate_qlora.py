@@ -445,6 +445,12 @@ def main(argv: list[str] | None = None) -> int:
         "template": args.template,
         "prompt": system if churro else args.prompt,
         "max_pixels": args.max_pixels or "processor default",
+        # At which quantisation the base was loaded. A CER scored on a 4-bit base
+        # is not comparable with one scored in bf16, and until now the report did
+        # not say which it was: the seven Federal Council reports on disk all
+        # read `load_in_4bit=None` because the field did not exist, while the
+        # arms being added to that set trained — and are scored — in 4-bit.
+        "load_in_4bit": bool(args.load_in_4bit),
         # Named so a reader cannot mistake a capped run for a full one.
         "eval_cap": args.max_samples,
         # How the scored pages were chosen. A CER is not comparable with one
