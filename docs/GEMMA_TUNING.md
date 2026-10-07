@@ -47,6 +47,13 @@ Qwen arms of the same corpus:
 | `Qwen/Qwen3.5-2B` | 2.27 B | 8.95 % | 26.24 % | 1.001 | 2 |
 | `google/gemma-4-E4B-it` | ≈4.5 B eff. | 10.24 % | 28.74 % | 1.004 | 3 |
 | `Qwen/Qwen3.5-0.8B` | 0.87 B | 11.15 % | 30.65 % | 0.998 | 0 |
+| `google/gemma-4-12B-it` | 11.96 B | 22.94 % | 39.45 % | 0.894 | 11 |
+
+**The 12B line belongs in a different conversation.** 17 027 insertions against
+4 783 deletions is a generation failure, not a reading one, and that arm trained
+across four attempts over five days against preemption — the only interrupted run
+in the table. `BASE_MODEL_LADDER.md` §1 states the hypothesis; until it is tested,
+the row below to compare against is **E4B's**.
 
 This is the number the plan was missing: everything in §1 was measured on a draw
 of our own. **It makes the case for tuning stronger, not weaker.** The deficit on
