@@ -85,7 +85,7 @@ class FakeRunner:
         self.write_weights = write_weights
         self.report = report
 
-    def run(self, cmd, log_path: Path, env=None):
+    def run(self, cmd, log_path: Path, env=None, on_start=None):
         self.commands.append(list(cmd))
         self.env = env
         sub = next(c for c in cmd if c in {"compile", "train", "test"})
@@ -834,7 +834,7 @@ class TestChunkedCompile:
             self.pages_root = pages_root
             self.pages_on_disk: list[int] = []
 
-        def run(self, cmd, log_path, env=None):
+        def run(self, cmd, log_path, env=None, on_start=None):
             if "compile" in cmd:
                 self.pages_on_disk.append(len(list(Path(self.pages_root).rglob("*.jpg"))))
             return super().run(cmd, log_path, env)
@@ -1108,7 +1108,7 @@ def test_a_registration_enabled_while_the_job_ran_is_caught_at_register(
     served_before = served.read_bytes()
 
     class PromotedMeanwhile(FakeRunner):
-        def run(self, cmd, log_path, env=None):
+        def run(self, cmd, log_path, env=None, on_start=None):
             if "test" in cmd:
                 set_enabled(settings.registry_root, "kraken-thun-missiven-v1", True)
             return super().run(cmd, log_path, env)
@@ -1239,7 +1239,7 @@ BENCHMARK_REPORT = """=== report best_0.9550.mlmodel ===
 class BenchmarkRunner(FakeRunner):
     """Answers the split test and the benchmark test with different reports."""
 
-    def run(self, cmd, log_path: Path, env=None):
+    def run(self, cmd, log_path: Path, env=None, on_start=None):
         code = super().run(cmd, log_path, env=env)
         if "test" in cmd and "benchmark" in log_path.name:
             log_path.write_text(BENCHMARK_REPORT, encoding="utf-8")
@@ -1315,7 +1315,7 @@ def test_an_unparsable_benchmark_report_does_not_lose_the_run(store, settings):
     """The split CER is already measured and the model is trained either way.
     What must not happen is a missing benchmark passing for a clean one."""
     class Mute(FakeRunner):
-        def run(self, cmd, log_path: Path, env=None):
+        def run(self, cmd, log_path: Path, env=None, on_start=None):
             code = super().run(cmd, log_path, env=env)
             if "test" in cmd and "benchmark" in log_path.name:
                 log_path.write_text("no report here\n", encoding="utf-8")

@@ -144,6 +144,51 @@ pin holds across the queue but not across that resume.
   number nobody has tabulated. #137 measured one point — an 8B VLM on page
   samples, 27 763 MiB peak — from 96 of 9 441 samples, and said so: that figure
   is a lower bound, not a guarantee. kraken and trocr have no such figure at all.
+
+  **Since 07.10.2026 the gap is the measurement, not the means (#163).** Every
+  stage now samples the card while its subprocess runs and records the peak on
+  `StageRecord.peak_gpu_mib`, with the job's maximum on `Progress.peak_gpu_mib`.
+  Two numbers per card: `own_mib`, the compute apps whose ancestor chain contains
+  the pid the stage spawned, and `card_mib`, what the card reported in use at the
+  same instant. VLM runs add the allocator's own marks, `reserved_mib` and
+  `allocated_mib`, into the same row — a floor, because the CUDA context lies
+  outside them and `expandable_segments:True` accounts the reserve differently
+  from the driver.
+
+  This is how kraken gets a figure at all: it drives `ketos` as an external CLI
+  and imports no torch, and its log carries no numbers because ketos renders
+  through `rich`. Where the ancestry cannot be traced — a PID namespace would do
+  it — `own_mib` is omitted rather than written as 0, because "could not look" is
+  not "used nothing" (#165).
+
+  **kraken's first point, measured 07.10.2026 on asteraix** with
+  `scripts/measure_kraken_arms.py`: `german_val.arrow` as training data,
+  `KRAKEN_PLUS_SPEC`, batch 256 — the project default — one full epoch in ~215 s.
+
+  | Engine | Spec | Batch | Peak own | Peak card | Of 45,486 usable | Source |
+  |---|---|---:|---:|---:|---:|---|
+  | kraken | `KRAKEN_PLUS_SPEC` | 256 | **43,536 MiB** | 43,579 MiB | **95.7 %** | full epoch over the arrow, asteraix 07.10.2026 |
+
+  So §1's first branch, for kraken: **it fits one A40 and very nearly does
+  not** — 1,950 MiB of headroom at the default batch. The limit for this engine
+  is the batch geometry, not the model size; a kraken model is ~16 MB. And the
+  card must be empty: while a colleague's job held 740 MiB of gpu0, `card_mib`
+  rose to 44,319 while `own_mib` stayed at 43,536.
+
+  Not yet measured: batch 128, 64, 32, which is where the headroom is. Until
+  those exist, a kraken run that cannot have a card to itself belongs on UBELIX.
+
+  **trocr still has no number, and gets one by sampling rather than by
+  plumbing.** Its runner does not read its own `training_summary.json`, so torch
+  marks written there would be a number nobody reads; the external sampler covers
+  it through `_run` instead. No trocr model has ever been trained (#37), so the
+  first point arrives with the first run — and until then the tree sends it to
+  UBELIX.
+
+  `scripts/measure_vlm_arms.py --worst-case` is the other half: it replaces the
+  head of the file with the longest transcriptions and the largest crops, which
+  is where the peak lives. Without it a figure is a lower bound however carefully
+  it was sampled.
 - **Whether a run on asteraix can be reported.** It writes no job record, so it
   appears in no report and no comparison (#156). A rule that sends work there and
   loses its provenance is a bad trade; this gap bounds how much work should move

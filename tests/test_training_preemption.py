@@ -124,7 +124,7 @@ def test_preempted_is_not_caught_as_a_stage_failure():
 class PreemptingRunner(FakeRunner):
     """Raises Preempted the first time the trainer is invoked."""
 
-    def run(self, cmd, log_path, env=None):
+    def run(self, cmd, log_path, env=None, on_start=None):
         if self._kind(cmd) == "train":
             raise Preempted()
         return super().run(cmd, log_path, env)

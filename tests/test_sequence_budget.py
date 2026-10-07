@@ -232,3 +232,92 @@ def test_the_runner_records_it_before_looking_for_the_adapter():
 
     assert text.index("_record_sequence_budget(job, out_dir)") < \
         text.index("adapter = find_adapter(out_dir)")
+
+
+# ── the peak the first branch of the decision tree needs (#163) ─────────────
+TRAIN_QLORA = Path(__file__).resolve().parents[1] / "engines" / "vlm_train_svc" / "train_qlora.py"
+
+
+def test_the_marks_are_reset_before_the_loop_and_read_after():
+    """Otherwise the peak is the model load, which is measured elsewhere.
+
+    `scripts/measure_vlm_footprint.py` answers what the weights cost. This field
+    answers what a *step* costs, and the two are only separable if the allocator's
+    high-water marks are zeroed in between.
+    """
+    text = TRAIN_QLORA.read_text(encoding="utf-8")
+    reset = text.index("reset_peak_memory_stats")
+    loop = text.index("trainer.train(resume_from_checkpoint=resume_from)")
+    read = text.index("max_memory_reserved")
+    assert reset < loop < read, "reset must precede the loop and the read follow it"
+
+
+def test_the_peak_is_recorded_as_a_floor_not_as_a_verdict():
+    """`expandable_segments:True` is set for every training child, and the CUDA
+    context sits outside torch's marks — so this number may rank geometries and
+    may not settle a fit against an A40 on its own."""
+    text = TRAIN_QLORA.read_text(encoding="utf-8")
+    assert "FLOOR" in text or "floor" in text.lower()
+    assert "expandable_segments" in text
+
+
+def test_the_peak_reaches_the_record(tmp_path):
+    job = _Job()
+    (tmp_path / "training_summary.json").write_text(json.dumps({
+        "sequence_budget": 1024,
+        "peak_gpu_mib": {"gpu0": {"reserved_mib": 27763, "allocated_mib": 26104}},
+    }), encoding="utf-8")
+
+    _runner()._record_sequence_budget(job, tmp_path)
+
+    assert job.progress.peak_gpu_mib == {
+        "gpu0": {"reserved_mib": 27763, "allocated_mib": 26104}}
+
+
+def test_two_cards_are_kept_apart(tmp_path):
+    """`device_map="auto"` spreads the peak; one number would hide which card."""
+    job = _Job()
+    (tmp_path / "training_summary.json").write_text(json.dumps({
+        "peak_gpu_mib": {"gpu0": {"reserved_mib": 13761, "allocated_mib": 13000},
+                         "gpu1": {"reserved_mib": 18625, "allocated_mib": 18000}},
+    }), encoding="utf-8")
+
+    _runner()._record_sequence_budget(job, tmp_path)
+
+    assert sorted(job.progress.peak_gpu_mib) == ["gpu0", "gpu1"]
+    assert job.progress.peak_gpu_mib["gpu1"]["reserved_mib"] == 18625
+
+
+def test_a_cpu_run_records_an_empty_mapping_rather_than_nulls(tmp_path):
+    """Nothing to report is not the same as a peak of zero."""
+    job = _Job()
+    (tmp_path / "training_summary.json").write_text(
+        json.dumps({"peak_gpu_mib": {}}), encoding="utf-8")
+
+    _runner()._record_sequence_budget(job, tmp_path)
+
+    assert job.progress.peak_gpu_mib == {}
+
+
+def test_an_older_summary_without_the_field_still_loads(tmp_path):
+    """Every run before this change wrote no peak; reading one must not raise."""
+    job = _Job()
+    (tmp_path / "training_summary.json").write_text(
+        json.dumps({"sequence_budget": 4096, "max_sequence_tokens": 4515}),
+        encoding="utf-8")
+
+    _runner()._record_sequence_budget(job, tmp_path)
+
+    assert job.progress.peak_gpu_mib == {}
+    assert job.progress.max_sequence_tokens == 4515
+
+
+def test_a_malformed_peak_is_ignored_rather_than_stored(tmp_path):
+    """A string where a mapping belongs must not reach the record."""
+    job = _Job()
+    (tmp_path / "training_summary.json").write_text(
+        json.dumps({"peak_gpu_mib": "27763 MiB"}), encoding="utf-8")
+
+    _runner()._record_sequence_budget(job, tmp_path)
+
+    assert job.progress.peak_gpu_mib == {}

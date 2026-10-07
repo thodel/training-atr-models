@@ -28,6 +28,14 @@ and on this project OOMs have twice been the distribution's tail rather than the
 batch size. 17.3 GiB were still free in the bf16 arm, which is headroom, not
 proof.
 
+`--worst-case` removes exactly that caveat (#163). It replaces the head of the
+file with the most expensive samples — the longest transcriptions and the largest
+crops — so the peak comes from the tail that decides whether a long run dies.
+Every row of the report now carries `train_selection`, naming `head` or
+`worst-case`, because the two numbers answer different questions and only one of
+them may be read as a ceiling. The default stays `head` so the figures above
+remain reproducible.
+
     .venvs/kraken-train/bin/python scripts/measure_vlm_arms.py \\
         --root <job dir> --out report.json
 
@@ -55,6 +63,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 from atr_training.contracts import VLM_BASE_MODEL, VlmTrainParams  # noqa: E402
 from atr_training.vlm_cmd import train_cmd  # noqa: E402
+from atr_training.vlm_dataset import read_jsonl, worst_case_samples  # noqa: E402
 
 STEP_RE = re.compile(r"'(?:train_runtime|loss)':")
 
@@ -73,8 +82,36 @@ def sample_cards(stop: threading.Event, every: float, into: list[dict[int, int]]
         stop.wait(every)
 
 
+def take_lines(src: Path, dest: Path, count: int, worst_case: bool) -> dict:
+    """Write ``count`` samples from ``src`` to ``dest``, and say which ones.
+
+    Two selections, and the difference is the whole point of #163. The head of
+    the file is what #137 measured — cheap, reproducible, and a **lower bound**,
+    which it said so itself. The worst case is the tail that actually decides
+    whether a long run dies: the fp32 logit tensor scales with the transcription,
+    the image tokens with the crop, and on this project an OOM was twice the edge
+    of the distribution rather than the batch size.
+
+    The returned mapping travels into the report so no row can be read as a
+    ceiling when it is a floor.
+    """
+    if not worst_case:
+        with src.open(encoding="utf-8") as fh:
+            lines = [next(fh) for _ in range(count)]
+        dest.write_text("".join(lines), encoding="utf-8")
+        return {"selection": "head", "written": len(lines)}
+
+    picked = worst_case_samples(read_jsonl(src), count)
+    dest.write_text(
+        "".join(sample.to_json() + "\n" for sample in picked.samples), encoding="utf-8")
+    return {"selection": "worst-case", "written": len(picked.samples),
+            "considered": picked.considered, "longest_chars": picked.longest_chars,
+            "widest_pixels": picked.widest_pixels, "page_samples": picked.page_samples}
+
+
 def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path,
-            samples: int, val_samples: int, python: Path, epochs: int) -> dict:
+            samples: int, val_samples: int, python: Path, epochs: int,
+            worst_case: bool = False) -> dict:
     work = out_root / name
     if work.exists():
         shutil.rmtree(work)
@@ -87,11 +124,11 @@ def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path
     # a compiled sample set portable. Passing `data/` doubles the segment, and the
     # first run of this script died on `…/data/data/pages/…` after loading the
     # model three times.
-    for src, dest, n in ((root / "data" / "train.jsonl", train_jsonl, samples),
-                         (root / "data" / "val.jsonl", val_jsonl, val_samples)):
-        with src.open(encoding="utf-8") as fh:
-            lines = [next(fh) for _ in range(n)]
-        dest.write_text("".join(lines), encoding="utf-8")
+    # The training set carries the selection under test. The validation set stays
+    # on the head: its loop is not what #163 is measuring, and changing both at
+    # once would leave the peak unattributable to either.
+    selection = take_lines(root / "data" / "train.jsonl", train_jsonl, samples, worst_case)
+    take_lines(root / "data" / "val.jsonl", val_jsonl, val_samples, worst_case=False)
 
     params = VlmTrainParams(granularity="page", load_in_4bit=four_bit, epochs=epochs,
                             max_epochs=epochs, save_steps=10_000)
@@ -139,6 +176,10 @@ def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path
         "samples": samples,
         "effective_batch": params.batch_size * params.accumulate_grad_batches,
         "peak_mib": peak,
+        # Where the samples came from. #163: a peak from the head of the file is a
+        # lower bound and must not be read as a ceiling, so every row says which
+        # it is rather than leaving the reader to remember.
+        "train_selection": selection,
         "readings": len(readings),
         "placement": next((ln for ln in text.splitlines() if "[placement]" in ln), None),
         "last_lines": text.strip().splitlines()[-6:],
@@ -160,6 +201,11 @@ def main() -> int:
     ap.add_argument("--python", type=Path,
                     default=REPO / ".venvs" / "vlm-train" / "bin" / "python")
     ap.add_argument("--only", default="", help="comma-separated arm names")
+    ap.add_argument("--worst-case", action="store_true",
+                    help="train on the most expensive samples (longest text, largest "
+                         "crops) instead of the head of the file — the peak #163 asks "
+                         "for. Off by default so the 03.10.2026 figures above stay "
+                         "reproducible.")
     args = ap.parse_args()
 
     plan = [("fourbit_one_card", "0", True),
@@ -174,7 +220,7 @@ def main() -> int:
         result = run_arm(name, cards=cards, four_bit=four_bit, root=args.root,
                          out_root=args.work, samples=args.samples,
                          val_samples=args.val_samples, python=args.python,
-                         epochs=args.epochs)
+                         epochs=args.epochs, worst_case=args.worst_case)
         print(json.dumps(result, indent=2), flush=True)
         results.append(result)
         args.out.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")

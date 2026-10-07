@@ -47,7 +47,7 @@ class WatchesTheCard(FakeRunner):
         self._calls = calls
         self.before_train: list[str] | None = None
 
-    def run(self, cmd, log_path: Path, env=None):
+    def run(self, cmd, log_path: Path, env=None, on_start=None):
         if "train" in cmd and self.before_train is None:
             self.before_train = list(self._calls)
         return super().run(cmd, log_path, env)

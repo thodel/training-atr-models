@@ -52,7 +52,7 @@ class CountingRunner(FakeRunner):
         super().__init__(**kw)
         self.compiled: list[str] = []
 
-    def run(self, cmd, log_path, env=None):
+    def run(self, cmd, log_path, env=None, on_start=None):
         if "compile" in cmd:
             out = cmd[cmd.index("--output") + 1] if "--output" in cmd else ""
             self.compiled.append(Path(out).name)

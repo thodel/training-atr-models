@@ -45,6 +45,7 @@ import os
 import pwd
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, field
 
 #: Give up rather than hang a request on a wedged driver.
@@ -285,3 +286,155 @@ def card_rows(cards: list, *, services_expected: bool) -> list[dict]:
             p["used_mib"] for p in procs if p["orphaned"])
         rows.append(row)
     return rows
+
+
+# ── peak over time, for an engine that holds no torch handle (#163) ─────────
+@dataclass
+class Peak:
+    """The high-water mark of one subprocess tree, and how trustworthy it is.
+
+    Two numbers per card, because they answer different questions and only one
+    of them is this job's:
+
+    * ``own_mib`` sums the compute apps whose ancestor chain contains the pid we
+      spawned. That is this run's footprint, and on a shared card it is the only
+      honest figure.
+    * ``card_mib`` is what the card reported in use at the same instant,
+      neighbours included. It is the number an OOM measures itself against, and
+      the one comparable to the 45,486 MiB an A40 makes usable.
+
+    Three outcomes, not two, and the third is the one that bites. ``own_seen``
+    means at least one compute app was traced back to our pid, so ``own_mib`` is
+    measured. ``apps_seen`` without ``own_seen`` means processes were using the
+    card and none of them could be traced to us — a PID namespace would do that —
+    so ``own_mib`` reads 0 and means "could not look". Neither flag set means no
+    process was on the card at all, and then 0 is a measured zero.
+
+    Collapsing the last two is #165's mistake: a reading that failed must not
+    arrive looking like a number. The distinction was found to be missing by
+    running this against a real idle A40 (asteraix, 07.10.2026): it reported
+    "unknown" where 0 was a fact.
+
+    Measured on the same box, same day, against a grandchild — ``sh -c`` spawning
+    a python that held 2 GiB, which is the shape ``ketos`` arrives in::
+
+        gpu0: 2354 MiB own / 2363 MiB on the card; gpu1: 0 MiB own / 4 MiB on the card
+
+    Two things that matters: the ancestor chain carries across two generations,
+    and the 9 MiB between ``own`` and ``card`` on gpu0 is the CUDA context — the
+    card sees it, the per-process figure does not. gpu1's 4 MiB belonged to a
+    neighbour and was correctly not attributed.
+    """
+
+    own_mib: dict[int, int] = field(default_factory=dict)
+    card_mib: dict[int, int] = field(default_factory=dict)
+    readings: int = 0
+    failures: int = 0
+    #: One of our own processes was found holding memory.
+    own_seen: bool = False
+    #: Some process — anyone's — was found holding memory.
+    apps_seen: bool = False
+
+    @property
+    def own_is_unknown(self) -> bool:
+        """The card was busy and none of it could be attributed to us."""
+        return self.apps_seen and not self.own_seen
+
+    def summary(self) -> str:
+        if not self.readings:
+            return f"no GPU reading taken ({self.failures} failure(s))"
+        if not self.apps_seen:
+            return (f"no process on any card over {self.readings} reading(s) — "
+                    "a measured zero, not a missing measurement")
+        cards = sorted(set(self.own_mib) | set(self.card_mib))
+        parts = [f"gpu{i}: {self.own_mib.get(i, 0)} MiB own / "
+                 f"{self.card_mib.get(i, 0)} MiB on the card" for i in cards]
+        tail = (" — the card was busy but nothing traced back to our pid, so 'own' "
+                "is unknown rather than zero") if self.own_is_unknown else ""
+        return f"peak over {self.readings} reading(s): " + "; ".join(parts) + tail
+
+
+class PeakSampler:
+    """Poll nvidia-smi for as long as a subprocess runs, and keep the maximum.
+
+    For engines that never touch torch from Python: ``kraken`` drives ``ketos``
+    as an external CLI (``ketos_cmd.train_cmd``), so there is no allocator to ask
+    and no number in the log either — ketos renders through ``rich``. The peak
+    #163 asks for can only be sampled from outside, which is what this does.
+
+    The attribution is the module's own idiom, from :func:`inspect`: a GPU
+    process belongs to this job when the pid we spawned appears in its ancestor
+    chain. ``start_new_session=True`` (see ``ProcessRunner.run``) makes that pid a
+    session leader, so every descendant ketos forks stays reachable through
+    ``/proc``.
+
+    Never raises into the caller: a stage must not fail because a measurement
+    could not be taken. Failures are counted and surfaced in
+    :meth:`Peak.summary`.
+    """
+
+    def __init__(self, pid: int, *, interval_s: float = 2.0) -> None:
+        self.pid = pid
+        self.interval_s = interval_s
+        self.peak = Peak()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "PeakSampler":
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> Peak:
+        self._stop.set()
+        if self._thread is not None:
+            # Bounded: one nvidia-smi call has TIMEOUT_S to answer, and a stage
+            # must not be held open by a sampler that cannot finish.
+            self._thread.join(timeout=TIMEOUT_S + 2)
+        return self.peak
+
+    # The caller spawns the process and only then knows the pid, so start/stop are
+    # the primary interface; `with` is for the measurement scripts, which do both
+    # in one place.
+    def __enter__(self) -> "PeakSampler":
+        return self.start()
+
+    def __exit__(self, *exc) -> None:
+        self.stop()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self._once()
+            self._stop.wait(self.interval_s)
+        # One last look: a short stage can finish inside the first interval, and
+        # a peak of nothing would be the worst kind of measurement — plausible.
+        self._once()
+
+    def _once(self) -> None:
+        try:
+            apps = _smi(APP_QUERY, per_app=True)
+            uuids = [r[0] for r in _smi("uuid", per_app=False)]
+            used = [_int(r[0]) for r in _smi("memory.used", per_app=False)]
+        except Exception:  # noqa: BLE001 — a reading that failed is not a stage that failed
+            self.peak.failures += 1
+            return
+
+        index_of = {uuid: i for i, uuid in enumerate(uuids)}
+        own: dict[int, int] = {}
+        for row in apps:
+            pid_s, used_s, uuid = (row + [""] * 3)[:3]
+            index = index_of.get(uuid)
+            if index is None:
+                continue
+            if self.pid in _ancestors(_int(pid_s)):
+                own[index] = own.get(index, 0) + _int(used_s)
+
+        self.peak.readings += 1
+        if apps:
+            self.peak.apps_seen = True
+        if own:
+            self.peak.own_seen = True
+        for index, mib in own.items():
+            self.peak.own_mib[index] = max(self.peak.own_mib.get(index, 0), mib)
+        for index, mib in enumerate(used):
+            self.peak.card_mib[index] = max(self.peak.card_mib.get(index, 0), mib)

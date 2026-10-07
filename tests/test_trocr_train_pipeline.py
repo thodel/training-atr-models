@@ -170,7 +170,7 @@ class _Runner:
         self.commands: list[list[str]] = []
         self.env: dict | None = None
 
-    def run(self, cmd, log_path: Path, env=None):
+    def run(self, cmd, log_path: Path, env=None, on_start=None):
         self.commands.append(list(cmd))
         self.env = env
         log_path.parent.mkdir(parents=True, exist_ok=True)

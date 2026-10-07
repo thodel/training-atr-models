@@ -433,6 +433,103 @@ def drop_short_samples(samples: Iterable["Sample"], min_chars: int) -> ShortFilt
     return ShortFilter(kept=kept, dropped=dropped, min_chars=shortest or 0)
 
 
+@dataclass(frozen=True)
+class WorstCase:
+    """The samples a memory measurement should run on, and why these.
+
+    ``drove`` names the criterion each half came from, so a reported peak can say
+    whether the text tail or the pixel tail produced it.
+    """
+
+    samples: list["Sample"]
+    longest_chars: int
+    #: Largest crop area among samples that have a box, 0 when none do. A
+    #: whole-page sample carries no box here, so it has no area to report — it is
+    #: simply larger than any crop of itself, which is why ``page_samples`` is
+    #: counted instead of folded into a number it would distort.
+    widest_pixels: int
+    page_samples: int
+    #: Samples considered. A peak over 40 of 9,441 is a different claim than a
+    #: peak over 40 of 40, and the measurement must be able to say which.
+    considered: int
+
+    def __str__(self) -> str:
+        area = f"widest crop {self.widest_pixels} px" if self.widest_pixels else "no crops"
+        pages = f", {self.page_samples} whole page(s)" if self.page_samples else ""
+        return (f"{len(self.samples)} worst-case sample(s) of {self.considered}: "
+                f"longest {self.longest_chars} chars, {area}{pages}")
+
+
+def worst_case_samples(samples: Iterable["Sample"], count: int) -> WorstCase:
+    """The most expensive samples in the set — the mirror of the two filters above.
+
+    :func:`drop_long_samples` removes the tail because it cannot be afforded.
+    This keeps exactly that tail, because a peak-memory measurement that avoids
+    it measures nothing worth knowing. #137 reported 27,763 MiB from "96 of 9,441
+    samples, from the head of the file" and said plainly what that was worth:
+    *"The peak is a lower bound. On this project an OOM was twice the edge of the
+    distribution and not the batch size. The 17.3 GiB are headroom, not proof."*
+
+    Two tails, because two different allocations drive the peak and they do not
+    coincide:
+
+    * **Text length.** Cross-entropy upcasts the logits to fp32, so one sample
+      costs ``tokens x vocab x 4`` bytes in a single allocation — the figure
+      :func:`drop_long_samples` cites is 8.16 GiB for a 14,411-token page. At
+      vocabularies of 248,320 (Qwen3.5) and 262,144 (Gemma 4) this is the largest
+      single tensor in the step and it appears in no weight calculation.
+    * **Crop area.** The image tokens scale with the pixels that survive the
+      budget, and a wide line or a full page carries far more of them than the
+      median. A sample can be cheap in text and expensive in pixels.
+
+    So half the budget goes to each tail and the halves are merged, text tail
+    first: a budget of one can only measure one tail, and both OOMs this project
+    has recorded were in ``logits.float()``. Asking for more samples than exist
+    returns all of them, which is the honest answer rather than an error:
+    ``considered`` then equals ``len(samples)`` and the peak is over the whole set.
+    """
+    pool = list(samples)
+    if count <= 0 or not pool:
+        return WorstCase(samples=[], longest_chars=0, widest_pixels=0,
+                         page_samples=0, considered=len(pool))
+
+    def pixels(sample: "Sample") -> int:
+        if not sample.bbox:
+            # A whole-page sample has no box here; its cost is the page, which is
+            # larger than any crop of it. Sorting it to the top is correct.
+            return 1 << 62
+        left, top, right, bottom = sample.bbox
+        return max(0, right - left) * max(0, bottom - top)
+
+    by_text = sorted(pool, key=lambda s: len(s.text), reverse=True)
+    by_pixels = sorted(pool, key=pixels, reverse=True)
+
+    chosen: list[Sample] = []
+    seen: set[int] = set()
+    # Interleaved rather than concatenated: when the two tails overlap — and on a
+    # page corpus they largely do — taking `half` from each list in turn still
+    # fills the budget, where two slices would return half as many.
+    for pair in zip(by_text, by_pixels):
+        for sample in pair:
+            if id(sample) in seen:
+                continue
+            seen.add(id(sample))
+            chosen.append(sample)
+            if len(chosen) == count:
+                break
+        if len(chosen) == count:
+            break
+
+    boxed = [pixels(s) for s in pool if s.bbox]
+    return WorstCase(
+        samples=chosen,
+        longest_chars=len(by_text[0].text),
+        widest_pixels=max(boxed) if boxed else 0,
+        page_samples=sum(1 for s in pool if not s.bbox),
+        considered=len(pool),
+    )
+
+
 def _relative(path: Path, root: str | Path | None) -> str:
     """Path relative to ``root`` when it is under it, else absolute.
 

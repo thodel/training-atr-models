@@ -29,7 +29,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import Any, Callable, ClassVar, Protocol
 
 from loguru import logger
 
@@ -47,6 +47,7 @@ from atr_training.contracts import (
     utcnow,
 )
 from atr_training.convergence import check_convergence
+from atr_training.gpu import Peak, PeakSampler
 from atr_training.heldout import load_heldout
 from atr_training.hf_source import (data_files_for, granularity_files,
                                             keep_projects_for, only_projects)
@@ -118,7 +119,15 @@ class StageFailed(RuntimeError):
 
 
 class CommandRunner(Protocol):
-    def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None) -> int: ...
+    def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None,
+            on_start: Callable[[int], None] | None = None) -> int:
+        """``on_start`` receives the child's pid as soon as it exists (#163).
+
+        Part of the contract rather than an attribute discovered with
+        ``getattr``: a GPU peak that silently went unmeasured would be
+        indistinguishable from a card that stayed empty.
+        """
+        ...
 
 
 
@@ -166,7 +175,17 @@ class SubprocessRunner:
             return None
         return None if local == share_log else local
 
-    def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None) -> int:
+    def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None,
+            on_start: Callable[[int], None] | None = None) -> int:
+        """Spawn ``cmd``, mirror its output, and return its exit code.
+
+        ``on_start`` is called with the child's pid as soon as it exists. It is
+        how a GPU peak gets measured for an engine that holds no torch handle:
+        ``kraken`` drives ``ketos`` as an external CLI, so the only way to the
+        number #163 asks for is to watch from out here while it runs. Called
+        before ``wait``, so a sampler sees the whole life of the process; raising
+        from it would lose a running child, so the caller must not.
+        """
         share_log.parent.mkdir(parents=True, exist_ok=True)
         full_env = {**os.environ, **(env or {})}
         header = f"\n$ {' '.join(cmd)}\n".encode()
@@ -178,6 +197,7 @@ class SubprocessRunner:
                 log.flush()
                 proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                         env=full_env, start_new_session=True)
+                _notify_start(on_start, proc.pid)
                 return proc.wait()
 
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +207,7 @@ class SubprocessRunner:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, env=full_env,
                                     start_new_session=True)
+            _notify_start(on_start, proc.pid)
             # The thread owns proc.stdout: reading it here as well would race for
             # the same buffer, and closing it from the other side is how a reader
             # ends up with a file descriptor somebody else has reused.
@@ -204,6 +225,21 @@ class SubprocessRunner:
 #: thread is a daemon, so a share that never returns costs this much and no more.
 MIRROR_JOIN_TIMEOUT_S = 5.0
 
+
+
+def _notify_start(on_start: Callable[[int], None] | None, pid: int) -> None:
+    """Hand the child's pid to a watcher, and never let that lose the child.
+
+    The one caller starts a GPU peak sampler here (#163). If it raised, the
+    process would already be running and nothing would be left holding it — so a
+    measurement that cannot start is logged and the stage goes on without it.
+    """
+    if on_start is None:
+        return
+    try:
+        on_start(pid)
+    except Exception as exc:  # noqa: BLE001 — a watcher must not cost a stage
+        logger.warning("could not start the GPU peak sampler for pid {}: {}", pid, exc)
 
 def _write_best_effort(handle, chunk: bytes) -> None:
     """Write and flush, or give up on this handle. Never raises.
@@ -346,14 +382,67 @@ class BasePipeline(ABC):
         self.store.save(job)
 
     def _run(self, job: TrainJob, stage: JobStage, cmd: list[str], record: StageRecord) -> None:
+        # Watch the card while the subprocess runs (#163). This is the only route
+        # to a peak for kraken, which drives `ketos` as an external CLI and holds
+        # no torch handle, and it is the figure comparable to a card's capacity
+        # for the engines that do — torch's own marks exclude the CUDA context.
+        sampler: PeakSampler | None = None
+
+        def started(pid: int) -> None:
+            nonlocal sampler
+            sampler = PeakSampler(pid).start()
+
         log_path = self.store.paths(job.id).log(stage)
-        code = self.runner.run(cmd, log_path, env=self.settings.env_for_child())
+        try:
+            code = self.runner.run(cmd, log_path, env=self.settings.env_for_child(),
+                                   on_start=started)
+        finally:
+            if sampler is not None:
+                self._record_peak(job, record, sampler.stop())
         record.exit_code = code
         if code != 0:
             raise StageFailed(
                 f"{stage} failed: {Path(cmd[0]).name} exited {code}. "
                 f"Last lines of {record.log}:\n" + "\n".join(tail(log_path, 20))
             )
+
+    def _record_peak(self, job: TrainJob, record: StageRecord, peak: Peak) -> None:
+        """Put a sampled peak on the stage and keep the job's maximum beside it.
+
+        Per stage because the peaks differ and the smaller is not the harmless
+        one — the OOM behind ``drop_long_samples`` was in an eval loop whose
+        training steps had all fitted. Per job as well, because the table #163
+        asks for has one row per run.
+
+        Merged rather than assigned: an engine that reports torch's own marks
+        writes different keys into the same mapping, and a row carrying both the
+        allocator's floor and the card's figure is the row worth having. Kept by
+        maximum, so a later, cheaper stage cannot lower a peak already seen.
+
+        Never raises: this is a measurement, and the stage it describes has
+        already run.
+        """
+        try:
+            if not peak.readings and not peak.failures:
+                return
+            logger.info("{} {}", record.name, peak.summary())
+            sampled = {f"gpu{index}": {"own_mib": peak.own_mib.get(index, 0),
+                                       "card_mib": peak.card_mib.get(index, 0)}
+                       for index in sorted(set(peak.own_mib) | set(peak.card_mib))}
+            if peak.own_is_unknown:
+                # #165: the card was busy and none of it traced back to our pid —
+                # a PID namespace, most likely. 0 MiB would read as "used
+                # nothing" when it means "could not look", so the key goes away.
+                # An *idle* card is a different case and keeps its measured zero.
+                for marks in sampled.values():
+                    marks.pop("own_mib", None)
+            record.peak_gpu_mib = sampled
+            for card, marks in sampled.items():
+                into = job.progress.peak_gpu_mib.setdefault(card, {})
+                for key, value in marks.items():
+                    into[key] = max(into.get(key, 0), value)
+        except Exception as exc:  # noqa: BLE001 — a measurement must not fail a stage
+            logger.warning("could not record the GPU peak for {}: {}", record.name, exc)
 
     # ── the shared stage ────────────────────────────────────────────────────
     def _prepare(self, job: TrainJob) -> tuple[Path, Path]:

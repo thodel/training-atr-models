@@ -875,7 +875,45 @@ def main(argv: list[str] | None = None) -> int:
         print(f"resuming from {resume_from}", flush=True)
     else:
         print("no checkpoint found; starting from scratch", flush=True)
+    # Zero the allocator's high-water marks so the peak below belongs to the
+    # training loop and not to loading the weights (#163). Model load is already
+    # measured separately by scripts/measure_vlm_footprint.py, and mixing the two
+    # is how a "peak" stops being attributable to a batch geometry.
+    import torch
+
+    if torch.cuda.is_available():
+        for device in range(torch.cuda.device_count()):
+            torch.cuda.reset_peak_memory_stats(device)
+
     trainer.train(resume_from_checkpoint=resume_from)
+
+    # The first branch of docs/WHERE_A_RUN_RUNS.md asks whether a run fits on one
+    # A40 (44.42 GiB). Until now the answer came from hand-run scripts on two
+    # occasions and from nothing at all for every real run, so the table #163 asks
+    # for had one row. Reading it here costs nothing and makes every future run
+    # contribute one.
+    #
+    # `reserved` rather than `allocated` is the deciding figure on the torch side:
+    # the caching allocator does not return freed blocks, so the reserve is what
+    # the process is holding. Both are kept — their difference is fragmentation,
+    # and at the OOM that killed 20260908T101611Z it was 5.72 GiB of the 8.16 GiB
+    # the run then could not find (see settings.env_for_child).
+    #
+    # Read it as a FLOOR, not as occupancy. The CUDA context and anything torch
+    # does not own sit outside these marks, and `PYTORCH_CUDA_ALLOC_CONF=
+    # expandable_segments:True` — which the service sets for every training child
+    # — accounts the reserve differently from what the driver reports. Against the
+    # 45,486 MiB an A40 makes usable, that leaves these numbers useful for ranking
+    # batch geometries and too optimistic to be a fit/no-fit verdict on their own;
+    # the nvidia-smi sampler in scripts/measure_vlm_arms.py is the figure that
+    # matches what the driver sees.
+    peak_gpu_mib = {}
+    if torch.cuda.is_available():
+        for device in range(torch.cuda.device_count()):
+            peak_gpu_mib[f"gpu{device}"] = {
+                "reserved_mib": round(torch.cuda.max_memory_reserved(device) / 2 ** 20),
+                "allocated_mib": round(torch.cuda.max_memory_allocated(device) / 2 ** 20),
+            }
 
     # Save the adapter at the top of output_dir: find_adapter() looks there first,
     # and falls back to checkpoint-* only when a run did not get this far.
@@ -901,7 +939,9 @@ def main(argv: list[str] | None = None) -> int:
                     # only in a printed line kept every hundredth time.
                     "sequence_budget": args.max_seq_len,
                     "over_budget_samples": collator.over_budget,
-                    "max_sequence_tokens": collator.longest},
+                    "max_sequence_tokens": collator.longest,
+                    # Per card, reset just before the loop — see above (#163).
+                    "peak_gpu_mib": peak_gpu_mib},
                    indent=2),
         encoding="utf-8",
     )
