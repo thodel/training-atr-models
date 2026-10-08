@@ -532,14 +532,28 @@ class TestImageTemplate:
                         "https://opendigi.ub.uni-tuebingen.de/opendigi/image/"
                         "agtck_1834_02/agtck_1834_02_00002.jp2/full/full/0/default.jpg"}
 
-    def test_only_limits_a_template_to_its_subtree(self):
-        """Bei dach-gt holt nur DE-17 aus Darmstadt; der Rest nennt seine URL selbst."""
+    def test_only_limits_a_template_to_its_subtree(self, tmp_path: Path):
+        """Bei dach-gt holt nur DE-17 aus Darmstadt; der Rest nennt seine URL selbst.
+
+        Eine Seite ausserhalb von DE-17, deren Dokument auch keine URL nennt, darf
+        **kein** Bild bekommen — die Darmstädter Vorlage würde sonst auf eine
+        fremde Sammlung greifen und ein Bild holen, das nicht dazugehört.
+        """
         source = source_by_id("dach-gt")
         template = next(p for p in source.images if isinstance(p, ImageTemplate))
         assert template.only == "DE-17"
-        outside = image_urls(pathlib.Path("/nonexistent"), source,
-                             [self._page("data/DE-525/x/GT-PAGE/a.xml")])
-        assert outside == {}, "eine Vorlage darf nicht auf eine fremde Sammlung greifen"
+
+        outside = Path("data/DE-525/x/GT-PAGE/a.xml")
+        (tmp_path / outside).parent.mkdir(parents=True)
+        (tmp_path / outside).write_text('<PcGts><Page imageFilename="a.jpg"/></PcGts>')
+        assert image_urls(tmp_path, source, [self._page(str(outside))]) == {}
+
+        inside = Path("data/DE-17/urn_x/b.xml")
+        (tmp_path / inside).parent.mkdir(parents=True)
+        (tmp_path / inside).write_text('<PcGts><Page imageFilename="b.jpg"/></PcGts>')
+        got = image_urls(tmp_path, source, [self._page(str(inside))])
+        assert got == {"b": "https://tudigit.ulb.tu-darmstadt.de/image/"
+                            "GK-9099-S322-1/3/b.jpg"}
 
     def test_the_plans_are_tried_in_order(self):
         """Fibeln braucht beides: 41 Dokumente nennen ihre URL, 412 nicht."""
