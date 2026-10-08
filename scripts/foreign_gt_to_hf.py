@@ -157,12 +157,12 @@ def main(argv: list[str] | None = None) -> int:
         print("  keine Seite ausgewählt", file=sys.stderr)
         return 1
 
-    urls = {} if args.no_images else image_urls(root, source)
+    urls = {} if args.no_images else image_urls(root, source, sel.pages)
     have = sum(1 for page in sel.pages if page.stem in urls)
     print(f"  Bild-URLs:  {len(urls)} im Repo gelistet, {have} von "
           f"{len(sel.pages)} ausgewählten Seiten zugeordnet")
 
-    if source.images is None and not args.no_images:
+    if not source.images and not args.no_images:
         print(f"\n  {source.id} hat keinen Bezugsweg für Bilder — nichts "
               f"hochgeladen.\n  Die Bilder liegen bei {source.image_source}. "
               f"Ein Datensatz ohne Bildspalte kann nicht trainieren und sieht in "

@@ -30,12 +30,16 @@ import base64
 import re
 import subprocess
 import urllib.parse
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = [
     "ForeignGtError",
+    "ImageInXml",
+    "ImagePlan",
     "ImageShellScript",
+    "ImageTemplate",
     "ImageUrlList",
     "PageFile",
     "SOURCES",
@@ -47,6 +51,7 @@ __all__ = [
     "image_urls",
     "source_by_id",
     "stabilise_archive_org",
+    "url_in_document",
     "tracked_pages",
 ]
 
@@ -62,6 +67,13 @@ ALTO_MARKER = b"alto/ns-v"
 #: are in the first few hundred bytes; reading more would only find the words in a
 #: comment or a transcription.
 HEAD_BYTES = 800
+
+#: Die Stelle, an der OCR-D die Bildherkunft notiert.
+_EXTERNAL_REF = re.compile(r'externalRef="([^"]+)"')
+#: Eine Bild-URL irgendwo im Dokument, als zweite Wahl nach externalRef.
+_IMAGE_URL = re.compile(
+    r"(https?://[^\"\s<>]+?(?:\.(?:jpg|jpeg|png|tif|tiff)|/default\.jpg))",
+    re.IGNORECASE)
 
 _TEXTLINE = re.compile(rb"<([A-Za-z0-9]+:)?TextLine\b")
 _UNICODE = re.compile(rb"<([A-Za-z0-9]+:)?Unicode>")
@@ -118,6 +130,44 @@ class ImageShellScript:
 
 
 @dataclass(frozen=True)
+class ImageInXml:
+    """Die Bild-URL steht im PAGE-Dokument selbst.
+
+    Die angenehmste Form, weil sie nichts voraussetzt als das Dokument: OCR-D-
+    Werkzeuge schreiben die Herkunft als ``Metadata/@externalRef``. Gemessen am
+    08.10.2026 tragen alle 182 DTGT-Dokumente eine, 147 von 162 bei dach-gt und
+    41 von 453 bei Fibeln.
+
+    Mein Register hatte DTGT als "kein Bezugsweg" geführt, weil kein *Skript* im
+    Repo liegt. Das war richtig und der Schluss daraus falsch — die URL lag die
+    ganze Zeit in den Dateien.
+    """
+
+
+@dataclass(frozen=True)
+class ImageTemplate:
+    """Eine URL-Vorlage je Sammlung, gefüllt aus dem Pfad und dem Dokument.
+
+    Platzhalter: ``{stem}`` der XML-Stamm, ``{base}`` derselbe ohne abschliessendes
+    ``_NNN``, ``{top}`` die erste Pfadkomponente unter ``xml_root``, ``{dir}`` das
+    unmittelbare Elternverzeichnis, ``{img}``/``{imgbase}``/``{imgext}`` der
+    ``imageFilename`` des Dokuments mit und ohne Endung.
+
+    ``only`` begrenzt die Vorlage auf Pfade, die dieses Fragment enthalten — bei
+    dach-gt holt nur DE-17 aus Darmstadt, der Rest über :class:`ImageInXml`.
+    """
+
+    template: str
+    only: str = ""
+
+
+#: Je Quelle in dieser Reihenfolge versucht; der erste Weg, der eine URL ergibt,
+#: gewinnt. Fibeln und dach-gt brauchen das, weil ihr Bezugsweg je
+#: Unterverzeichnis verschieden ist.
+ImagePlan = ImageUrlList | ImageShellScript | ImageInXml | ImageTemplate
+
+
+@dataclass(frozen=True)
 class Source:
     """One fremde Quelle, with its licence and the place that licence is written.
 
@@ -144,7 +194,7 @@ class Source:
     project: str
     target: str
     branch: str = "main"
-    images: ImageUrlList | ImageShellScript | None = None
+    images: tuple[ImagePlan, ...] = ()
     #: Path fragments that win when one page stem appears more than once.
     prefer: tuple[str, ...] = ()
     #: Whether the holding institution's terms for the *images* have been checked.
@@ -341,35 +391,103 @@ def _decode_base(root: Path, plan: ImageUrlList) -> str:
     return base64.b64decode(found.group(0)).decode("utf-8").strip()
 
 
-def image_urls(root: Path, source: Source) -> dict[str, str]:
-    """``{page stem: image URL}`` for one cloned source.
+def _from_url_list(root: Path, plan: ImageUrlList) -> dict[str, str]:
+    base = _decode_base(root, plan)
+    urls: dict[str, str] = {}
+    listing = (root / plan.list_path).read_text(encoding="utf-8", errors="replace")
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        remote, local = parts
+        stem = Path(local).stem
+        urls[stem] = plan.template.format(
+            base=base, remote=remote, local=local,
+            stem=stem, ext=Path(local).suffix.lstrip("."))
+    return urls
 
-    A stem missing from the result has no image URL in the source, which is
-    reported rather than guessed at.
-    """
-    if source.images is None:
-        return {}
 
-    if isinstance(source.images, ImageUrlList):
-        base = _decode_base(root, source.images)
-        urls: dict[str, str] = {}
-        listing = (root / source.images.list_path).read_text(
-            encoding="utf-8", errors="replace")
-        for line in listing.splitlines():
-            parts = line.split()
-            if len(parts) != 2:
-                continue
-            remote, local = parts
-            stem = Path(local).stem
-            urls[stem] = source.images.template.format(
-                base=base, remote=remote, local=local,
-                stem=stem, ext=Path(local).suffix.lstrip("."))
-        return urls
-
-    script = (root / source.images.script_path).read_text(
-        encoding="utf-8", errors="replace")
+def _from_shell_script(root: Path, plan: ImageShellScript) -> dict[str, str]:
+    script = (root / plan.script_path).read_text(encoding="utf-8", errors="replace")
     return {Path(name).stem: stabilise_archive_org(url)
             for name, url in _CURL_O.findall(script)}
+
+
+def url_in_document(xml_text: str) -> str | None:
+    """Die Bild-URL, die das PAGE-Dokument selbst nennt.
+
+    Zuerst ``externalRef``, weil das die Stelle ist, die OCR-D dafür vorsieht;
+    sonst die erste Bild-URL irgendwo im Dokument. Findet sich keine, ist das
+    Ergebnis ``None`` und nicht eine geratene.
+    """
+    found = _EXTERNAL_REF.search(xml_text)
+    if found and _IMAGE_URL.fullmatch(found.group(1)):
+        return found.group(1)
+    anywhere = _IMAGE_URL.search(xml_text)
+    return anywhere.group(1) if anywhere else None
+
+
+def _fill_template(plan: ImageTemplate, page: "PageFile", xml_root: str,
+                   xml_text: str) -> str | None:
+    if plan.only and plan.only not in page.path:
+        return None
+    relative = page.path[len(xml_root):].lstrip("/") if xml_root else page.path
+    parts = Path(relative).parts
+    image_name = ""
+    try:
+        from atr_training.pagexml import image_filename
+
+        image_name = image_filename(xml_text)
+    except Exception:  # noqa: BLE001 — ein Dokument ohne imageFilename ist erlaubt
+        image_name = ""
+    return plan.template.format(
+        stem=page.stem,
+        base=re.sub(r"_\d+$", "", page.stem),
+        top=parts[0] if parts else "",
+        dir=Path(page.path).parent.name,
+        img=image_name,
+        imgbase=Path(image_name).stem,
+        imgext=Path(image_name).suffix.lstrip("."),
+    )
+
+
+def image_urls(root: Path, source: Source,
+               pages: "Sequence[PageFile]" = ()) -> dict[str, str]:
+    """``{Seitenstamm: Bild-URL}`` für eine geklonte Quelle.
+
+    Die Wege aus ``source.images`` werden in ihrer Reihenfolge versucht; der erste,
+    der für eine Seite eine URL ergibt, gewinnt. Ein Stamm, der im Ergebnis fehlt,
+    hat in der Quelle keine Bild-URL — das wird berichtet, nicht geraten.
+
+    ``pages`` braucht nur, wer :class:`ImageInXml` oder :class:`ImageTemplate`
+    benutzt: beide lesen das Dokument selbst.
+    """
+    urls: dict[str, str] = {}
+    needs_pages = any(isinstance(p, (ImageInXml, ImageTemplate))
+                      for p in source.images)
+    if needs_pages and not pages:
+        raise ForeignGtError(
+            f"{source.id}: dieser Bezugsweg liest die Dokumente selbst, also "
+            "müssen die ausgewählten Seiten übergeben werden")
+
+    for plan in source.images:
+        if isinstance(plan, ImageUrlList):
+            for stem, url in _from_url_list(root, plan).items():
+                urls.setdefault(stem, url)
+        elif isinstance(plan, ImageShellScript):
+            for stem, url in _from_shell_script(root, plan).items():
+                urls.setdefault(stem, url)
+        else:
+            for page in pages:
+                if page.stem in urls:
+                    continue
+                xml_text = (root / page.path).read_text(
+                    encoding="utf-8", errors="replace")
+                url = (url_in_document(xml_text) if isinstance(plan, ImageInXml)
+                       else _fill_template(plan, page, source.xml_root, xml_text))
+                if url:
+                    urls[page.stem] = url
+    return urls
 
 
 def dataset_card(source: Source, sel: Selection, *, with_images: int,
@@ -468,12 +586,12 @@ SOURCES: tuple[Source, ...] = (
         clone_url="https://github.com/UB-Mannheim/reichsanzeiger-gt.git",
         xml_root="data/reichsanzeiger-1820-1939/GT-PAGE",
         prefer=("reichsanzeiger-1820-1939/GT-PAGE",),
-        images=ImageUrlList(
+        images=(ImageUrlList(
             list_path="data/imageurls.list",
             script_path="data/download_images.sh",
             base_b64="aHR0cHM6Ly9kaWdpLmJpYi51bmktbWFubmhlaW0uZGUvcmVpY2hzYW56ZWlnZXIu"
                      "ZmNnaT9GSUY9L3JlaWNoc2FuemVpZ2VyL2ZpbG0vCg==",
-        ),
+        ),),
         licence="CC0-1.0",
         licence_at="LICENSE (CC0 1.0 Universal); METADATA.yml; .zenodo.json (cc-zero); "
                    "GitHub-API spdx_id",
@@ -505,7 +623,7 @@ SOURCES: tuple[Source, ...] = (
         clone_url="https://github.com/UB-Mannheim/Weisthuemer.git",
         xml_root="Transcription",
         branch="master",
-        images=ImageShellScript(script_path="get_images"),
+        images=(ImageShellScript(script_path="get_images"),),
         licence="CC0-1.0",
         licence_at="LICENSE (CC0 1.0 Universal); GitHub-API spdx_id",
         attribution="Universitätsbibliothek Mannheim — das Repo nennt keine "
@@ -535,14 +653,13 @@ SOURCES: tuple[Source, ...] = (
         origin="https://github.com/tboenig/DTGT",
         clone_url="https://github.com/tboenig/DTGT.git",
         xml_root="data",
-        images=None,
+        images=(ImageInXml(),),
         licence="CC0-1.0",
         licence_at="LICENSE (CC0 1.0 Universal); METADATA.yml (`license: - name: CC0 1.0`); "
                    "README-Metadatentabelle; GitHub-API spdx_id",
         attribution="Martin Faßnacht, Stefan Weil (UB Tübingen / Theologie digital) "
                     "— genannt in `METADATA.yml` und im README",
-        image_source="UB Tübingen, idb.ub.uni-tuebingen.de/digitue/theo/ — kein "
-                     "Bezugsskript im Repo",
+        image_source="UB Tübingen, idb.ub.uni-tuebingen.de/opendigi",
         script_kind="Druck, Fraktur",
         period="1860–1872, plus ein Stück des 17. Jahrhunderts",
         project="dtgt",
@@ -555,8 +672,121 @@ SOURCES: tuple[Source, ...] = (
             "*Gründtlicher Bericht von den zwo roten Neben-Sonnen* ist ein "
             "Fraktur-Einblattdruck des 17. Jahrhunderts (nennt die Schlacht bei "
             "Oldendorp, 1633).",
-            "**Dieses Repo enthält kein Bezugsskript für die Bilder.** Bis der Weg "
-            "zu den Scans geklärt ist, trägt der Datensatz nur XML.",
+            "Das Repo enthält kein Bezugs*skript* — die Bild-URL steht aber in "
+            "**jedem der 182 Dokumente** als `externalRef`. Dass ich die Quelle "
+            "zuerst als 'kein Bezugsweg' geführt habe, war ein Fehlschluss aus dem "
+            "fehlenden Skript.",
+        ),
+    ),
+    Source(
+        id="gt-fraktur",
+        origin="https://github.com/ubtue/gt-fraktur",
+        clone_url="https://github.com/ubtue/gt-fraktur.git",
+        branch="master",
+        xml_root="",
+        images=(ImageTemplate(
+            template="https://opendigi.ub.uni-tuebingen.de/opendigi/image/"
+                     "{base}/{stem}.jp2/full/full/0/default.jpg"),),
+        licence="CC0-1.0",
+        licence_at="**nur README** §2 ('released by UB, Uni-Tuebingen as Open Data "
+                   "under the CC0 public license'); es gibt keine LICENSE-Datei, und "
+                   "die GitHub-API meldet `license: null`",
+        attribution="Universitätsbibliothek Tübingen (ubtue) — theologische "
+                    "Zeitschriften aus dem OpenDigi-Bestand",
+        image_source="UB Tübingen, opendigi.ub.uni-tuebingen.de",
+        script_kind="Druck, Fraktur",
+        period="1830–1875",
+        project="gt-fraktur",
+        target="dh-unibe/image-text_gt-fraktur",
+        notes=(
+            "**207 Seiten, 14.617 Zeilen** — gemessen. Das Repo hält 208 PAGE-"
+            "Dokumente; eines trägt `TextLine`-Elemente ohne `Unicode`-Text und "
+            "fällt heraus.",
+            "Dieselben 208 Seiten liegen zusätzlich als ALTO. Hier ist die "
+            "PAGE-Fassung eingelesen.",
+            "**Die Lizenz steht nur im README.** Inhaltlich genügt uns das, aber "
+            "GitHubs Lizenzerkennung sieht nichts. Eine Bitte an die UB Tübingen, "
+            "eine `LICENSE`-Datei nachzulegen, kostet nichts und macht die Quelle "
+            "maschinell prüfbar.",
+            "Das Bezugsskript holt JPEG und speichert sie mit `.tif`-Endung, weil "
+            "die PAGE-Dokumente das erwarten. Wir behalten die echte Endung.",
+        ),
+    ),
+    Source(
+        id="Fibeln",
+        origin="https://github.com/UB-Mannheim/Fibeln",
+        clone_url="https://github.com/UB-Mannheim/Fibeln.git",
+        branch="master",
+        xml_root="",
+        images=(
+            ImageInXml(),
+            ImageTemplate(
+                template="https://gei-digital.gei.de/viewer/api/v1/records/{top}/"
+                         "files/images/{imgbase}.tif/full/max/0/default.{imgext}"),
+        ),
+        licence="CC0-1.0",
+        licence_at="LICENSE (CC0 1.0 Universal); GitHub-API spdx_id",
+        attribution="Universitätsbibliothek Mannheim — Vorlagen aus GEI-Digital "
+                    "(Georg-Eckert-Institut) und SUB Göttingen",
+        image_source="GEI-Digital Braunschweig und SUB Göttingen",
+        script_kind="Druck, Fraktur (Fibeln)",
+        period="1782 sowie 19. und frühes 20. Jahrhundert",
+        project="fibeln",
+        target="dh-unibe/image-text_fibeln",
+        notes=(
+            "**409 Seiten, 8.895 Zeilen** — gemessen. Das Repo hält 453 PAGE-"
+            "Dokumente; 44 tragen keine Transkription.",
+            "Zwei Bezugswege, je Unterverzeichnis verschieden: 41 Dokumente "
+            "(PPN643815198) nennen ihre Bild-URL selbst und holen aus Göttingen, "
+            "die übrigen fünf PPN über eine Vorlage von GEI-Digital.",
+            "Der Repo-Titel sagt '19. Jahrhundert'. Das ist schon durch "
+            "PPN643815198 widerlegt — *Neue Fibel*, Göttingen **1782** — und die "
+            "GEI-Sammlung *Fibeln Kaiserreich* reicht bis 1918.",
+            "Zwei der sechs Verzeichnisse (PPN1024784126, PPN1025195825) haben "
+            "kein README; 225 der 409 Seiten sind damit nach Werk und Datum "
+            "unbestimmt.",
+            "Der Klon muss **flach** sein: das Repo trägt 3,83 GB Geschichte, weil "
+            "Bilder einmal eingecheckt und später entfernt wurden. Der Arbeitsbaum "
+            "hält nur ~24 MB XML.",
+        ),
+    ),
+    Source(
+        id="dach-gt",
+        origin="https://github.com/UB-Mannheim/dach-gt",
+        clone_url="https://github.com/UB-Mannheim/dach-gt.git",
+        xml_root="data",
+        images=(
+            ImageInXml(),
+            ImageTemplate(
+                only="DE-17",
+                template="https://tudigit.ulb.tu-darmstadt.de/image/"
+                         "GK-9099-S322-1/3/{stem}.jpg"),
+        ),
+        licence="CC0-1.0",
+        licence_at="LICENSE (CC0 1.0 Universal); GitHub-API spdx_id",
+        attribution="Stefan Weil (UB Mannheim) und die sieben haltenden "
+                    "Einrichtungen DE-1, DE-4, DE-12, DE-17, DE-23, DE-525, DE-Mh40",
+        image_source="sieben Bibliotheken, u.a. Staatsbibliothek zu Berlin und "
+                     "ULB Darmstadt, über IIIF und METS",
+        script_kind="Druck, Inkunabel- und Fraktur- und Antiqua-Typen",
+        period="1486–1913",
+        project="dach-gt",
+        target="dh-unibe/image-text_dach-gt",
+        notes=(
+            "**162 Seiten, 4.636 Zeilen** in PAGE-Form — gemessen.",
+            "**Nur ein Sechstel der Quelle.** Weitere **864 Seiten liegen als "
+            "ALTO** und brauchen einen Adapter, den es noch nicht gibt. Die "
+            "Schätzung von ~33.000 Zeilen für die ganze Quelle war im Ergebnis "
+            "nicht grob falsch, in der Verteilung aber schon.",
+            "**173 Einträge unter `data/DE-12/.../alto/` sind defekte Symlinks** "
+            "auf ein nie eingechecktes `gt/`. Dieser Importweg filtert nach "
+            "Git-Modus und verwirft sie; wer nach Endung filtert, liest 173 "
+            "einzeilige Textdateien als Ground Truth ein.",
+            "DE-4 hält 15 Seiten doppelt vor, als PAGE und als ALTO.",
+            "Nur 7 der 11 im README genannten Einrichtungen haben Daten; DE-27, "
+            "DE-38, DE-46 und DE-61 sind leere Platzhalter.",
+            "Die Staatsbibliothek zu Berlin antwortete in der Probe in 9,7 s je "
+            "Bild — deutlich langsamer als die anderen Server.",
         ),
     ),
 )

@@ -18,6 +18,7 @@ Dubletten sind und kein Fund.
 
 from __future__ import annotations
 
+import pathlib
 import subprocess
 from pathlib import Path
 
@@ -34,8 +35,11 @@ from atr_training.foreign_gt import (
     dataset_card,
     deduplicate,
     image_urls,
+    ImageInXml,
+    ImageTemplate,
     source_by_id,
     stabilise_archive_org,
+    url_in_document,
     tracked_pages,
 )
 
@@ -224,9 +228,10 @@ class TestImageUrls:
                         licence="CC0-1.0", licence_at="LICENSE",
                         attribution="UB Mannheim", image_source="UB MA",
                         script_kind="s", period="p", project="pr", target="t",
-                        images=ImageUrlList(list_path="data/imageurls.list",
-                                            script_path="data/download_images.sh",
-                                            base_b64=self.B64))
+                        images=(ImageUrlList(
+                            list_path="data/imageurls.list",
+                            script_path="data/download_images.sh",
+                            base_b64=self.B64),))
         urls = image_urls(root, source)
         assert urls == {"1870_14_0126":
                         "https://digi.bib.uni-mannheim.de/reichsanzeiger.fcgi"
@@ -241,9 +246,10 @@ class TestImageUrls:
                         licence="CC0-1.0", licence_at="LICENSE",
                         attribution="UB Mannheim", image_source="UB MA",
                         script_kind="s", period="p", project="pr", target="t",
-                        images=ImageUrlList(list_path="data/imageurls.list",
-                                            script_path="data/download_images.sh",
-                                            base_b64=self.B64))
+                        images=(ImageUrlList(
+                            list_path="data/imageurls.list",
+                            script_path="data/download_images.sh",
+                            base_b64=self.B64),))
         with pytest.raises(ForeignGtError, match="no longer contains"):
             image_urls(root, source)
 
@@ -259,7 +265,7 @@ class TestImageUrls:
                         licence="CC0-1.0", licence_at="LICENSE",
                         attribution="UB Mannheim", image_source="archive.org",
                         script_kind="s", period="p", project="pr", target="t",
-                        images=ImageShellScript(script_path="get_images"))
+                        images=(ImageShellScript(script_path="get_images"),))
         urls = image_urls(root, source)
         assert urls["bub_gb_Y_0012"] == "https://archive.org/download/d/e.tar/f.png"
         assert len(urls) == 2
@@ -280,16 +286,19 @@ class TestImageUrls:
                         licence="CC0-1.0", licence_at="LICENSE",
                         attribution="UB Mannheim", image_source="archive.org",
                         script_kind="s", period="p", project="pr", target="t",
-                        images=ImageShellScript(script_path="get_images"))
+                        images=(ImageShellScript(script_path="get_images"),))
         urls = image_urls(root, source)
         assert all("$page" in stem for stem in urls), \
             "eine Schleifenvariable darf nicht als Seitenstamm durchgehen"
 
-    def test_no_image_plan_yields_nothing(self, tmp_path: Path):
-        """DTGT hat kein Bezugsskript. Nichts ist das richtige Ergebnis."""
-        source = source_by_id("DTGT")
-        assert source.images is None
-        assert image_urls(tmp_path, source) == {}
+    def test_dtgt_reads_the_url_out_of_its_own_documents(self):
+        """Mein erster Schluss war falsch.
+
+        DTGT hat kein Bezugs*skript*, und daraus hatte ich 'kein Bezugsweg'
+        gemacht. Gemessen am 08.10.2026 tragen **alle 182** Dokumente die Bild-URL
+        als `externalRef`, und der Tübinger Server liefert sie (611.439 Bytes in
+        0,83 s). Das fehlende Skript war kein fehlender Weg."""
+        assert source_by_id("DTGT").images == (ImageInXml(),)
 
 
 class TestTheCard:
@@ -404,7 +413,7 @@ class TestArchiveOrgPinning:
                         attribution="UB Mannheim",
                         image_source="archive.org", script_kind="s", period="p",
                         project="pr", target="t",
-                        images=ImageShellScript(script_path="get_images"))
+                        images=(ImageShellScript(script_path="get_images"),))
         assert image_urls(root, source) == {"bub_gb_2J0ZKYG7on8C_0008": self.STABLE}
 
 
@@ -473,3 +482,73 @@ class TestTheBranchIsNotAlwaysMain:
     def test_the_card_names_the_branch_it_read(self):
         card = dataset_card(source_by_id("Weisthuemer"), Selection("x"), with_images=0)
         assert "`master`" in card
+
+
+# ── die Bild-URL steht im Dokument (#187, dritte Form) ───────────────────────
+class TestUrlInDocument:
+    """OCR-D notiert die Bildherkunft als ``Metadata/@externalRef``.
+
+    Gemessen am 08.10.2026: alle 182 DTGT-Dokumente tragen eine, 147 von 162 bei
+    dach-gt, 41 von 453 bei Fibeln. Bei gt-fraktur keines — dort braucht es eine
+    Vorlage.
+    """
+
+    REAL = ("http://idb.ub.uni-tuebingen.de/opendigi/image/akzs_1860/"
+            "akzs_1860_00001.jp2/full/full/0/default.jpg")
+
+    def test_external_ref_wins(self):
+        xml = f'<PcGts><Metadata externalRef="{self.REAL}"/></PcGts>'
+        assert url_in_document(xml) == self.REAL
+
+    def test_an_image_url_anywhere_is_the_second_choice(self):
+        xml = '<PcGts><Page imageFilename="https://x.test/a/b.jpg"/></PcGts>'
+        assert url_in_document(xml) == "https://x.test/a/b.jpg"
+
+    def test_a_document_without_one_yields_none(self):
+        """Nicht eine geratene URL. gt-fraktur ist genau dieser Fall."""
+        assert url_in_document('<PcGts><Page imageFilename="a.jpg"/></PcGts>') is None
+
+    def test_an_external_ref_that_is_not_an_image_is_skipped(self):
+        """15 der 162 dach-gt-Dokumente verweisen auf METS, nicht auf ein Bild."""
+        xml = ('<PcGts><Metadata externalRef="https://x.test/mets.xml"/>'
+               '<Page imageFilename="https://x.test/real.jpg"/></PcGts>')
+        assert url_in_document(xml) == "https://x.test/real.jpg"
+
+
+class TestImageTemplate:
+    """Die Vorlagen, je an der echten Quelle abgelesen und einmal abgerufen."""
+
+    def _page(self, path: str) -> PageFile:
+        return PageFile(path, pathlib.Path(path).stem, 10, True)
+
+    def test_gt_fraktur_drops_the_page_number_for_the_base(self):
+        """``agtck_1834_02_00002`` → Werk ``agtck_1834_02``, Seite unverändert.
+
+        Abgerufen: 329.807 Bytes JPEG in 0,50 s."""
+        urls = image_urls(pathlib.Path("/nonexistent"), source_by_id("gt-fraktur"),
+                          [self._page("agtck_1834_02/agtck_1834_02/page/"
+                                      "agtck_1834_02_00002.xml")])
+        assert urls == {"agtck_1834_02_00002":
+                        "https://opendigi.ub.uni-tuebingen.de/opendigi/image/"
+                        "agtck_1834_02/agtck_1834_02_00002.jp2/full/full/0/default.jpg"}
+
+    def test_only_limits_a_template_to_its_subtree(self):
+        """Bei dach-gt holt nur DE-17 aus Darmstadt; der Rest nennt seine URL selbst."""
+        source = source_by_id("dach-gt")
+        template = next(p for p in source.images if isinstance(p, ImageTemplate))
+        assert template.only == "DE-17"
+        outside = image_urls(pathlib.Path("/nonexistent"), source,
+                             [self._page("data/DE-525/x/GT-PAGE/a.xml")])
+        assert outside == {}, "eine Vorlage darf nicht auf eine fremde Sammlung greifen"
+
+    def test_the_plans_are_tried_in_order(self):
+        """Fibeln braucht beides: 41 Dokumente nennen ihre URL, 412 nicht."""
+        kinds = [type(p).__name__ for p in source_by_id("Fibeln").images]
+        assert kinds == ["ImageInXml", "ImageTemplate"]
+
+    def test_a_plan_that_reads_documents_refuses_to_run_blind(self):
+        """Ohne die ausgewählten Seiten kann dieser Weg nichts finden — und still
+        ein leeres Ergebnis zurückzugeben sähe aus wie 'die Quelle hat keine
+        Bilder'."""
+        with pytest.raises(ForeignGtError, match="Dokumente selbst"):
+            image_urls(pathlib.Path("/nonexistent"), source_by_id("DTGT"))
