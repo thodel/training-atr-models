@@ -36,7 +36,15 @@ def tools_of(server):
 
 def call(server, name, **args):
     result = asyncio.run(server.call_tool(name, args))
-    return json.loads(result.content[0].text)
+    # mcp 2.x answers a CallToolResult; 1.x a sequence of content blocks, or a
+    # (blocks, structured) pair once it has a structured output.
+    if hasattr(result, "content"):
+        blocks = result.content
+    elif isinstance(result, tuple):
+        blocks = result[0]
+    else:
+        blocks = result
+    return json.loads(blocks[0].text)
 
 
 # ── names are the interface ─────────────────────────────────────────────────

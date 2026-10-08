@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.mcpserver import MCPServer
+try:  # mcp 2.x
+    from mcp.server.mcpserver import MCPServer as _Server
+    SERVER_GENERATION = 2
+except ImportError:  # mcp 1.x: the same decorator API under its old name
+    from mcp.server.fastmcp import FastMCP as _Server
+    SERVER_GENERATION = 1
 
 from .remote import SshTransport, Transport, TransportError
 
@@ -28,7 +33,7 @@ INSTRUCTIONS = (
 )
 
 
-def build_server(transport: Transport | None = None) -> MCPServer:
+def build_server(transport: Transport | None = None) -> Any:
     link = transport or SshTransport()
 
     def ask(cmd: str, **args: Any) -> dict[str, Any]:
@@ -37,7 +42,15 @@ def build_server(transport: Transport | None = None) -> MCPServer:
         except TransportError as exc:
             return {"error": str(exc), "cmd": cmd}
 
-    server = MCPServer(name="atr-results", version="1.0.0", instructions=INSTRUCTIONS)
+    # Why 1.x is what the laptop runs: mcp 2.x negotiates the 2026-07-28 protocol
+    # revision in a form Claude Code 2.1.274 refuses over stdio ("connection is
+    # serving the 2026-07-28 protocol; the initialize handshake is not accepted",
+    # 07.10.2026). The 1.x line negotiates a 2025 revision and connects. The tool
+    # API is the same under both names, so the server is written once.
+    if SERVER_GENERATION == 2:
+        server = _Server(name="atr-results", version="1.0.0", instructions=INSTRUCTIONS)
+    else:
+        server = _Server(name="atr-results", instructions=INSTRUCTIONS)
 
     @server.tool()
     def queue() -> dict:
