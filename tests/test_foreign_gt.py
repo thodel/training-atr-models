@@ -360,14 +360,20 @@ class TestArchiveOrgPinning:
         assert stabilise_archive_org(other) == other
 
     def test_the_zip_form_works_too(self):
-        """Die sechste und siebte Band-Schleife holen aus ``_tif.zip`` statt ``.tar``."""
+        """Die sechste und siebte Band-Schleife holen aus ``_tif.zip`` statt ``.tar``.
+
+        Der Pfad *innerhalb* des Archivs enthält hier einen Schrägstrich. Das Repo
+        schreibt ihn als ``%2F``; wir lassen ihn nackt stehen. Beides ist am
+        08.10.2026 gegen archive.org gemessen und liefert dieselbe Datei —
+        96.094 Bytes, einmal in 7,7 s und einmal in 1,5 s. Also keine Kodierung
+        erzwingen, die nichts bewirkt."""
         pinned = ("https://ia801234.us.archive.org/view_archive.php?archive=/5/items/"
                   "weisthmer02drongoog/weisthmer02drongoog_tif.zip"
                   "&file=weisthmer02drongoog_tif/weisthmer02drongoog_0013.tif")
         out = stabilise_archive_org(pinned)
-        assert out.startswith("https://archive.org/download/weisthmer02drongoog/")
-        assert "weisthmer02drongoog_tif.zip/" in out
-        assert "%2F" in out, "der Pfad im Archiv muss kodiert werden"
+        assert out == ("https://archive.org/download/weisthmer02drongoog/"
+                       "weisthmer02drongoog_tif.zip/"
+                       "weisthmer02drongoog_tif/weisthmer02drongoog_0013.tif")
 
     def test_it_is_applied_when_a_script_is_read(self, tmp_path: Path):
         root = tmp_path / "w"
