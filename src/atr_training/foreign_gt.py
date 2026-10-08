@@ -435,6 +435,11 @@ SOURCES: tuple[Source, ...] = (
             "dieser Importweg **nicht** expandiert: eine falsch expandierte Schleife "
             "holt die falsche Seite, ohne dass es auffiele. Sie fehlen als "
             "'kein Bild' im Bericht.",
+            "archive.org leitet jeden Abruf auf einen wechselnden "
+            "`ia*.us.archive.org`-Knoten um, und ein toter Knoten antwortet nicht. "
+            "Mit kurzem Zeitlimit und Wiederholung ist das unauffällig (3,5–4,6 s "
+            "je Bild, gemessen); mit langem Zeitlimit kostet ein einziger solcher "
+            "Knoten acht Minuten.",
         ),
     ),
     Source(

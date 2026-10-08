@@ -54,8 +54,16 @@ from atr_training.foreign_gt import (  # noqa: E402
 DEFAULT_DELAY = 0.4
 UA = "training-atr-models/foreign-gt (DH Bern; Forschung)"
 
+#: Kurz, und das ist Absicht. archive.org verteilt ``/download/…`` per Redirect auf
+#: wechselnde ``ia*.us.archive.org``-Knoten, und ein toter Knoten antwortet gar
+#: nicht. Gemessen am 08.10.2026: sechs Abrufe desselben Bildes brauchten 3,5–4,6 s,
+#: ein einziger hängender Knoten davor kostete mit 120 s Limit und vier Versuchen
+#: acht Minuten — für ein Bild. Kurzes Limit plus Wiederholung landet beim nächsten
+#: Versuch auf einem anderen Knoten; langes Limit wartet auf einen toten.
+DEFAULT_TIMEOUT = 30
 
-def _get(url: str, timeout: int = 120, retries: int = 4) -> bytes:
+
+def _get(url: str, timeout: int = DEFAULT_TIMEOUT, retries: int = 4) -> bytes:
     """GET mit Backoff auf 429/5xx. Alles andere fliegt sofort."""
     last: Exception | None = None
     for attempt in range(1, retries + 1):
@@ -100,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="wohin das Parquet geschrieben wird (Vorgabe: <workdir>/_hf/<id>)")
     p.add_argument("--limit", type=int, default=None, help="nur so viele Seiten")
     p.add_argument("--delay", type=float, default=DEFAULT_DELAY)
+    p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                   help="Sekunden je Bildabruf; kurz halten, siehe "
+                        "DEFAULT_TIMEOUT")
     p.add_argument("--dry-run", action="store_true",
                    help="auswählen und berichten; kein Bild holen, nichts hochladen")
     p.add_argument("--no-images", action="store_true",
@@ -168,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         url = urls.get(page.stem)
         if url:
             try:
-                blob = _get(url)
+                blob = _get(url, timeout=args.timeout)
                 fetched += 1
                 name = Path(url.split("?")[0]).name or page.stem
             except Exception as exc:  # noqa: BLE001 — ein fehlendes Scan ist nicht fatal
@@ -185,6 +196,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    [{i}/{len(pages)}] {fetched} Bilder, {failed} fehlend", flush=True)
 
     print(f"\n  {len(rows)} Zeilen, {fetched} mit Bild, {failed} ohne")
+
+    # Der dritte Zustand (#165): "kein Bild geholt" ist nicht "diese Quelle hat
+    # keine Bilder". Wo Bilder geplant waren und keines ankam, ist der Abruf
+    # kaputt oder der Bildserver weg — ein Datensatz mit leerer Bildspalte sieht
+    # aber genauso aus wie einer, der nie Bilder haben sollte, und träte später
+    # als stumm leerer Trainingsarm auf.
+    if urls and fetched == 0:
+        print(f"\n  {len(urls)} Bild-URLs geplant, keine einzige geholt — nichts "
+              f"hochgeladen.\n  Entweder ist {source.image_source} nicht erreichbar, "
+              f"oder der Bezugsweg stimmt nicht mehr.\n  Mit --no-images wird daraus "
+              f"bewusst ein Datensatz ohne Bildspalte.", file=sys.stderr)
+        return 4
 
     from datasets import Dataset, Features, Image, Value
 
