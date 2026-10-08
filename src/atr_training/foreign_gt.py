@@ -43,6 +43,7 @@ __all__ = [
     "Source",
     "dataset_card",
     "deduplicate",
+    "head_commit",
     "image_urls",
     "source_by_id",
     "stabilise_archive_org",
@@ -132,6 +133,11 @@ class Source:
     xml_root: str
     licence: str
     licence_at: str
+    #: Wer die Transkription gemacht hat, und wo die Quelle das sagt. Bei CC0 ist
+    #: die Nennung Höflichkeit, bei CC BY Pflicht — und eine Karte, die "der
+    #: Urheber genannt" behauptet und ihn dann nicht nennt, ist schlechter als eine,
+    #: die schweigt.
+    attribution: str
     image_source: str
     script_kind: str
     period: str
@@ -152,6 +158,26 @@ class Source:
             raise ForeignGtError(
                 f"{self.id}: licence and licence_at are both required — a licence "
                 "without the place it is written cannot be put in a dataset card")
+        if not self.attribution:
+            raise ForeignGtError(
+                f"{self.id}: attribution is required — the card says this copy is a "
+                "derivation, and a derivation that does not name its source names "
+                "nobody")
+
+    @property
+    def web_url(self) -> str:
+        """Das Repo als Webadresse, aus der Klon-URL."""
+        return self.clone_url.removesuffix(".git")
+
+    def entry_url(self, path: str, commit: str) -> str:
+        """Der Rückbezug auf **einen** Eintrag, an den gelesenen Stand genagelt.
+
+        Ein Verweis auf das Repo sagt, woher der Datensatz als Ganzes kommt; dieser
+        sagt, woher *diese Seite* kommt — und zwar dauerhaft, weil der Commit darin
+        steht. Ohne ihn zeigt der Link auf ``main``, und dort kann die Datei morgen
+        verschoben sein.
+        """
+        return f"{self.web_url}/blob/{commit}/{path}"
 
 
 @dataclass(frozen=True)
@@ -185,6 +211,12 @@ class Selection:
                 f"(verworfen: {self.dropped_duplicate} Dubletten, "
                 f"{self.dropped_symlink} Symlinks, {self.dropped_alto} ALTO, "
                 f"{self.dropped_no_lines} ohne Zeilen, {self.dropped_no_text} ohne Text)")
+
+
+def head_commit(root: Path) -> str:
+    """Der Stand, der gelesen wurde. Ein flacher Klon von ``main`` ist sonst undatiert."""
+    return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
 
 
 def _git_ls_files(root: Path) -> list[tuple[str, str]]:
@@ -340,13 +372,18 @@ def image_urls(root: Path, source: Source) -> dict[str, str]:
             for name, url in _CURL_O.findall(script)}
 
 
-def dataset_card(source: Source, sel: Selection, *, with_images: int) -> str:
+def dataset_card(source: Source, sel: Selection, *, with_images: int,
+                 commit: str = "") -> str:
     """The card. Licence, where it is written, and what was dropped.
 
     Frontmatter stays minimal on purpose: ``license`` is the SPDX string the source
     actually carries, never a convenient one.
     """
     notes = "\n".join(f"- {n}" for n in source.notes)
+    pinned = (f"[`{commit[:12]}`]({source.web_url}/tree/{commit})" if commit
+              else "**nicht festgehalten**")
+    example = (f"`{source.entry_url(sel.pages[0].path, commit)}`"
+               if sel.pages and commit else "—")
     return f"""---
 license: {source.licence.lower()}
 language:
@@ -365,14 +402,24 @@ Diese Kopie ist eine **Ableitung**, nicht das Original — die Quelle ist:
 
 **{source.origin}**
 
-## Lizenz
+Gelesener Stand: {pinned} (Branch `{source.branch}`).
+
+## Herkunft und Lizenz
 
 | | |
 |---|---|
+| Urheber der Transkriptionen | {source.attribution} |
 | Transkriptionen | **{source.licence}** |
-| Fundstelle | {source.licence_at} |
+| Fundstelle der Lizenz | {source.licence_at} |
 | Bilder | Quelle: {source.image_source} |
 | Bildrechte | **{source.image_rights}** |
+
+**Jede Zeile nennt ihren Ursprung selbst.** Die Spalten `source_path` und
+`source_url` zeigen auf die Datei, aus der die Seite gelesen wurde — `source_url`
+an den Commit oben genagelt, damit der Link gilt, auch wenn die Datei im
+Ursprungs-Repo später verschoben wird. Beispiel:
+
+{example}
 
 Die Lizenz der Transkriptionen sagt nichts über die Rechte an den Seitenbildern:
 das sind zwei Fragen mit zwei Rechteinhabern. Solange die Bildrechte
@@ -388,6 +435,7 @@ das sind zwei Fragen mit zwei Rechteinhabern. Solange die Bildrechte
 | Schrift | {source.script_kind} |
 | Zeit | {source.period} |
 | Format | PAGE-XML in `xml_content`, Seitenbild in `image` |
+| Rückbezug je Zeile | `source_path`, `source_url` |
 
 Verworfen beim Einlesen: {sel.dropped_duplicate} Dubletten (gleicher Seitenstamm),
 {sel.dropped_symlink} Symlinks, {sel.dropped_alto} ALTO-Dateien (eigener Adapter),
@@ -425,6 +473,8 @@ SOURCES: tuple[Source, ...] = (
         licence="CC0-1.0",
         licence_at="LICENSE (CC0 1.0 Universal); METADATA.yml; .zenodo.json (cc-zero); "
                    "GitHub-API spdx_id",
+        attribution="Jan Kamlah, Thomas Schmidt, Renat Shigapov, Stefan Weil "
+                    "(UB Mannheim) — genannt in `.zenodo.json` des Repos, je mit ORCID",
         image_source="UB Mannheim, digi.bib.uni-mannheim.de",
         script_kind="Druck, Fraktur + Antiqua",
         period="1820–1939",
@@ -450,9 +500,12 @@ SOURCES: tuple[Source, ...] = (
         origin="https://github.com/UB-Mannheim/Weisthuemer",
         clone_url="https://github.com/UB-Mannheim/Weisthuemer.git",
         xml_root="Transcription",
+        branch="master",
         images=ImageShellScript(script_path="get_images"),
         licence="CC0-1.0",
         licence_at="LICENSE (CC0 1.0 Universal); GitHub-API spdx_id",
+        attribution="Universitätsbibliothek Mannheim — das Repo nennt keine "
+                    "Einzelpersonen; Textgrundlage ist Jacob Grimms *Weisthümer*",
         image_source="archive.org (sieben Bandscans)",
         script_kind="Druck, Antiqua (Ausgabe 1840–1878)",
         period="Edition 1840–1878, Texte mittelhochdeutsch/lateinisch",
@@ -482,6 +535,8 @@ SOURCES: tuple[Source, ...] = (
         licence="CC0-1.0",
         licence_at="LICENSE (CC0 1.0 Universal); METADATA.yml (`license: - name: CC0 1.0`); "
                    "README-Metadatentabelle; GitHub-API spdx_id",
+        attribution="Martin Faßnacht, Stefan Weil (UB Tübingen / Theologie digital) "
+                    "— genannt in `METADATA.yml` und im README",
         image_source="UB Tübingen, idb.ub.uni-tuebingen.de/digitue/theo/ — kein "
                      "Bezugsskript im Repo",
         script_kind="Druck, Fraktur",

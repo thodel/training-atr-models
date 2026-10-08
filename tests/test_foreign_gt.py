@@ -386,3 +386,70 @@ class TestArchiveOrgPinning:
                         project="pr", target="t",
                         images=ImageShellScript(script_path="get_images"))
         assert image_urls(root, source) == {"bub_gb_2J0ZKYG7on8C_0008": self.STABLE}
+
+
+# ── der Rückbezug je Eintrag, nicht nur je Datensatz ─────────────────────────
+class TestProvenancePerEntry:
+    """Ein Verweis auf das Repo sagt, woher der Datensatz kommt. Er sagt nicht,
+    woher *diese Seite* kommt — und ohne Commit zeigt er auf ``main``, wo die
+    Datei morgen verschoben sein kann."""
+
+    COMMIT = "0a3a0daf03679dc1d206e17dfdabf62b762b0476"
+
+    def test_an_entry_url_is_pinned_to_the_commit(self):
+        source = source_by_id("reichsanzeiger-gt")
+        url = source.entry_url("data/reichsanzeiger-1820-1939/GT-PAGE/1820_84_0220.xml",
+                               self.COMMIT)
+        assert url == ("https://github.com/UB-Mannheim/reichsanzeiger-gt/blob/"
+                       f"{self.COMMIT}/data/reichsanzeiger-1820-1939/GT-PAGE/"
+                       "1820_84_0220.xml")
+        assert "/blob/main/" not in url, "ein Link auf main ist kein Rückbezug"
+
+    def test_the_web_url_drops_the_git_suffix(self):
+        assert source_by_id("Weisthuemer").web_url == \
+            "https://github.com/UB-Mannheim/Weisthuemer"
+
+    def test_the_card_names_the_commit_and_an_example_entry(self):
+        source = source_by_id("reichsanzeiger-gt")
+        sel = Selection("x", pages=[PageFile("data/GT-PAGE/a.xml", "a", 1182, True)])
+        card = dataset_card(source, sel, with_images=1, commit=self.COMMIT)
+        assert self.COMMIT[:12] in card
+        assert "source_path" in card and "source_url" in card
+        assert f"/blob/{self.COMMIT}/data/GT-PAGE/a.xml" in card
+
+    def test_a_card_without_a_commit_says_so_rather_than_implying_one(self):
+        """"nicht festgehalten" ist eine Angabe; ein Link auf main wäre eine Behauptung."""
+        card = dataset_card(source_by_id("Weisthuemer"), Selection("x"), with_images=0)
+        assert "nicht festgehalten" in card
+
+    def test_every_source_names_its_author(self):
+        for source in SOURCES:
+            assert source.attribution
+            card = dataset_card(source, Selection("x"), with_images=0)
+            assert source.attribution in card
+
+    def test_a_source_without_attribution_is_refused(self):
+        """Die reichsanzeiger-Karte behauptete "der Urheber genannt" und nannte ihn
+        nicht. Eine Ableitung, die ihre Quelle nicht nennt, nennt niemanden."""
+        with pytest.raises(ForeignGtError, match="attribution"):
+            Source(id="x", origin="o", clone_url="c", xml_root="r", licence="CC0-1.0",
+                   licence_at="LICENSE", attribution="", image_source="i",
+                   script_kind="s", period="p", project="pr", target="t")
+
+
+class TestTheBranchIsNotAlwaysMain:
+    """Gemessen über ``git ls-remote --symref`` am 08.10.2026: von sieben CC0-Quellen
+    liegen drei auf ``master`` — Weisthuemer, Fibeln, gt-fraktur. Mein Register sagte
+    für Weisthuemer ``main``, und der erste Lauf bemerkte es nicht, weil der Klon
+    schon auf der Platte lag. Ein frischer Klon wäre gescheitert."""
+
+    def test_weisthuemer_is_on_master(self):
+        assert source_by_id("Weisthuemer").branch == "master"
+
+    def test_the_others_are_on_main(self):
+        assert source_by_id("reichsanzeiger-gt").branch == "main"
+        assert source_by_id("DTGT").branch == "main"
+
+    def test_the_card_names_the_branch_it_read(self):
+        card = dataset_card(source_by_id("Weisthuemer"), Selection("x"), with_images=0)
+        assert "`master`" in card

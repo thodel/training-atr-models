@@ -43,6 +43,7 @@ from atr_training.foreign_gt import (  # noqa: E402
     Source,
     dataset_card,
     deduplicate,
+    head_commit,
     image_urls,
     source_by_id,
     tracked_pages,
@@ -146,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Bildrechte: {source.image_rights}")
 
     root = clone(source, args.workdir)
+    commit = head_commit(root)
+    print(f"  Stand:      {commit[:12]} (Branch {source.branch})")
     sel = tracked_pages(root, source.xml_root)
     sel.source_id = source.id
     deduplicate(sel, source.prefer)
@@ -175,7 +178,8 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             print(f"  ohne Bild-URL: {len(missing)}  z.B. {missing[:4]}")
         print(f"\n  Karte (Anfang):\n")
-        print("\n".join(dataset_card(source, sel, with_images=have).splitlines()[:16]))
+        print("\n".join(dataset_card(source, sel, with_images=have,
+                                     commit=commit).splitlines()[:22]))
         return 0
 
     rows: list[dict] = []
@@ -199,6 +203,11 @@ def main(argv: list[str] | None = None) -> int:
             "xml_content": xml,
             "filename": page.stem,
             "project_name": source.project,
+            # Der Rückbezug je Eintrag, nicht nur je Datensatz: welche Datei im
+            # Ursprungs-Repo diese Seite war, und ein Link darauf, der an den
+            # gelesenen Commit genagelt ist.
+            "source_path": page.path,
+            "source_url": source.entry_url(page.path, commit),
         })
         if i % 20 == 0 or i == len(pages):
             print(f"    [{i}/{len(pages)}] {fetched} Bilder, {failed} fehlend", flush=True)
@@ -224,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         "xml_content": Value("string"),
         "filename": Value("string"),
         "project_name": Value("string"),
+        "source_path": Value("string"),
+        "source_url": Value("string"),
     })
     dataset = Dataset.from_list(rows, features=features)
 
@@ -233,7 +244,8 @@ def main(argv: list[str] | None = None) -> int:
     shard = shard_dir / "0000.parquet"
     dataset.to_parquet(str(shard))
     (out / "README.md").write_text(
-        dataset_card(source, sel, with_images=fetched), encoding="utf-8")
+        dataset_card(source, sel, with_images=fetched, commit=commit),
+        encoding="utf-8")
     print(f"  schrieb {shard} ({shard.stat().st_size / 1e6:.1f} MB)")
 
     from huggingface_hub import HfApi
@@ -243,8 +255,9 @@ def main(argv: list[str] | None = None) -> int:
                     private=not args.public, exist_ok=True)
     api.upload_folder(repo_id=source.target, repo_type="dataset",
                       folder_path=str(out),
-                      commit_message=f"{len(rows)} Seiten, {sel.lines} Zeilen "
-                                     f"aus {source.origin} ({source.licence})")
+                      commit_message=f"{len(rows)} Seiten, {sel.lines} Zeilen aus "
+                                     f"{source.origin}@{commit[:12]} "
+                                     f"({source.licence})")
     print(f"  hochgeladen: {source.target} (privat)")
     print(f"\n  Training:  \"hf_repo\": \"{source.target}\", "
           f"\"train_projects\": [\"{source.project}\"], \"granularity\": \"line\"")
