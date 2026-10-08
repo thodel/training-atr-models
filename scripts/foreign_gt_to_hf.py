@@ -202,6 +202,14 @@ def main(argv: list[str] | None = None) -> int:
     # kaputt oder der Bildserver weg — ein Datensatz mit leerer Bildspalte sieht
     # aber genauso aus wie einer, der nie Bilder haben sollte, und träte später
     # als stumm leerer Trainingsarm auf.
+    if source.images is None and not args.no_images:
+        print(f"\n  {source.id} hat keinen Bezugsweg für Bilder — nichts "
+              f"hochgeladen.\n  Die Bilder liegen bei {source.image_source}. "
+              f"Ein Datensatz ohne Bildspalte kann nicht trainieren und sieht in "
+              f"einer Spezifikation aus wie einer, der es könnte; darum braucht "
+              f"er die ausdrückliche Zustimmung --no-images.", file=sys.stderr)
+        return 5
+
     if urls and fetched == 0:
         print(f"\n  {len(urls)} Bild-URLs geplant, keine einzige geholt — nichts "
               f"hochgeladen.\n  Entweder ist {source.image_source} nicht erreichbar, "
