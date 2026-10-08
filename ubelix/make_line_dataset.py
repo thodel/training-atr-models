@@ -42,6 +42,8 @@ from atr_training.cropping import write_crops
 from atr_training.hf_source import (
     data_files_for,
     expand_all_projects,
+    flat_split_glob,
+    has_flat_shards,
     list_projects,
     whole_split_glob,
 )
@@ -154,6 +156,13 @@ def train_globs(repo: str, revision: str, max_pages: int,
     :func:`hf_source.data_files_for`: an *empty* selection must still never mean
     "everything", because on a repo that does have project directories that
     silently reads 6.6 TB.
+
+    The whole split has two spellings. ``data/train/**/*.parquet`` reaches a
+    ``data/train/`` directory that happens to hold no project subdirectories;
+    the two repos above have no such directory at all, only
+    ``data/train-*.parquet``, and ``datasets`` answers the nested glob with
+    ``DataFilesNotFoundError`` — which is how both lost their jobs a second time
+    (17545204, 17545206 on 08.10.2026). So the layout is checked, not assumed.
     """
     if projects:
         spec = DatasetSpec(hf_repo=repo, granularity="line", train_projects=list(projects),
@@ -162,6 +171,10 @@ def train_globs(repo: str, revision: str, max_pages: int,
         return files.get("train") or next(iter(files.values()))
 
     if not list_projects(repo, "train", revision):
+        if has_flat_shards(repo, "train", revision):
+            logger.info("{}: no project directories, flat shards — reading data/train-*.parquet",
+                        repo)
+            return [flat_split_glob("train")]
         logger.info("{}: no project directories — reading the whole split", repo)
         return [whole_split_glob("train")]
 

@@ -177,6 +177,35 @@ def whole_split_glob(split: str) -> str:
     return f"data/{split}/**/*.parquet"
 
 
+def flat_split_glob(split: str) -> str:
+    """One glob for a split stored as flat shards, ``data/<split>-NNNNN-of-NNNNN.parquet``.
+
+    That is the layout ``Dataset.push_to_hub`` writes, and what the two exports
+    without project directories hold (`image-text_koenigsfelden-charters-part-3`,
+    `transkribus-exports-bullinger-handschrift`). :func:`whole_split_glob` does
+    not reach it: ``data/<split>/**`` descends into a directory these repos do
+    not have, so ``datasets`` raised ``DataFilesNotFoundError`` and both
+    line-dataset jobs died in under ten seconds (08.10.2026).
+    """
+    return f"data/{split}-*.parquet"
+
+
+def has_flat_shards(
+    hf_repo: str, split: str, revision: str | None = None, list_repo_files_fn=None,
+) -> bool:
+    """Whether ``data/<split>-*.parquet`` matches anything in the repo.
+
+    One listing call, the same one :func:`list_projects` makes. Errors from the
+    hub propagate as the lister translates them — a repo that cannot be listed
+    is not a flat repo, and saying "not flat" would send the caller into the
+    nested glob and a less honest error.
+    """
+    lister = list_repo_files_fn or _default_list_repo_files
+    prefix = f"data/{split}-"
+    files = list(lister(hf_repo, revision, "dataset"))
+    return any(f.startswith(prefix) and f.endswith(".parquet") for f in files)
+
+
 def resolve_to_files(
     split: str, projects: list[str], hf_repo: str, revision: str | None = None,
     list_repo_files_fn=None,

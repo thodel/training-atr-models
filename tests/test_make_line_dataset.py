@@ -35,7 +35,22 @@ def test_flat_layout_reads_the_whole_split(monkeypatch):
     finds nothing and `all_projects` raises. Both jobs died in 3 and 6 seconds.
     """
     monkeypatch.setattr(mld, "list_projects", lambda repo, split, revision: [])
+    monkeypatch.setattr(mld, "has_flat_shards", lambda repo, split, revision: True)
     globs = mld.train_globs("dh-unibe/flat", REV, 200, None)
+    assert globs == ["data/train-*.parquet"]
+
+
+def test_empty_split_directory_reads_the_nested_glob(monkeypatch):
+    """No project directories and no flat shards: keep the nested glob.
+
+    `data/train/**/*.parquet` is what a `data/train/` directory without project
+    subdirectories needs; `data/train-*.parquet` would match nothing there. The
+    two spellings are not interchangeable — the flat one is what the 08.10.2026
+    jobs 17545204 and 17545206 lacked, this one is what they had.
+    """
+    monkeypatch.setattr(mld, "list_projects", lambda repo, split, revision: [])
+    monkeypatch.setattr(mld, "has_flat_shards", lambda repo, split, revision: False)
+    globs = mld.train_globs("dh-unibe/empty-dir", REV, 200, None)
     assert globs == ["data/train/**/*.parquet"]
 
 

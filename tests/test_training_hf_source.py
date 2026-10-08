@@ -918,3 +918,20 @@ class TestOnlyProjects:
         assert seen == []                              # nothing read yet
         assert next(iter(out))["filename"] == "a.jpg"
         assert seen == ["a.jpg"]                       # …and nothing read past it
+
+
+# ── flat shards (make_line_dataset's second failure mode, 08.10.2026) ────────
+def test_has_flat_shards_sees_push_to_hub_layout():
+    """`data/train-00000-of-00002.parquet` is a flat split; a nested one is not."""
+    from atr_training.hf_source import flat_split_glob, has_flat_shards
+
+    flat = ["README.md", "data/train-00000-of-00002.parquet", "data/train-00001-of-00002.parquet"]
+    nested = ["README.md", "data/train/A/x.parquet", "data/train/B/y.parquet"]
+    assert has_flat_shards("dh-unibe/flat", "train", "a" * 40,
+                           list_repo_files_fn=lambda repo, rev, kind: flat)
+    assert not has_flat_shards("dh-unibe/nested", "train", "a" * 40,
+                               list_repo_files_fn=lambda repo, rev, kind: nested)
+    # the other split's shards do not count
+    assert not has_flat_shards("dh-unibe/flat", "validation", "a" * 40,
+                               list_repo_files_fn=lambda repo, rev, kind: flat)
+    assert flat_split_glob("train") == "data/train-*.parquet"
