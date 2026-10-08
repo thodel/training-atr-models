@@ -213,12 +213,47 @@ at the p10, scale-free (#91):
 | `kurrent-xix` | 0.1719 | 1.38 — **warn** | 2.58 — ok |
 | `parlamentsdienste-protokolle` | 0.1613 | 1.29 — **warn** | 2.42 — ok |
 
-All five completed kraken runs here use the kraken+ spec, which the guard warns
-about on *every* one of these corpora — and on the medieval one too. The best
-kraken CER the project has, **0.1335** (run 3), came from the height-120
-architecture (`docs/KRAKEN_PLUS.md` §run 3 in the serving repo). That comparison
-is about the architecture and not about German: run 3 trained and scored on the
-Flemish `medieval-scripts` corpus, so its absolute number transfers to nothing.
+**Correction, 08.10.2026.** An earlier version of this section said "all five
+completed kraken runs here use the kraken+ spec". That was read off the `spec`
+field of their job records, and in four of the five it had no effect: `ketos
+train` **ignores `--spec` when `--load` is given**, so a fine-tune inherits its
+base's architecture. Every base this project has fine-tuned from is height 120 —
+measured on the weights, not on the registry:
+
+| run | base | height | own split CER |
+|---|---|---:|---:|
+| `kraken-medieval-scripts-v1` | none, **from scratch** | **64** | 0.7074 |
+| `kraken-thun-finetune-v1` | `10.5281/zenodo.15366732` (Bifrost) | 120 | 0.3921 |
+| `kraken-thun-kurrent-v1` | `kraken-early_modern_german` (CATMuS Medieval) | 120 | 0.2350 |
+| `kraken-thun-kurrent-v2` | the same | 120 | 0.2180 |
+| `kraken-corpus-thun-ft-v1` | a checkpoint of `kraken-medieval-german-v2` | 120 | 0.2054 |
+
+So the height-64 architecture the guard warns about has been used **once**, by the
+only from-scratch run, and that run is also the worst by a factor of three. The
+fine-tunes were never exposed to the geometry problem; a from-scratch run on this
+material would be. Those four CERs are **not** an architecture comparison either —
+they differ in base and in data.
+
+The only controlled architecture comparison the project has is
+`docs/KRAKEN_PLUS.md` in the serving repo: three runs on one corpus
+(`shard_00`), one validation set, one held-out test set of 6,186 pages in 35
+unseen documents.
+
+| run | spec | height | val acc | test CER | word acc |
+|---|---|---:|---:|---:|---:|
+| run 2 | without the final layer | 64 | 0.7809 | 0.1812 | 51.8 % |
+| kraken+ | `Cr1,1,85,1,1` | 64 | 0.7927 | 0.1655 | 55.0 % |
+| **run 3** | kraken default | **120** | **0.8226** | **0.1335** | **62.5 %** |
+
+**The input height is what separates them** — 0.032 CER between run 3 and the
+better of the two height-64 runs, against 0.0157 between the two height-64 runs
+themselves — and it matches the frames-per-character arithmetic above (1.97
+against 3.69 on that material). The 85-channel final layer helps slightly rather
+than bottlenecking.
+
+That comparison is about the architecture and not about German: all three trained
+and scored on the Flemish `medieval-scripts` corpus, so their absolute numbers
+transfer to nothing.
 
 **`zh-regierungsratsprotokolle` is 38 % untranscribed** (5,719 of 14,954
 `TextLine`s in the sample). `ketos compile --skip-empty-lines` drops them, so its
