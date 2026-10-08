@@ -157,8 +157,9 @@ def test_a_broken_template_is_survived_not_raised():
 
 
 # ── where the model is asked to continue from (#77, the 12B insertion case) ──
-def test_the_generation_prompt_default_is_unchanged():
-    """Opt-in: every number measured so far used add_generation_prompt=True."""
+def test_the_flag_is_a_no_op_where_the_two_renders_agree():
+    """Why it could become the default on 2026-10-08: measured byte-identical for
+    the E4B arm (2 039 insertions either way) and for Qwen, whose renders agree."""
     from vlm_train_svc.evaluate_qlora import generation_prompt
 
     tok, proc = qwen_like()

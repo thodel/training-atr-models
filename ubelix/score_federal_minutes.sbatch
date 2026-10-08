@@ -28,15 +28,15 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 SIF=${SIF:-$HOME/ubelix/vlm-train.sif}
 : "${JOB_ID:?}" "${TAG:?}"
-# PROMPT=training_render asks the model to continue from the training render
-# instead of from add_generation_prompt=True. Only one family needs it so far:
-# gemma-4-12B-it's generation prompt opens an empty thinking channel that its
-# training render never contains, and that arm scored 22.94 % with 17,027
-# insertions where its E4B sibling, which has no such block, scored 10.24 %.
-# For Qwen the two renders agree, so the flag is a no-op there.
-case "${PROMPT:-generation}" in
+# PROMPT defaults to training_render since 08.10.2026, because it was measured:
+# the same 12B adapter on the same 2,751 lines scored 22.94 % asked to continue
+# from add_generation_prompt=True and 9.95 % asked to continue from the training
+# render, while the E4B control — whose two renders agree — came back
+# byte-identical at 10.24 %. PROMPT=generation restores the old behaviour for
+# reproducing one of the seven reports made before that date.
+case "${PROMPT:-training_render}" in
   training_render) PROMPT_FLAG=--prompt-from-training-render ;;
-  generation)      PROMPT_FLAG= ;;
+  generation)      PROMPT_FLAG=--prompt-from-generation-prompt ;;
   *) echo "PROMPT must be generation or training_render, got '${PROMPT}'" >&2; exit 2 ;;
 esac
 case "${QUANT:-bf16}" in
