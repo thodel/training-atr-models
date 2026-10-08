@@ -310,7 +310,21 @@ class TestTheCard:
     def test_it_says_the_image_rights_are_unchecked(self):
         card = dataset_card(source_by_id("Weisthuemer"), Selection("x"), with_images=0)
         assert "ungeprüft" in card
-        assert "privat" in card
+        assert source_by_id("Weisthuemer").image_source in card
+
+    def test_it_does_not_claim_a_visibility_it_cannot_know(self):
+        """Die Karte sagte "bleibt dieser Datensatz **privat**".
+
+        Am 08.10.2026 wurden beide Datensätze in der HF-Oberfläche öffentlich
+        geschaltet — nicht durch diesen Code, gemessen an einem Wegwerf-Repo:
+        ``upload_folder`` lässt ein privat angelegtes Repo privat (HTTP 401 ohne
+        Token, über zwei Uploads). Damit stand in einem öffentlichen Dokument eine
+        Behauptung, die es nicht einlösen konnte. Eine Karte beschreibt die
+        Rechtelage, nicht den Schalter daneben."""
+        for source in SOURCES:
+            card = dataset_card(source, Selection("x"), with_images=0)
+            assert "bleibt dieser Datensatz" not in card
+            assert "keine** geprüfte Grundlage" in card
 
     def test_it_reports_what_was_dropped(self):
         sel = Selection("x", dropped_duplicate=101, dropped_symlink=173)

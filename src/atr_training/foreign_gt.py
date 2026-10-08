@@ -421,9 +421,13 @@ Ursprungs-Repo später verschoben wird. Beispiel:
 
 {example}
 
-Die Lizenz der Transkriptionen sagt nichts über die Rechte an den Seitenbildern:
-das sind zwei Fragen mit zwei Rechteinhabern. Solange die Bildrechte
-`{source.image_rights}` sind, bleibt dieser Datensatz **privat** (#193).
+> **Zu den Bildern.** Die Lizenz der Transkriptionen sagt nichts über die Rechte
+> an den Seitenbildern: das sind zwei Fragen mit zwei Rechteinhabern. Die
+> Bildrechte sind hier **{source.image_rights}** — für die Weitergabe der Spalte
+> `image` liegt also **keine** geprüfte Grundlage vor, und wer sie weiterverwendet,
+> muss die Bedingungen bei {source.image_source} selbst klären. Die
+> Transkriptionen in `xml_content` sind davon nicht betroffen; für sie gilt die
+> Lizenz oben.
 
 ## Inhalt
 
