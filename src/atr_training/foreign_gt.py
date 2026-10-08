@@ -427,6 +427,19 @@ def url_in_document(xml_text: str) -> str | None:
     return anywhere.group(1) if anywhere else None
 
 
+def _needs_document(plan: ImagePlan) -> bool:
+    """Ob dieser Weg das Dokument lesen muss.
+
+    :class:`ImageInXml` immer; eine Vorlage nur, wenn sie einen ``{img…}``-
+    Platzhalter enthält. Sonst zu lesen kostet bei Fibeln 409 Dateizugriffe für
+    nichts — und lässt einen Test über einen Pfad scheitern, den die Vorlage
+    gar nicht gebraucht hätte.
+    """
+    if isinstance(plan, ImageInXml):
+        return True
+    return isinstance(plan, ImageTemplate) and "{img" in plan.template
+
+
 def _fill_template(plan: ImageTemplate, page: "PageFile", xml_root: str,
                    xml_text: str) -> str | None:
     if plan.only and plan.only not in page.path:
@@ -434,12 +447,13 @@ def _fill_template(plan: ImageTemplate, page: "PageFile", xml_root: str,
     relative = page.path[len(xml_root):].lstrip("/") if xml_root else page.path
     parts = Path(relative).parts
     image_name = ""
-    try:
-        from atr_training.pagexml import image_filename
+    if xml_text:
+        try:
+            from atr_training.pagexml import image_filename
 
-        image_name = image_filename(xml_text)
-    except Exception:  # noqa: BLE001 — ein Dokument ohne imageFilename ist erlaubt
-        image_name = ""
+            image_name = image_filename(xml_text)
+        except Exception:  # noqa: BLE001 — ein Dokument ohne imageFilename ist erlaubt
+            image_name = ""
     return plan.template.format(
         stem=page.stem,
         base=re.sub(r"_\d+$", "", page.stem),
@@ -478,11 +492,12 @@ def image_urls(root: Path, source: Source,
             for stem, url in _from_shell_script(root, plan).items():
                 urls.setdefault(stem, url)
         else:
+            reads = _needs_document(plan)
             for page in pages:
                 if page.stem in urls:
                     continue
-                xml_text = (root / page.path).read_text(
-                    encoding="utf-8", errors="replace")
+                xml_text = ((root / page.path).read_text(
+                    encoding="utf-8", errors="replace") if reads else "")
                 url = (url_in_document(xml_text) if isinstance(plan, ImageInXml)
                        else _fill_template(plan, page, source.xml_root, xml_text))
                 if url:

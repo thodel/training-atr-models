@@ -552,3 +552,16 @@ class TestImageTemplate:
         Bilder'."""
         with pytest.raises(ForeignGtError, match="Dokumente selbst"):
             image_urls(pathlib.Path("/nonexistent"), source_by_id("DTGT"))
+
+    def test_a_template_without_img_placeholders_never_opens_the_file(self):
+        """Warum das zählt: bei Fibeln wären das 409 Dateizugriffe für nichts, und
+        der gt-fraktur-Test scheiterte an einem Pfad, den die Vorlage gar nicht
+        gebraucht hätte."""
+        from atr_training.foreign_gt import _needs_document
+
+        gt_fraktur = source_by_id("gt-fraktur").images[0]
+        assert not _needs_document(gt_fraktur)
+        fibeln_template = next(p for p in source_by_id("Fibeln").images
+                               if isinstance(p, ImageTemplate))
+        assert _needs_document(fibeln_template), "{imgbase} braucht das Dokument"
+        assert _needs_document(ImageInXml())
