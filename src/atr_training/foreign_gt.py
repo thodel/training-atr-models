@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import re
 import subprocess
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,6 +45,7 @@ __all__ = [
     "deduplicate",
     "image_urls",
     "source_by_id",
+    "stabilise_archive_org",
     "tracked_pages",
 ]
 
@@ -66,6 +68,15 @@ _B64 = re.compile(r"[A-Za-z0-9+/=\n]{40,}")
 #: Weisthuemer schreibt beide Formen, ``curl -Lo NAME URL`` und
 #: ``curl -L -o NAME URL``. Ein Regex, der nur die zweite kennt, verliert die
 #: Hälfte der Bänder — gemessen: 1 von 2 Zeilen im Test, 10 von 25 im Repo.
+#: Ein an einen Knoten genagelter archive.org-Abruf. Weisthuemers ``get_images``
+#: schreibt beide Formen: die stabile ``archive.org/download/…`` und diese, die
+#: ``ia903405.us.archive.org`` fest verdrahtet. Dort liegt das Item nicht mehr —
+#: laut ``archive.org/metadata`` ist es auf ``ia600607`` gewandert — und der alte
+#: Knoten antwortet überhaupt nicht (``http=000`` nach 60 s). Gemessen 08.10.2026.
+_IA_PINNED = re.compile(
+    r"https://ia\d+\.us\.archive\.org/view_archive\.php"
+    r"\?archive=/\d+/items/(?P<item>[^/]+)/(?P<archive>[^&]+)&file=(?P<file>.+)$")
+
 _CURL_O = re.compile(
     r"""curl\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*o\s+(\S+)\s+["\']([^"\']+)["\']"""
 )
@@ -258,6 +269,25 @@ def deduplicate(sel: Selection, prefer: tuple[str, ...] = ()) -> Selection:
     return sel
 
 
+def stabilise_archive_org(url: str) -> str:
+    """Einen an einen Knoten genagelten archive.org-Abruf auf die stabile Form bringen.
+
+    archive.org verschiebt Items zwischen Knoten; eine URL, die ``ia903405`` fest
+    verdrahtet, ist deshalb nur so lange gültig, wie das Item dort liegt.
+    ``archive.org/download/<item>/<archiv>/<datei>`` leitet dagegen immer auf den
+    Knoten um, der das Item gerade hält.
+
+    Alles andere kommt unverändert zurück — eine URL, die wir nicht erkennen, wird
+    nicht geraten.
+    """
+    found = _IA_PINNED.match(url)
+    if not found:
+        return url
+    return ("https://archive.org/download/"
+            f"{found['item']}/{found['archive']}/"
+            f"{urllib.parse.quote(found['file'])}")
+
+
 def _decode_base(root: Path, plan: ImageUrlList) -> str:
     """The URL base, read from the repo's own script and checked against the register.
 
@@ -306,7 +336,8 @@ def image_urls(root: Path, source: Source) -> dict[str, str]:
 
     script = (root / source.images.script_path).read_text(
         encoding="utf-8", errors="replace")
-    return {Path(name).stem: url for name, url in _CURL_O.findall(script)}
+    return {Path(name).stem: stabilise_archive_org(url)
+            for name, url in _CURL_O.findall(script)}
 
 
 def dataset_card(source: Source, sel: Selection, *, with_images: int) -> str:

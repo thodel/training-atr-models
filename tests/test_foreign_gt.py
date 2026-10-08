@@ -35,6 +35,7 @@ from atr_training.foreign_gt import (
     deduplicate,
     image_urls,
     source_by_id,
+    stabilise_archive_org,
     tracked_pages,
 )
 
@@ -328,3 +329,54 @@ class TestTheRegister:
     def test_no_two_sources_share_a_target(self):
         targets = [s.target for s in SOURCES]
         assert len(targets) == len(set(targets))
+
+
+# ── archive.org verschiebt Items, die URL im Repo nicht (#187) ────────────────
+class TestArchiveOrgPinning:
+    """Weisthuemers ``get_images`` nagelt teils einen Knoten fest.
+
+    Gemessen am 08.10.2026: die Form
+    ``ia903405.us.archive.org/view_archive.php?archive=/0/items/…`` antwortet
+    überhaupt nicht mehr (``http=000`` nach 60 s), weil das Item laut
+    ``archive.org/metadata`` inzwischen auf ``ia600607`` liegt. Dieselbe Datei über
+    ``archive.org/download/…`` kam in 3,4 s als 324.862-Byte-PNG.
+    """
+
+    PINNED = ("https://ia903405.us.archive.org/view_archive.php?archive=/0/items/"
+              "bub_gb_2J0ZKYG7on8C/bub_gb_2J0ZKYG7on8C_images.tar"
+              "&file=gb_2J0ZKYG7on8C_000009.png")
+    STABLE = ("https://archive.org/download/bub_gb_2J0ZKYG7on8C/"
+              "bub_gb_2J0ZKYG7on8C_images.tar/gb_2J0ZKYG7on8C_000009.png")
+
+    def test_a_pinned_node_becomes_the_stable_form(self):
+        assert stabilise_archive_org(self.PINNED) == self.STABLE
+
+    def test_the_stable_form_is_left_alone(self):
+        assert stabilise_archive_org(self.STABLE) == self.STABLE
+
+    def test_an_unrelated_url_is_not_guessed_at(self):
+        """Was wir nicht erkennen, lassen wir in Ruhe."""
+        other = "https://digi.bib.uni-mannheim.de/x.fcgi?FIF=/y/0126.jp2&CVT=jpeg"
+        assert stabilise_archive_org(other) == other
+
+    def test_the_zip_form_works_too(self):
+        """Die sechste und siebte Band-Schleife holen aus ``_tif.zip`` statt ``.tar``."""
+        pinned = ("https://ia801234.us.archive.org/view_archive.php?archive=/5/items/"
+                  "weisthmer02drongoog/weisthmer02drongoog_tif.zip"
+                  "&file=weisthmer02drongoog_tif/weisthmer02drongoog_0013.tif")
+        out = stabilise_archive_org(pinned)
+        assert out.startswith("https://archive.org/download/weisthmer02drongoog/")
+        assert "weisthmer02drongoog_tif.zip/" in out
+        assert "%2F" in out, "der Pfad im Archiv muss kodiert werden"
+
+    def test_it_is_applied_when_a_script_is_read(self, tmp_path: Path):
+        root = tmp_path / "w"
+        root.mkdir()
+        (root / "get_images").write_text(
+            f'curl -o bub_gb_2J0ZKYG7on8C_0008.png "{self.PINNED}"\n')
+        source = Source(id="w", origin="o", clone_url="c", xml_root="T",
+                        licence="CC0-1.0", licence_at="LICENSE",
+                        image_source="archive.org", script_kind="s", period="p",
+                        project="pr", target="t",
+                        images=ImageShellScript(script_path="get_images"))
+        assert image_urls(root, source) == {"bub_gb_2J0ZKYG7on8C_0008": self.STABLE}
