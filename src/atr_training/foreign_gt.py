@@ -46,6 +46,7 @@ __all__ = [
     "Selection",
     "Source",
     "dataset_card",
+    "dedupe_key",
     "deduplicate",
     "head_commit",
     "image_urls",
@@ -195,8 +196,17 @@ class Source:
     target: str
     branch: str = "main"
     images: tuple[ImagePlan, ...] = ()
-    #: Path fragments that win when one page stem appears more than once.
+    #: Pfadfragmente, die gewinnen, wenn eine Seite mehrfach vorliegt.
     prefer: tuple[str, ...] = ()
+    #: Fragmente, die eine *Variante derselben* Seite kennzeichnen. Der
+    #: Dedup-Schlüssel ist der Pfad mit diesen Fragmenten entfernt.
+    #:
+    #: Warum nicht einfach der Seitenstamm: bei Fibeln heisst in **jedem** der
+    #: sechs PPN-Verzeichnisse eine Datei ``00000001.xml``. Nach Stamm
+    #: dedupliziert fielen 243 von 409 Seiten als "Dubletten" heraus, obwohl es
+    #: verschiedene Werke sind. Ein wiederkehrender Dateiname ist keine Dublette;
+    #: ein Pfad, der sich nur in einem Variantenmarker unterscheidet, ist eine.
+    variants: tuple[str, ...] = ()
     #: Whether the holding institution's terms for the *images* have been checked.
     #: Never defaults to anything but "ungeprüft": the transcription licence says
     #: nothing about the scan (#193).
@@ -322,21 +332,34 @@ def tracked_pages(root: Path, xml_root: str = "") -> Selection:
     return sel
 
 
-def deduplicate(sel: Selection, prefer: tuple[str, ...] = ()) -> Selection:
-    """Keep one file per page stem.
+def dedupe_key(path: str, variants: tuple[str, ...] = ()) -> str:
+    """Der Pfad mit allen Variantenmarkern entfernt.
 
-    ``prefer`` is matched as a substring against the path, in order. Without a
-    match the lexicographically first path wins, so the choice is at least
-    deterministic rather than filesystem order.
+    Zwei Dateien, deren Schlüssel gleich ist, sind dieselbe Seite in zwei
+    Fassungen. Zwei Dateien mit gleichem *Namen* in verschiedenen Sammlungen sind
+    es nicht — das ist der Unterschied, an dem die Dedup nach Stamm scheiterte.
     """
-    by_stem: dict[str, list[PageFile]] = {}
+    for fragment in variants:
+        path = path.replace(fragment, "")
+    return path
+
+
+def deduplicate(sel: Selection, prefer: tuple[str, ...] = (),
+                variants: tuple[str, ...] = ()) -> Selection:
+    """Eine Datei je Seite behalten, erkannt am normalisierten Pfad.
+
+    ``prefer`` wird in Reihenfolge als Teilzeichenkette gegen den Pfad geprüft.
+    Ohne Treffer gewinnt der lexikografisch erste Pfad, damit die Wahl wenigstens
+    bestimmt ist und nicht von der Reihenfolge des Dateisystems abhängt.
+    """
+    by_key: dict[str, list[PageFile]] = {}
     for page in sel.pages:
-        by_stem.setdefault(page.stem, []).append(page)
+        by_key.setdefault(dedupe_key(page.path, variants), []).append(page)
 
     kept: list[PageFile] = []
     dropped = 0
-    for stem in sorted(by_stem):
-        candidates = sorted(by_stem[stem], key=lambda p: p.path)
+    for key in sorted(by_key):
+        candidates = sorted(by_key[key], key=lambda p: p.path)
         chosen = candidates[0]
         for fragment in prefer:
             match = next((c for c in candidates if fragment in c.path), None)
@@ -601,6 +624,7 @@ SOURCES: tuple[Source, ...] = (
         clone_url="https://github.com/UB-Mannheim/reichsanzeiger-gt.git",
         xml_root="data/reichsanzeiger-1820-1939/GT-PAGE",
         prefer=("reichsanzeiger-1820-1939/GT-PAGE",),
+        variants=("_with-TableRegion",),
         images=(ImageUrlList(
             list_path="data/imageurls.list",
             script_path="data/download_images.sh",

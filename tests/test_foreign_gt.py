@@ -37,6 +37,7 @@ from atr_training.foreign_gt import (
     image_urls,
     ImageInXml,
     ImageTemplate,
+    dedupe_key,
     source_by_id,
     stabilise_archive_org,
     url_in_document,
@@ -155,14 +156,14 @@ class TestDeduplicate:
         """Warum wir wissen, dass es Dubletten sind: 238.862 = 2 x 119.431."""
         sel = self._two_variants()
         assert sel.lines == 2 * self.REAL_LINES == 238_862
-        deduplicate(sel, ("r-1820-1939/GT-PAGE",))
+        deduplicate(sel, ("r-1820-1939/GT-PAGE",), ("_with-TableRegion",))
         assert sel.lines == self.REAL_LINES == 119_431
         assert len(sel.pages) == self.REAL_PAGES
         assert sel.dropped_duplicate == self.REAL_PAGES
 
     def test_prefer_picks_the_named_variant(self):
         sel = self._two_variants()
-        deduplicate(sel, ("_with-TableRegion",))
+        deduplicate(sel, ("_with-TableRegion",), ("_with-TableRegion",))
         assert len(sel.pages) == self.REAL_PAGES
         assert all("_with-TableRegion" in p.path for p in sel.pages)
 
@@ -171,13 +172,13 @@ class TestDeduplicate:
         Datensatz ergeben, sonst ist keine Zahl reproduzierbar."""
         first = self._two_variants()
         second = Selection("x", pages=list(reversed(self._two_variants().pages)))
-        deduplicate(first, ())
-        deduplicate(second, ())
+        deduplicate(first, (), ("_with-TableRegion",))
+        deduplicate(second, (), ("_with-TableRegion",))
         assert [p.path for p in first.pages] == [p.path for p in second.pages]
 
     def test_a_preference_that_matches_nothing_falls_back(self):
         sel = self._two_variants()
-        deduplicate(sel, ("gibt-es-nicht",))
+        deduplicate(sel, ("gibt-es-nicht",), ("_with-TableRegion",))
         assert len(sel.pages) == self.REAL_PAGES
 
 
@@ -579,3 +580,39 @@ class TestImageTemplate:
                                if isinstance(p, ImageTemplate))
         assert _needs_document(fibeln_template), "{imgbase} braucht das Dokument"
         assert _needs_document(ImageInXml())
+
+
+# ── ein wiederkehrender Dateiname ist keine Dublette (#187) ──────────────────
+class TestDedupeKey:
+    """Der Fehler, den der Trockenlauf von Fibeln aufdeckte.
+
+    Fibeln hält in **jedem** seiner sechs PPN-Verzeichnisse eine ``00000001.xml``.
+    Nach Seitenstamm dedupliziert fielen **243 von 409** Seiten als "Dubletten"
+    heraus — es sind verschiedene Werke. Der Schlüssel ist darum der Pfad mit
+    entfernten Variantenmarkern, nicht der Dateiname.
+    """
+
+    def test_the_same_name_in_two_collections_is_two_pages(self):
+        a = "PPN1011424150/00000001.xml"
+        b = "PPN1020133104/00000001.xml"
+        assert dedupe_key(a) != dedupe_key(b)
+
+    def test_a_variant_marker_collapses_two_paths(self):
+        a = "data/reichsanzeiger-1820-1939/GT-PAGE/x.xml"
+        b = "data/reichsanzeiger-1820-1939_with-TableRegion/GT-PAGE/x.xml"
+        assert dedupe_key(a, ("_with-TableRegion",)) == dedupe_key(b, ("_with-TableRegion",))
+
+    def test_fibeln_keeps_all_its_pages(self):
+        """Die Regression, die der Trockenlauf fand: 409 Seiten, keine Dublette."""
+        pages = [PageFile(f"PPN{ppn}/0000000{i}.xml", f"0000000{i}", 20, True)
+                 for ppn in (1011424150, 1020133104, 1024726142)
+                 for i in range(1, 4)]
+        sel = Selection("Fibeln", pages=pages)
+        deduplicate(sel, source_by_id("Fibeln").prefer, source_by_id("Fibeln").variants)
+        assert len(sel.pages) == 9
+        assert sel.dropped_duplicate == 0
+
+    def test_fibeln_declares_no_variants(self):
+        """Weil es keine hat — und ein Marker, den es nicht gibt, würde Werke
+        verschmelzen."""
+        assert source_by_id("Fibeln").variants == ()

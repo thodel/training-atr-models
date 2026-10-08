@@ -114,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
                         "DEFAULT_TIMEOUT")
     p.add_argument("--dry-run", action="store_true",
                    help="auswählen und berichten; kein Bild holen, nichts hochladen")
+    p.add_argument("--keep-imageless", action="store_true",
+                   help="Seiten ohne Bild-URL mitnehmen statt auslassen; die "
+                        "Bildspalte ist dort leer")
     p.add_argument("--no-images", action="store_true",
                    help="nur XML einlesen, Bildspalte leer lassen")
     p.add_argument("--public", action="store_true",
@@ -151,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Stand:      {commit[:12]} (Branch {source.branch})")
     sel = tracked_pages(root, source.xml_root)
     sel.source_id = source.id
-    deduplicate(sel, source.prefer)
+    deduplicate(sel, source.prefer, source.variants)
     print(f"  {sel.report()}")
     if not sel.pages:
         print("  keine Seite ausgewählt", file=sys.stderr)
@@ -170,7 +173,20 @@ def main(argv: list[str] | None = None) -> int:
               f"er die ausdrückliche Zustimmung --no-images.", file=sys.stderr)
         return 5
 
-    pages = sel.pages[: args.limit] if args.limit else sel.pages
+    pages = sel.pages
+    if urls and not args.keep_imageless:
+        imageless = [p for p in pages if p.stem not in urls]
+        if imageless:
+            # Eine Seite ohne Bild ist für das Training nichts und sieht in der
+            # Spalte aus wie eine, die eines hat. Lieber weniger Seiten als ein
+            # Datensatz, der zur Hälfte stumm leer ist (#165).
+            print(f"  {len(imageless)} Seiten ohne Bild-URL werden ausgelassen "
+                  f"(--keep-imageless behält sie), z.B. "
+                  f"{[p.stem for p in imageless[:4]]}")
+            pages = [p for p in pages if p.stem in urls]
+            sel.pages = pages
+    if args.limit:
+        pages = pages[: args.limit]
 
     if args.dry_run:
         print("\n  --dry-run: nichts geholt, nichts geschrieben, nichts hochgeladen")
