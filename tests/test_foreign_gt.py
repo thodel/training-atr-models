@@ -180,8 +180,9 @@ class TestDeduplicate:
 class TestTheLicenceIsRequired:
     def _source(self, **kwargs):
         base = dict(id="x", origin="o", clone_url="c", xml_root="r",
-                    licence="CC0-1.0", licence_at="LICENSE", image_source="i",
-                    script_kind="s", period="p", project="pr", target="t")
+                    licence="CC0-1.0", licence_at="LICENSE", attribution="Wer auch immer",
+                    image_source="i", script_kind="s", period="p", project="pr",
+                    target="t")
         return Source(**{**base, **kwargs})
 
     def test_a_licence_without_its_place_is_refused(self):
@@ -220,7 +221,8 @@ class TestImageUrls:
         root = self._repo(tmp_path, f'urlbase=`echo "{self.B64}" | base64 -d`\n',
                           "097-9978/0126.jp2&CVT=jpeg 1870_14_0126.jpg\n")
         source = Source(id="x", origin="o", clone_url="c", xml_root="data",
-                        licence="CC0-1.0", licence_at="LICENSE", image_source="UB MA",
+                        licence="CC0-1.0", licence_at="LICENSE",
+                        attribution="UB Mannheim", image_source="UB MA",
                         script_kind="s", period="p", project="pr", target="t",
                         images=ImageUrlList(list_path="data/imageurls.list",
                                             script_path="data/download_images.sh",
@@ -236,7 +238,8 @@ class TestImageUrls:
         root = self._repo(tmp_path, 'urlbase=`echo "aHR0cHM6Ly9ldmlsLmV4YW1wbGUvCg==" '
                                     '| base64 -d`\n', "a/b.jp2 x.jpg\n")
         source = Source(id="x", origin="o", clone_url="c", xml_root="data",
-                        licence="CC0-1.0", licence_at="LICENSE", image_source="UB MA",
+                        licence="CC0-1.0", licence_at="LICENSE",
+                        attribution="UB Mannheim", image_source="UB MA",
                         script_kind="s", period="p", project="pr", target="t",
                         images=ImageUrlList(list_path="data/imageurls.list",
                                             script_path="data/download_images.sh",
@@ -253,7 +256,8 @@ class TestImageUrls:
             'curl -Lo bub_gb_X_0008.png "https://archive.org/download/a/b.tar/c.png"\n'
             'curl -L -o bub_gb_Y_0012.png "https://archive.org/download/d/e.tar/f.png"\n')
         source = Source(id="w", origin="o", clone_url="c", xml_root="T",
-                        licence="CC0-1.0", licence_at="LICENSE", image_source="archive.org",
+                        licence="CC0-1.0", licence_at="LICENSE",
+                        attribution="UB Mannheim", image_source="archive.org",
                         script_kind="s", period="p", project="pr", target="t",
                         images=ImageShellScript(script_path="get_images"))
         urls = image_urls(root, source)
@@ -273,7 +277,8 @@ class TestImageUrls:
             '  curl -L -o w_00$page.tif "https://archive.org/x/w_00$page.tif"\n'
             'done\n')
         source = Source(id="w", origin="o", clone_url="c", xml_root="T",
-                        licence="CC0-1.0", licence_at="LICENSE", image_source="archive.org",
+                        licence="CC0-1.0", licence_at="LICENSE",
+                        attribution="UB Mannheim", image_source="archive.org",
                         script_kind="s", period="p", project="pr", target="t",
                         images=ImageShellScript(script_path="get_images"))
         urls = image_urls(root, source)
@@ -382,6 +387,7 @@ class TestArchiveOrgPinning:
             f'curl -o bub_gb_2J0ZKYG7on8C_0008.png "{self.PINNED}"\n')
         source = Source(id="w", origin="o", clone_url="c", xml_root="T",
                         licence="CC0-1.0", licence_at="LICENSE",
+                        attribution="UB Mannheim",
                         image_source="archive.org", script_kind="s", period="p",
                         project="pr", target="t",
                         images=ImageShellScript(script_path="get_images"))
