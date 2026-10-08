@@ -57,6 +57,9 @@ Beschrieben in sechs Dokumenten (englisch):
   Held-out-Satz besteht, wie er aus seinen Dokument-Ids neu gebaut wird, und
   welche Zahl beweist, dass der neue Satz derselbe ist (ein Digest tut es nicht:
   Arrow ist nicht byteweise reproduzierbar).
+- [`docs/RESULTS_MCP.md`](docs/RESULTS_MCP.md) — der lesende MCP über den
+  UBELIX-Jobstore für den Tagesbericht: elf Werkzeuge, eine Sonde für Python
+  3.9 auf dem Login-Knoten, kein `ssh` im Prompt (#156, #174).
 - [`docs/GEMMA_TUNING.md`](docs/GEMMA_TUNING.md) — Gemma liest 3.2 Punkte
   schlechter als Qwen; was davon an unseren eigenen Einstellungen liegt (halbes
   Token-Budget, ein Prompt-Block, den das Training nie sah), was die offizielle

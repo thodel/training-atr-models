@@ -40,6 +40,11 @@ dependencies = [
 # changes between the machine you fix it on and the machine that judges it cannot
 # be a gate. Bumping the pin is a deliberate commit.
 dev = ["pytest>=8.0", "ruff==0.15.20"]
+# The reading MCP over the UBELIX job store (#156, #174). Its server half needs
+# the mcp SDK; its probe half runs on the cluster with python 3.9 and nothing
+# else, which is why mcp is an extra and not a dependency. mcp 2.0 renamed the
+# high-level class (FastMCP → MCPServer), so the major version is pinned.
+mcp = ["mcp>=2.0.0,<3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
