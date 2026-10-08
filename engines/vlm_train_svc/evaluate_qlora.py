@@ -60,9 +60,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "scoring (serving-atr-inference/docs/CHURRO_PLAN.md §1.1)")
     p.add_argument("--granularity", default="line",
                    choices=["line", "block", "page", "mixed"])
-    p.add_argument("--prompt-from-training-render", action="store_true",
-                   help="ask the model to continue from the training render rather "
-                        "than from add_generation_prompt=True; see generation_prompt")
+    # Default ON since the measurement below. Off is kept so the seven reports
+    # produced before 2026-10-08 can be reproduced exactly.
+    p.add_argument("--prompt-from-training-render", action="store_true", default=True,
+                   dest="prompt_from_training_render",
+                   help="ask the model to continue from the training render (default)")
+    p.add_argument("--prompt-from-generation-prompt", action="store_false",
+                   dest="prompt_from_training_render",
+                   help="the pre-2026-10-08 behaviour: add_generation_prompt=True")
     p.add_argument("--kind-pixels", default=None,
                    help="per-kind visual budget, e.g. line=262144,page=2097152; each "
                         "sample is fitted to its own kind's budget, as in training")
@@ -323,9 +328,27 @@ def generation_prompt(processor, prompt: str, system: str | None,
 
     With ``from_training_render`` the prompt is instead the training render cut at
     the point where the answer begins, which is by construction what the model was
-    trained to continue. For Qwen that is byte-identical to the generation prompt;
-    the flag therefore changes nothing for any number measured so far, which is why
-    it is opt-in rather than the default.
+    trained to continue.
+
+    **This is the default since 2026-10-08, because it was measured.** The same
+    adapter on the same 2 751 benchmark lines, the only difference being which of
+    the two prompts it was asked to continue:
+
+    ==========================  ===========  ===========  ============  =========
+    arm                         CER          insertions   length ratio  at cap
+    ==========================  ===========  ===========  ============  =========
+    12B, generation prompt      22.94 %      17 027       0.894         11
+    12B, training render        **9.95 %**   5 910        0.964         1
+    E4B, generation prompt      10.24 %      2 039        1.004         3
+    E4B, training render        10.24 %      2 039        1.004         3
+    ==========================  ===========  ===========  ============  =========
+
+    Thirteen points on the arm whose two renders differ, and **byte-identical**
+    output on the arm whose renders agree — the E4B rows match in every field,
+    which is what makes this a controlled result rather than a lucky one. Qwen's
+    two renders agree as well, so the default leaves every Qwen number untouched;
+    ``--prompt-from-generation-prompt`` restores the old behaviour for reproducing
+    a report made before that date.
     """
     if not from_training_render:
         return processor.apply_chat_template(

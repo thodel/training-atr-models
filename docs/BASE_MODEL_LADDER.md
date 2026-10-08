@@ -37,11 +37,36 @@ benchmark](https://doi.org/10.5281/zenodo.4746342), 2 751 lines:
 | `Qwen/Qwen3.5-4B` | 4.66 B | **6.80 %** | 23.42 % | 1.000 | 0 | no |
 | `Qwen/Qwen3-VL-4B-Instruct` | 4.44 B | 7.65 % | 24.58 % | 1.002 | 1 | no |
 | `Qwen/Qwen3.5-2B` | 2.27 B | 8.95 % | 26.24 % | 1.001 | 2 | no |
-| `google/gemma-4-E4B-it` | 8.00 B / **≈4.5 B eff.** | **10.24 %** | 28.74 % | 1.004 | 3 | **yes** |
+| `google/gemma-4-E4B-it` | 8.00 B / **≈4.5 B eff.** | 10.24 % | 28.74 % | 1.004 | 3 | **yes** |
 | `Qwen/Qwen3.5-0.8B` | 0.87 B | 11.15 % | 30.65 % | 0.998 | 0 | no |
-| `google/gemma-4-12B-it` | 11.96 B | 22.94 % | 39.45 % | **0.894** | 11 | **yes** |
+| `google/gemma-4-12B-it` | 11.96 B | **9.95 %** | 24.23 % | 0.964 | 1 | **yes** |
 
-**The 12B arm is not a scaling result, it is a broken run.** Its error budget is
+**The 12B row read 22.94 % until 2026-10-08, and the cause was our own prompt.**
+Corrected below; the paragraph that follows is kept because the wrong reading was
+published and because the way it was wrong is the useful part.
+
+Its generation prompt ended `<|turn>model\n<|channel>thought\n<channel|>` — an
+empty thinking channel — while its training render ended plain `<|turn>model\n`.
+The arm was asked at evaluation to continue inside a channel it had never seen,
+and a model told to think writes text that is not a transcription. Asked instead
+to continue from the training render, the same adapter on the same 2 751 lines:
+
+| | CER | insertions | length ratio | at cap |
+|---|---:|---:|---:|---:|
+| 12B, generation prompt | 22.94 % | 17 027 | 0.894 | 11 |
+| 12B, **training render** | **9.95 %** | 5 910 | 0.964 | 1 |
+| E4B, generation prompt | 10.24 % | 2 039 | 1.004 | 3 |
+| E4B, **training render** | 10.24 % | 2 039 | 1.004 | 3 |
+
+**Thirteen points on the arm whose renders differ, and byte-identical output on
+the control whose renders agree** — the E4B rows match in every field. That is
+what makes it a controlled result. The training render is the default since, and
+`--prompt-from-generation-prompt` reproduces the old number.
+
+### What the wrong reading looked like, and why it was wrong
+
+The paragraph below was written on 07.10. It diagnosed the error *shape*
+correctly and the *cause* wrongly, which is the more instructive failure: Its error budget is
 **17 027 insertions** against 4 783 deletions and 4 567 substitutions — on
 114 960 reference characters, it invents 15 % of the text. Compare the two arms
 that read normally: E4B is 2 039 / 2 529 / 7 202 and Qwen3.5-4B is
@@ -55,15 +80,15 @@ two-peaked distribution this project has now met three times, and the mean hides
 it again. `truncated_cer` is 0.200, so the eleven lines at the generation cap are
 not the story either.
 
-**Do not read 22.94 % as "12B is worse than E4B at scale".** The same base reads
-the medieval corpus at **12.16 %** and beats `qwen3vl-medieval-german-v3` there
-(#77). What distinguishes this arm is its history: `16830477` trained across
-**four attempts over five days**, twice preempted and twice walled, and it is the
-only arm in this table that was interrupted at all. Whether a repeatedly resumed
-run can end up in this state is a hypothesis, not a finding — but it is the one
-worth testing before any conclusion about 12B on this corpus, and it is cheaper
-to test than to argue: one uninterrupted run on asteraix, which is what
-`docs/WHERE_A_RUN_RUNS.md` §1 exists to decide.
+The hypothesis in that paragraph — that the four-times-preempted run had taken
+damage — was **wrong, and it was killed for free** before any GPU time went into
+it. The loss history across all four attempts, 2 183 entries, runs smooth: 7.11
+at step 25, 0.459 at 14 000, 0.307 at 29 000, 0.261 at 43 000, 0.147 at the end,
+no discontinuity at a single attempt boundary, gradient norms 1–4. A training loss
+of 0.15 beside 22.94 % on a neutral set is not a damaged run; it is a mismatch
+between training and inference. Reading the two renders side by side found it in
+minutes, where the proposed uninterrupted run would have cost five days and
+answered nothing.
 
 **Gemma 4 loses on this corpus, and not narrowly.** At ~4.5 B of transformer
 behind its per-layer embeddings — the same effective size as the two 4B Qwens

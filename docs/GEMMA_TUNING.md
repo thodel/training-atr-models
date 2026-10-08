@@ -47,15 +47,22 @@ Qwen arms of the same corpus:
 | `Qwen/Qwen3.5-2B` | 2.27 B | 8.95 % | 26.24 % | 1.001 | 2 |
 | `google/gemma-4-E4B-it` | ≈4.5 B eff. | 10.24 % | 28.74 % | 1.004 | 3 |
 | `Qwen/Qwen3.5-0.8B` | 0.87 B | 11.15 % | 30.65 % | 0.998 | 0 |
-| `google/gemma-4-12B-it` | 11.96 B | 22.94 % | 39.45 % | 0.894 | 11 |
+| `google/gemma-4-12B-it` | 11.96 B | **9.95 %** | 24.23 % | 0.964 | 1 |
 
-**The 12B line belongs in a different conversation.** 17 027 insertions against
-4 783 deletions is a generation failure, not a reading one, and that arm trained
-across four attempts over five days against preemption — the only interrupted run
-in the table. `BASE_MODEL_LADDER.md` §1 states the hypothesis; until it is tested,
-the row below to compare against is **E4B's**.
+**§3.0's first free check has been run, and it paid 13 points.** The 12B line read
+22.94 % until 2026-10-08. Its generation prompt ended with an empty thinking
+channel its training render never contained; asked to continue from the training
+render instead, the same adapter on the same 2 751 lines scored **9.95 %**, with
+insertions falling 17 027 → 5 910 and truncations 11 → 1. The E4B control, whose
+two renders agree, came back **byte-identical in every field**. The training
+render is now the default.
 
-This is the number the plan was missing: everything in §1 was measured on a draw
+That is the second of the two handicaps §1 names, removed. **The first one is
+still in place**: both arms ran at the 140-token step where Gemma's own default is
+280, and §3.1 is still the next experiment. So 9.95 % is not Gemma tuned — it is
+Gemma with one of three known handicaps lifted.
+
+For E4B this is the number the plan was missing: everything in §1 was measured on a draw
 of our own. **It makes the case for tuning stronger, not weaker.** The deficit on
 a neutral set is 3.44 points against the best Qwen — larger than the 3.2 points
 measured in-domain on the medieval corpus — and it was produced with both
@@ -124,9 +131,12 @@ the CER by more than 0.6 points.**
 
 ### 3.0 Free checks, no training (an afternoon)
 
-- **Score the existing adapter without the empty thought block.** It was trained
-  without one and evaluated with one. If this alone moves the number, the 16.88 %
-  is partly an artefact of our own prompt.
+- ~~**Score the existing adapter without the empty thought block.**~~ **Done
+  2026-10-08, and it was the largest single effect measured in this plan.** The
+  12B went 22.94 % → **9.95 %** on the neutral benchmark; the E4B, whose renders
+  agree, did not move by a single character. The empty thought block was ours, not
+  Gemma's, and it cost one arm thirteen points. The training render is the default
+  since, so no further arm can lose them silently.
 - **Score the existing adapter at 280 and 560 soft tokens.** It trained at 140.
   Two outcomes, both informative: better means the budget was the handicap and
   train/inference matching is not sacred; worse means matching matters and the
