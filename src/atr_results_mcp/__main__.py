@@ -15,7 +15,7 @@ import json
 import sys
 
 from .remote import SshTransport
-from .server import TOOL_NAMES, build_server
+from .server import SERVER_GENERATION, TOOL_NAMES, build_server
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,9 +37,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if "error" in result else 0
 
     server = build_server()
-    if opts.http:
+    if opts.http and SERVER_GENERATION == 2:
         server.run(transport="streamable-http", host=opts.host, port=opts.port,
                    streamable_http_path=opts.path)
+    elif opts.http:
+        # mcp 1.x keeps the bind address in settings, not in run().
+        server.settings.host = opts.host
+        server.settings.port = opts.port
+        server.settings.streamable_http_path = opts.path
+        server.run(transport="streamable-http")
     else:
         server.run(transport="stdio")
     return 0

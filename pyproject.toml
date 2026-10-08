@@ -42,9 +42,11 @@ dependencies = [
 dev = ["pytest>=8.0", "ruff==0.15.20"]
 # The reading MCP over the UBELIX job store (#156, #174). Its server half needs
 # the mcp SDK; its probe half runs on the cluster with python 3.9 and nothing
-# else, which is why mcp is an extra and not a dependency. mcp 2.0 renamed the
-# high-level class (FastMCP → MCPServer), so the major version is pinned.
-mcp = ["mcp>=2.0.0,<3"]
+# else, which is why mcp is an extra and not a dependency. Pinned to the 1.x
+# line on purpose: 2.x negotiates the 2026-07-28 protocol revision in a form
+# Claude Code 2.1.274 refuses over stdio ("the initialize handshake is not
+# accepted", 07.10.2026), 1.x connects. server.py imports either generation.
+mcp = ["mcp>=1.20,<2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
