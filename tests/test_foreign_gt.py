@@ -233,8 +233,9 @@ class TestImageUrls:
                             list_path="data/imageurls.list",
                             script_path="data/download_images.sh",
                             base_b64=self.B64),))
-        urls = image_urls(root, source)
-        assert urls == {"1870_14_0126":
+        page = PageFile("data/GT-PAGE/1870_14_0126.xml", "1870_14_0126", 1, True)
+        urls = image_urls(root, source, [page])
+        assert urls == {page.path:
                         "https://digi.bib.uni-mannheim.de/reichsanzeiger.fcgi"
                         "?FIF=/reichsanzeiger/film/097-9978/0126.jp2&CVT=jpeg"}
 
@@ -252,7 +253,7 @@ class TestImageUrls:
                             script_path="data/download_images.sh",
                             base_b64=self.B64),))
         with pytest.raises(ForeignGtError, match="no longer contains"):
-            image_urls(root, source)
+            image_urls(root, source, [PageFile("x.xml", "x", 1, True)])
 
     def test_explicit_curl_lines_are_read(self, tmp_path: Path):
         """Weisthuemers Form."""
@@ -267,8 +268,11 @@ class TestImageUrls:
                         attribution="UB Mannheim", image_source="archive.org",
                         script_kind="s", period="p", project="pr", target="t",
                         images=(ImageShellScript(script_path="get_images"),))
-        urls = image_urls(root, source)
-        assert urls["bub_gb_Y_0012"] == "https://archive.org/download/d/e.tar/f.png"
+        pages = [PageFile(f"T/{s}.xml", s, 1, True)
+                 for s in ("bub_gb_X_0008", "bub_gb_Y_0012")]
+        urls = image_urls(root, source, pages)
+        assert urls["T/bub_gb_Y_0012.xml"] == \
+            "https://archive.org/download/d/e.tar/f.png"
         assert len(urls) == 2
 
     def test_a_loop_body_is_not_guessed_at(self, tmp_path: Path):
@@ -288,8 +292,9 @@ class TestImageUrls:
                         attribution="UB Mannheim", image_source="archive.org",
                         script_kind="s", period="p", project="pr", target="t",
                         images=(ImageShellScript(script_path="get_images"),))
-        urls = image_urls(root, source)
-        assert all("$page" in stem for stem in urls), \
+        pages = [PageFile("T/w_0013.tif.xml", "w_0013.tif", 1, True)]
+        urls = image_urls(root, source, pages)
+        assert urls == {}, \
             "eine Schleifenvariable darf nicht als Seitenstamm durchgehen"
 
     def test_dtgt_reads_the_url_out_of_its_own_documents(self):
@@ -415,7 +420,9 @@ class TestArchiveOrgPinning:
                         image_source="archive.org", script_kind="s", period="p",
                         project="pr", target="t",
                         images=(ImageShellScript(script_path="get_images"),))
-        assert image_urls(root, source) == {"bub_gb_2J0ZKYG7on8C_0008": self.STABLE}
+        page = PageFile("T/bub_gb_2J0ZKYG7on8C_0008.xml",
+                        "bub_gb_2J0ZKYG7on8C_0008", 1, True)
+        assert image_urls(root, source, [page]) == {page.path: self.STABLE}
 
 
 # ── der Rückbezug je Eintrag, nicht nur je Datensatz ─────────────────────────
@@ -529,7 +536,7 @@ class TestImageTemplate:
         urls = image_urls(pathlib.Path("/nonexistent"), source_by_id("gt-fraktur"),
                           [self._page("agtck_1834_02/agtck_1834_02/page/"
                                       "agtck_1834_02_00002.xml")])
-        assert urls == {"agtck_1834_02_00002":
+        assert urls == {"agtck_1834_02/agtck_1834_02/page/agtck_1834_02_00002.xml":
                         "https://opendigi.ub.uni-tuebingen.de/opendigi/image/"
                         "agtck_1834_02/agtck_1834_02_00002.jp2/full/full/0/default.jpg"}
 
@@ -553,8 +560,8 @@ class TestImageTemplate:
         (tmp_path / inside).parent.mkdir(parents=True)
         (tmp_path / inside).write_text('<PcGts><Page imageFilename="b.jpg"/></PcGts>')
         got = image_urls(tmp_path, source, [self._page(str(inside))])
-        assert got == {"b": "https://tudigit.ulb.tu-darmstadt.de/image/"
-                            "GK-9099-S322-1/3/b.jpg"}
+        assert got == {str(inside): "https://tudigit.ulb.tu-darmstadt.de/image/"
+                                    "GK-9099-S322-1/3/b.jpg"}
 
     def test_the_plans_are_tried_in_order(self):
         """Fibeln braucht beides: 41 Dokumente nennen ihre URL, 412 nicht."""
@@ -565,7 +572,7 @@ class TestImageTemplate:
         """Ohne die ausgewählten Seiten kann dieser Weg nichts finden — und still
         ein leeres Ergebnis zurückzugeben sähe aus wie 'die Quelle hat keine
         Bilder'."""
-        with pytest.raises(ForeignGtError, match="Dokumente selbst"):
+        with pytest.raises(ForeignGtError, match="ausgewählten Seiten"):
             image_urls(pathlib.Path("/nonexistent"), source_by_id("DTGT"))
 
     def test_a_template_without_img_placeholders_never_opens_the_file(self):
@@ -616,3 +623,30 @@ class TestDedupeKey:
         """Weil es keine hat — und ein Marker, den es nicht gibt, würde Werke
         verschmelzen."""
         assert source_by_id("Fibeln").variants == ()
+
+
+class TestUrlsAreKeyedByPath:
+    """Derselbe Fehler wie bei der Dedup, eine Schicht tiefer.
+
+    Die URL-Tabelle war nach Seitenstamm verschlüsselt. Bei Fibeln heisst in jedem
+    der sechs PPN-Verzeichnisse eine Datei ``00000001.xml``, also teilten sich 409
+    Seiten 166 Bilder: verschiedene Werke bekamen **dasselbe Bild**, und der
+    Bericht meldete "166 gelistet, 409 zugeordnet", was sich nicht ausgehen kann.
+    Nur dieser Widerspruch im eigenen Bericht hat es verraten.
+    """
+
+    def test_two_collections_with_the_same_filename_get_their_own_image(
+            self, tmp_path: Path):
+        pages = []
+        for ppn in ("PPN1011424150", "PPN1020133104"):
+            rel = Path(ppn) / "00000001.xml"
+            (tmp_path / rel).parent.mkdir(parents=True)
+            (tmp_path / rel).write_text(
+                '<PcGts><Page imageFilename="00000001.jpg"/></PcGts>')
+            pages.append(PageFile(str(rel), "00000001", 20, True))
+
+        urls = image_urls(tmp_path, source_by_id("Fibeln"), pages)
+        assert len(urls) == 2, "zwei Seiten, zwei URLs"
+        assert len(set(urls.values())) == 2, "und zwei *verschiedene*"
+        assert "PPN1011424150" in urls["PPN1011424150/00000001.xml"]
+        assert "PPN1020133104" in urls["PPN1020133104/00000001.xml"]

@@ -161,9 +161,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     urls = {} if args.no_images else image_urls(root, source, sel.pages)
-    have = sum(1 for page in sel.pages if page.stem in urls)
-    print(f"  Bild-URLs:  {len(urls)} im Repo gelistet, {have} von "
-          f"{len(sel.pages)} ausgewählten Seiten zugeordnet")
+    have = sum(1 for page in sel.pages if page.path in urls)
+    print(f"  Bild-URLs:  {have} von {len(sel.pages)} ausgewählten Seiten "
+          f"zugeordnet")
 
     if not source.images and not args.no_images:
         print(f"\n  {source.id} hat keinen Bezugsweg für Bilder — nichts "
@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pages = sel.pages
     if urls and not args.keep_imageless:
-        imageless = [p for p in pages if p.stem not in urls]
+        imageless = [p for p in pages if p.path not in urls]
         if imageless:
             # Eine Seite ohne Bild ist für das Training nichts und sieht in der
             # Spalte aus wie eine, die eines hat. Lieber weniger Seiten als ein
@@ -183,14 +183,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {len(imageless)} Seiten ohne Bild-URL werden ausgelassen "
                   f"(--keep-imageless behält sie), z.B. "
                   f"{[p.stem for p in imageless[:4]]}")
-            pages = [p for p in pages if p.stem in urls]
+            pages = [p for p in pages if p.path in urls]
             sel.pages = pages
     if args.limit:
         pages = pages[: args.limit]
 
     if args.dry_run:
         print("\n  --dry-run: nichts geholt, nichts geschrieben, nichts hochgeladen")
-        missing = [p.stem for p in pages if p.stem not in urls]
+        missing = [p.stem for p in pages if p.path not in urls]
         if missing:
             print(f"  ohne Bild-URL: {len(missing)}  z.B. {missing[:4]}")
         print(f"\n  Karte (Anfang):\n")
@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         xml = (root / page.path).read_text(encoding="utf-8", errors="replace")
         blob = b""
         name = page.stem
-        url = urls.get(page.stem)
+        url = urls.get(page.path)
         if url:
             try:
                 blob = _get(url, timeout=args.timeout)

@@ -490,41 +490,47 @@ def _fill_template(plan: ImageTemplate, page: "PageFile", xml_root: str,
 
 def image_urls(root: Path, source: Source,
                pages: "Sequence[PageFile]" = ()) -> dict[str, str]:
-    """``{Seitenstamm: Bild-URL}`` für eine geklonte Quelle.
+    """``{Seitenpfad: Bild-URL}`` für eine geklonte Quelle.
+
+    **Verschlüsselt nach Pfad, nicht nach Seitenstamm.** Fibeln hält in jedem
+    seiner sechs PPN-Verzeichnisse eine ``00000001.xml``; nach Stamm verschlüsselt
+    teilten sich 409 Seiten 166 Bilder, und verschiedene Werke bekämen dasselbe
+    Bild zugewiesen, ohne dass irgendetwas davon berichtet würde.
 
     Die Wege aus ``source.images`` werden in ihrer Reihenfolge versucht; der erste,
-    der für eine Seite eine URL ergibt, gewinnt. Ein Stamm, der im Ergebnis fehlt,
+    der für eine Seite eine URL ergibt, gewinnt. Ein Pfad, der im Ergebnis fehlt,
     hat in der Quelle keine Bild-URL — das wird berichtet, nicht geraten.
-
-    ``pages`` braucht nur, wer :class:`ImageInXml` oder :class:`ImageTemplate`
-    benutzt: beide lesen das Dokument selbst.
     """
-    urls: dict[str, str] = {}
-    needs_pages = any(isinstance(p, (ImageInXml, ImageTemplate))
-                      for p in source.images)
-    if needs_pages and not pages:
+    if not source.images:
+        return {}
+    if not pages:
         raise ForeignGtError(
-            f"{source.id}: dieser Bezugsweg liest die Dokumente selbst, also "
-            "müssen die ausgewählten Seiten übergeben werden")
+            f"{source.id}: die Zuordnung hängt an den ausgewählten Seiten, also "
+            "müssen sie übergeben werden")
 
+    urls: dict[str, str] = {}
     for plan in source.images:
-        if isinstance(plan, ImageUrlList):
-            for stem, url in _from_url_list(root, plan).items():
-                urls.setdefault(stem, url)
-        elif isinstance(plan, ImageShellScript):
-            for stem, url in _from_shell_script(root, plan).items():
-                urls.setdefault(stem, url)
-        else:
-            reads = _needs_document(plan)
+        if isinstance(plan, (ImageUrlList, ImageShellScript)):
+            # Diese zwei Formen kennen nur Dateinamen, keine Pfade: die Zuordnung
+            # auf die Seite läuft über den Stamm. Für die Quellen, die sie
+            # benutzen, ist der Stamm eindeutig — geprüft in den Tests.
+            by_stem = (_from_url_list(root, plan)
+                       if isinstance(plan, ImageUrlList)
+                       else _from_shell_script(root, plan))
             for page in pages:
-                if page.stem in urls:
-                    continue
-                xml_text = ((root / page.path).read_text(
-                    encoding="utf-8", errors="replace") if reads else "")
-                url = (url_in_document(xml_text) if isinstance(plan, ImageInXml)
-                       else _fill_template(plan, page, source.xml_root, xml_text))
-                if url:
-                    urls[page.stem] = url
+                if page.path not in urls and page.stem in by_stem:
+                    urls[page.path] = by_stem[page.stem]
+            continue
+        reads = _needs_document(plan)
+        for page in pages:
+            if page.path in urls:
+                continue
+            xml_text = ((root / page.path).read_text(
+                encoding="utf-8", errors="replace") if reads else "")
+            url = (url_in_document(xml_text) if isinstance(plan, ImageInXml)
+                   else _fill_template(plan, page, source.xml_root, xml_text))
+            if url:
+                urls[page.path] = url
     return urls
 
 
