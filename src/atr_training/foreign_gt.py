@@ -63,7 +63,12 @@ HEAD_BYTES = 800
 _TEXTLINE = re.compile(rb"<([A-Za-z0-9]+:)?TextLine\b")
 _UNICODE = re.compile(rb"<([A-Za-z0-9]+:)?Unicode>")
 _B64 = re.compile(r"[A-Za-z0-9+/=\n]{40,}")
-_CURL_O = re.compile(r"""curl\s+(?:-[A-Za-z]+\s+)*-o\s+(\S+)\s+["'](\S+?)["']""")
+#: Weisthuemer schreibt beide Formen, ``curl -Lo NAME URL`` und
+#: ``curl -L -o NAME URL``. Ein Regex, der nur die zweite kennt, verliert die
+#: Hälfte der Bänder — gemessen: 1 von 2 Zeilen im Test, 10 von 25 im Repo.
+_CURL_O = re.compile(
+    r"""curl\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*o\s+(\S+)\s+["\']([^"\']+)["\']"""
+)
 
 
 class ForeignGtError(RuntimeError):

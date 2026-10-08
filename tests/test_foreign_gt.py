@@ -127,26 +127,38 @@ class TestTheFilter:
 class TestDeduplicate:
     """Die reichsanzeiger-Falle, am gemessenen Verhältnis nachgebaut."""
 
+    #: Die gemessene Verteilung ist nicht gleichmässig: 101 Seiten tragen 119.431
+    #: Zeilen, also 1.182,5 im Schnitt. Hier als 100 x 1.182 + 1 x 1.231 nachgebaut,
+    #: damit die Summe die echte ist und nicht eine, die sich schön teilt.
+    REAL_PAGES = 101
+    REAL_LINES = 119_431
+
     def _two_variants(self) -> Selection:
+        per_page = [1182] * self.REAL_PAGES
+        per_page[-1] += self.REAL_LINES - sum(per_page)
+        assert sum(per_page) == self.REAL_LINES
         pages = []
-        for i in range(101):
-            pages.append(PageFile(f"data/r-1820-1939/GT-PAGE/{i}.xml", str(i), 1182, True))
+        for i, lines in enumerate(per_page):
             pages.append(PageFile(
-                f"data/r-1820-1939_with-TableRegion/GT-PAGE/{i}.xml", str(i), 1182, True))
+                f"data/r-1820-1939/GT-PAGE/{i:03d}.xml", f"{i:03d}", lines, True))
+            pages.append(PageFile(
+                f"data/r-1820-1939_with-TableRegion/GT-PAGE/{i:03d}.xml",
+                f"{i:03d}", lines, True))
         return Selection("reichsanzeiger-gt", pages=pages)
 
     def test_the_double_count_is_exactly_double(self):
         """Warum wir wissen, dass es Dubletten sind: 238.862 = 2 x 119.431."""
         sel = self._two_variants()
-        assert sel.lines == 238_862
+        assert sel.lines == 2 * self.REAL_LINES == 238_862
         deduplicate(sel, ("r-1820-1939/GT-PAGE",))
-        assert sel.lines == 119_431
-        assert len(sel.pages) == 101
-        assert sel.dropped_duplicate == 101
+        assert sel.lines == self.REAL_LINES == 119_431
+        assert len(sel.pages) == self.REAL_PAGES
+        assert sel.dropped_duplicate == self.REAL_PAGES
 
     def test_prefer_picks_the_named_variant(self):
         sel = self._two_variants()
         deduplicate(sel, ("_with-TableRegion",))
+        assert len(sel.pages) == self.REAL_PAGES
         assert all("_with-TableRegion" in p.path for p in sel.pages)
 
     def test_without_a_preference_the_choice_is_still_deterministic(self):
@@ -161,7 +173,7 @@ class TestDeduplicate:
     def test_a_preference_that_matches_nothing_falls_back(self):
         sel = self._two_variants()
         deduplicate(sel, ("gibt-es-nicht",))
-        assert len(sel.pages) == 101
+        assert len(sel.pages) == self.REAL_PAGES
 
 
 class TestTheLicenceIsRequired:
