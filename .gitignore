@@ -21,3 +21,4 @@ config/models.local.yaml
 
 # eval run outputs
 eval/outputs/
+uv.lock
