@@ -228,6 +228,22 @@ def main(argv: list[str] | None = None) -> int:
         if i % 20 == 0 or i == len(pages):
             print(f"    [{i}/{len(pages)}] {fetched} Bilder, {failed} fehlend", flush=True)
 
+    if failed and not args.keep_imageless:
+        # Dieselbe Regel wie für Seiten ohne URL, nur eine Schicht später: ein
+        # fehlgeschlagener Abruf hinterlässt eine Zeile, die in der Spalte aussieht
+        # wie eine mit Bild. Bei dach-gt waren das 27 von 98 — HTTP 404, weil die
+        # Bild-URLs im Dokument veraltet sind.
+        before = len(rows)
+        rows = [r for r in rows if r["image"]["bytes"]]
+        sel.pages = [p for p in sel.pages
+                     if any(r["filename"] == p.stem for r in rows)]
+        print(f"  {before - len(rows)} Zeilen ohne geholtes Bild werden "
+              f"ausgelassen (--keep-imageless behält sie)")
+
+    if not rows:
+        print("\n  keine Zeile mit Bild übrig — nichts hochgeladen", file=sys.stderr)
+        return 6
+
     print(f"\n  {len(rows)} Zeilen, {fetched} mit Bild, {failed} ohne")
 
     # Der dritte Zustand (#165): "kein Bild geholt" ist nicht "diese Quelle hat
