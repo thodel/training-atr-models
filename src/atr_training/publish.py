@@ -546,6 +546,70 @@ def _corpus_defects(model: TrainedModel) -> list[str]:
     return lines
 
 
+def _energy_section(model: TrainedModel) -> list[str]:
+    """Energy drawn, carbon computed, and the acknowledgement UBELIX asks for (#184).
+
+    Read off the record like everything else on this card. The energy is measured
+    (`gpu.PeakSampler` integrates `power.draw` next to every stage); the carbon is
+    computed, and the factor stands beside the result so a reader can recompute it
+    and a later correction does not invalidate the weights.
+
+    Both halves of the dual report appear. Procuring certified renewable
+    electricity is a market instrument, and the GHG Protocol asks for the grid
+    figure beside the supplier's — here about five times larger. Printing only the
+    flattering one would be the kind of number this project does not publish.
+
+    The cluster sentence is not decoration: using UBELIX comes with the condition
+    that work done on it says so. It appears whenever the record carries a Slurm
+    job id, which is the one signal that cannot be true off the cluster.
+    """
+    from atr_training.footprint import (
+        GRID_FACTOR_G_PER_KWH, MIX_DESCRIPTION, MIX_SOURCE, UBELIX_CREDIT,
+        from_energy,
+    )
+
+    progress = model.metadata.get("progress") or {}
+    if not isinstance(progress, dict):
+        progress = {}
+    energy_wh = progress.get("energy_wh")
+    slurm = progress.get("slurm_job_id")
+
+    lines: list[str] = []
+    if isinstance(energy_wh, (int, float)) and energy_wh > 0:
+        fp = from_energy(float(energy_wh), shared=bool(progress.get("gpu_shared")))
+        lines += [
+            "## Energy and carbon",
+            "",
+            "| | |",
+            "|---|---|",
+            f"| energy at the cards | **{fp.kwh:.3f} kWh** ({energy_wh:.0f} Wh) |",
+            f"| CO2e, market-based | **{fp.gco2e:.0f} g** "
+            f"at {fp.factor_g_per_kwh:.0f} g/kWh |",
+            f"| CO2e, location-based | {fp.gco2e_grid:.0f} g "
+            f"at {GRID_FACTOR_G_PER_KWH:.0f} g/kWh (Swiss consumer mix) |",
+            "",
+            f"Since 2016 the university has procured electricity from "
+            f"{MIX_DESCRIPTION} ([source]({MIX_SOURCE})), which is the "
+            f"market-based factor. The "
+            "location-based figure is what the local grid mix would have cost and "
+            "is reported beside it, as the GHG Protocol asks when a market "
+            "instrument is used.",
+            "",
+            "**This is a floor.** It " + "; it ".join(fp.caveats()) + ".",
+        ]
+    elif slurm:
+        lines += [
+            "## Energy and carbon",
+            "",
+            "Not recorded for this run: energy sampling was added in #184, and "
+            "this model predates it or ran on a card whose driver reports no "
+            "wattage. An unmeasured run is left blank rather than given a zero.",
+        ]
+    if slurm:
+        lines += ["", UBELIX_CREDIT]
+    return lines + [""] if lines else []
+
+
 def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) -> str:
     """The ``README.md`` uploaded with the weights.
 
@@ -615,6 +679,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "`metadata.json` in this repo is the record the trainer wrote, verbatim: the "
         "full request, the parsed metrics and the job id.",
         "",
+        *_energy_section(model),
         "## Using it",
         "",
         _usage(model, repo_id),

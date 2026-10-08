@@ -967,6 +967,19 @@ class Progress(BaseModel):
     #: process: kraken drives ``ketos`` as an external CLI and imports no torch,
     #: so its peak can only be sampled from outside.
     peak_gpu_mib: dict[str, dict[str, int]] = Field(default_factory=dict)
+    #: Watt-hours over the whole job, summed across stages and cards (#184).
+    #: Measured, not modelled: :mod:`atr_training.footprint` turns it into carbon
+    #: and keeps the factor beside the result, so a later correction to the factor
+    #: does not need the run again.
+    energy_wh: float = 0.0
+    #: True when any stage shared a card, so part of ``energy_wh`` is not this
+    #: job's. Reported and labelled rather than dropped.
+    gpu_shared: bool = False
+    #: The Slurm job this ran as, or None off a scheduler — the one signal that
+    #: tells UBELIX from asteraix without configuration (see
+    #: :func:`runner_base.slurm_job_id`). It decides whether a model card carries
+    #: the cluster's acknowledgement, which is a condition of using it.
+    slurm_job_id: str | None = None
     #: The cached artefact (#109) this run's compiled corpus lives in, and
     #: whether this job built it or reused one. Set on both paths, because after
     #: compile the arrows are in the cache rather than in the job directory anyone
@@ -1020,6 +1033,13 @@ class StageRecord(BaseModel):
     #: same moment, neighbours included. Empty where no reading could be taken —
     #: see :class:`gpu.Peak`, which distinguishes that from a measured zero.
     peak_gpu_mib: dict[str, dict[str, int]] = Field(default_factory=dict)
+    #: Watt-hours drawn per card while this stage ran, integrated from
+    #: `power.draw` against the real time between samples (#184). The card's
+    #: energy, which is the stage's only when the card was not shared —
+    #: ``gpu_shared`` says when it was. Empty where no wattage could be read: a
+    #: card that answers ``[N/A]`` must not arrive as 0 Wh.
+    energy_wh: dict[str, float] = Field(default_factory=dict)
+    gpu_shared: bool = False
 
 
 class TrainJob(BaseModel):
