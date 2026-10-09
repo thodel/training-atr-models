@@ -49,8 +49,8 @@ Innerhalb unseres Bereichs:
 | Verzeichnis | Grösse | Was es ist |
 |---|---:|---|
 | `hf_hub/` | **2,9 TB** | HF-Zwischenspeicher, aktuelles `HF_HOME` |
-| `training_folder/` | **1,8 TB** | `bases`, `hf-datasets`, `jobs`, `tmp`, `trained` |
-| `hub/` | **992 GB** | ein **zweiter** HF-Zwischenspeicher |
+| `training_folder/` | **1,8 TB** | davon `jobs/` **1,8 TB**; `trained/` 6,0 GB, `bases/` 47 MB, `hf-datasets/` leer |
+| `hub/` | **992 GB** | ein zweiter HF-Zwischenspeicher — **ein** Datensatz |
 | `archive/` | 11 GB | |
 | `eval_sets/` | 5,6 GB | Auswertungsziehungen |
 | `Conf_Mats/` | 4,3 GB | |
@@ -68,8 +68,7 @@ weitere Kopien daneben:
 | `hf_hub/hub/` | 884 GB | 54 Datensätze, 22 Modelle — die **aktuelle** Form |
 | `hf_hub/datasets--*` | **1,6 TB** | 37 Datensätze in der **alten** Form |
 | `hf_hub/models--*` | 115 GB | 22 Modelle in der alten Form |
-| `hub/` | **992 GB** | zwei Einträge, Geschwister von `hf_hub` |
-| `training_folder/bases` + `hf-datasets` | Teil der 1,8 TB | noch eine Kopie |
+| `hub/` | **992 GB** | **ein** Datensatz, Geschwister von `hf_hub` |
 
 Die Teile von `hf_hub` summieren sich auf 2,6 TB gegen die gemessenen 2,9 TB —
 die Differenz steckt in `blobs/` und `.locks/`, die hier nicht einzeln
@@ -77,8 +76,21 @@ aufgeschlüsselt sind.
 
 **Die Doppelung ist gemessen, nicht vermutet:** von den 37 Datensätzen in der
 alten Form liegen **36 auch in `hf_hub/hub/`**, also 97 %. Nur einer ist
-alt-exklusiv, 18 sind neu-exklusiv. Und die beiden Einträge in `hub/` liegen
-**beide** ebenfalls in `hf_hub/hub/`.
+alt-exklusiv, 18 sind neu-exklusiv.
+
+**Für `hub/` gilt das Gegenteil, und das ist ein Fehler, den diese Datei
+zuerst enthielt.** Ich hatte die 992 GB als Dublette geführt, weil derselbe
+Datensatzname auch in `hf_hub/hub/` steht. Gemessen:
+
+| | |
+|---|---:|
+| `hub/…medieval-scripts_xiv-xv-xvi` | **992 GB** |
+| `hf_hub/hub/…medieval-scripts_xiv-xv-xvi` | **21 KB** |
+
+Beide notieren dieselbe Revision `729e9b2721ba`, aber der Eintrag im aktuellen
+Cache ist ein Stummel aus Metadaten mit einem einzigen Blob. **`hub/` ist die
+einzige lokale Kopie**, nicht die zweite. Übereinstimmende Namen sind kein
+Beweis für Doppelung — Grössen sind einer.
 
 **Jeder Byte davon ist aus dem Hub wiederherstellbar.** Das ist nicht eine
 Vermutung über die Daten, sondern die Eigenschaft eines Zwischenspeichers: 54
@@ -93,26 +105,44 @@ Es ist dasselbe Muster, aus dem schon einmal **621 GB** zurückgewonnen wurden.
 Nach Zuverlässigkeit geordnet — die erste Gruppe braucht keine Entscheidung
 über Daten, nur eine über Bequemlichkeit:
 
-**Wiederherstellbar aus dem Hub** (≈ 3,9 TB)
+**1. Wiederherstellbar *und* lokal doppelt — 1,7 TB, der stärkste Fall**
 
-1. `hf_hub/datasets--*` und `hf_hub/models--*` — **1,7 TB**, zu 97 % belegt
-   doppelt. Der stärkste Fall: hier wird nichts aufgegeben, nur eine zweite
-   Kopie derselben Sache.
-2. `hub/` — **992 GB**, ein Cache, der entstand, als `HF_HOME` eine Ebene höher
-   zeigte. Beide Einträge liegen auch im aktuellen Cache.
-3. `training_folder/bases` und `hf-datasets` — weitere Kopien. `prefetch_bases.sh`
-   holt ein Basismodell gezielt zurück, wenn ein Lauf es braucht.
+`hf_hub/datasets--*` und `hf_hub/models--*`, die alte Cache-Form, zu 97 % belegt
+doppelt. Hier wird nichts aufgegeben, nur eine zweite Kopie derselben Sache. Der
+Preis ist Zeit beim nächsten Lauf, nicht Datenverlust — mit der Einschränkung,
+dass ein GPU-Knoten Basisgewichte **nicht** selbst holen kann (Job 16191716 starb
+daran), also muss `prefetch_bases.sh` vorher als CPU-Job laufen.
 
-Der Preis ist **Zeit beim nächsten Lauf**, nicht Datenverlust: ein Basismodell
-sind 8–56 GB Download, und ein GPU-Knoten kann sie **nicht** selbst holen (Job
-16191716 starb daran), also muss `prefetch_bases.sh` vorher als CPU-Job laufen.
+**2. Abgeleitet, Wiederherstellung teuer — 1,8 TB, je Job zu entscheiden**
 
-**Gehört auf HuggingFace, ist aber je Modell zu prüfen**
+`training_folder/jobs` hält **53** Arbeitsverzeichnisse vom 07.08. bis 07.10.2026:
+zugeschnittene Zeilenbilder, Manifeste, Logs. Aus den HF-Datensätzen
+wiederherstellbar, aber nur über die prepare-Stufe, und die braucht Stunden
+(gemessen: 2 h 35 für elf Datensätze).
 
-4. `training_folder/trained` und `trained-ubelix` — trainierte Gewichte. Wo das
-   Modell unter `dh-unibe/` auf HF liegt, ist die lokale Kopie entbehrlich. Das
-   ist je Modell zu prüfen: von den 32 dh-unibe-Modellen auf HF sind nicht alle
-   aus diesen Verzeichnissen, und nicht alles hier ist dort.
+**Nur 12 der 53 stehen auf `completed`**, 41 auf etwas anderes oder sind nicht
+lesbar — eine pauschale Regel „abgeschlossene weg" greift hier also nicht. Und
+anders als auf `/scratch/.../runs/jobs` läuft hier **keine 30-Tage-Regel**: das
+Verzeichnis wird nie von selbst leer.
+
+**3. Einzige lokale Kopie, aber auf HuggingFace — 992 GB, kein freier Gewinn**
+
+`hub/` hält `image-text_medieval-scripts_xiv-xv-xvi` als einzige lokale Kopie. Der
+Datensatz liegt öffentlich auf HF mit genau dieser Revision (1.098 GB), ist also
+wiederherstellbar — aber die Wiederherstellung ist ein Terabyte-Download. Das ist
+eine andere Entscheidung als Punkt 1 und gehört nicht in denselben Satz.
+
+**4. Gehört auf HuggingFace, je Modell zu prüfen — 10 GB**
+
+`training_folder/trained` (6,0 GB) und `trained-ubelix` (3,8 GB). Wo das Modell
+unter `dh-unibe/` auf HF liegt, ist die lokale Kopie entbehrlich; von den 32
+dh-unibe-Modellen auf HF sind nicht alle aus diesen Verzeichnissen, und nicht
+alles hier ist dort.
+
+**Was sich nicht lohnt:** `training_folder/bases` sind 47 MB (vier kraken-Modelle
+aus Zenodo-Hinterlegungen, nicht die HF-Basismodelle), `hf-datasets` ist leer.
+Beides steht hier, damit niemand sie für die grossen Posten hält — ich hatte sie
+zuerst dafür gehalten.
 
 **Was hier nicht beurteilt wird**
 

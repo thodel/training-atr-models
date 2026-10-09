@@ -6,10 +6,11 @@ Gruppenbereich des Walter Benjamin Kollegs DH, auf dem GPFS-Dateisystem
 `rs_gpfs`. Dort liegt auch `HF_HOME`, also der HuggingFace-Zwischenspeicher der
 Trainingsläufe.
 
-**Stand 09.10.2026: 642 GB von 12 TB frei, also 5,3 %.** Gemessen liegen allein
-in `Textrecognition_Training` rund 5,7 TB, davon etwa 3,9 TB in **vier
-nebeneinanderliegenden HF-Zwischenspeichern**, deren Inhalt vollständig aus dem
-Hub wiederherstellbar ist.
+**Stand 09.10.2026: 642 GiB von 12 TiB frei, also 5,2 %.** Gemessen liegen allein
+in `Textrecognition_Training` rund 5,7 TB: etwa **2,7 TB HF-Zwischenspeicher**
+(vollständig aus dem Hub wiederherstellbar, und zu einem guten Teil doppelt) und
+**1,8 TB Arbeitsverzeichnisse** abgeschlossener Läufe, für die hier — anders als
+auf `/scratch` — keine Löschregel gilt.
 
     python3 scripts/research_storage.py --check       # nur df, sofort
     python3 scripts/research_storage.py --suggest     # + Vorschläge
@@ -61,14 +62,43 @@ RECONSTRUCTIBLE = (
      "doppelt. Wird beim nächsten Zugriff neu geholt."),
     ("hf_hub/models--*", "Basismodelle in der alten Cache-Form. Alle aus dem Hub, "
      "und `prefetch_bases.sh` holt sie gezielt wieder."),
-    ("hub", "Ein ZWEITER HF-Zwischenspeicher neben `hf_hub`, entstanden als "
-     "HF_HOME noch eine Ebene höher zeigte. Seine Einträge liegen auch in "
-     "`hf_hub/hub/`."),
-    ("training_folder/bases", "Basismodelle, dritte Kopie. Aus dem Hub."),
-    ("training_folder/hf-datasets", "HF-Datensätze, weitere Kopie. Aus dem Hub."),
-    ("training_folder/tmp", "Temporär."),
     ("hf_hub/xet", "Xet-Brockenspeicher des Zwischenspeichers."),
+    ("training_folder/tmp", "Temporär."),
     ("tmp", "Temporär."),
+)
+
+#: Wiederherstellbar, aber **nicht** lokal doppelt — die Wiederherstellung ist
+#: ein Download in Terabyte-Grösse. Eigene Klasse, weil der Unterschied zur
+#: ersten Gruppe der ganze Punkt ist: dort wird eine zweite Kopie gelöscht, hier
+#: die einzige.
+#:
+#: Dieser Eintrag ist ein Fehler von mir, den die Messung gefangen hat. Ich hatte
+#: `hub/` als Dublette geführt, weil derselbe Datensatzname auch in `hf_hub/hub/`
+#: steht. Gemessen am 09.10.2026: `hub/` hält **992 GB**, der Eintrag in
+#: `hf_hub/hub/` **21 KB** — ein Stummel aus Metadaten mit einem einzigen Blob.
+#: Gleiche Revision notiert, Daten nur an einer Stelle. Übereinstimmende Namen
+#: sind kein Beweis für Doppelung.
+EXPENSIVE_TO_RESTORE = (
+    ("hub", "Ein zweiter HF-Zwischenspeicher neben `hf_hub`, entstanden als "
+     "HF_HOME eine Ebene höher zeigte. Er hält genau einen Datensatz, "
+     "`image-text_medieval-scripts_xiv-xv-xvi`, und zwar **als einzige lokale "
+     "Kopie** — der gleichnamige Eintrag in `hf_hub/hub/` ist ein 21-KB-Stummel. "
+     "Der Datensatz liegt öffentlich auf HuggingFace mit genau dieser Revision "
+     "(`729e9b2721ba`, 1.098 GB), ist also wiederherstellbar — aber als "
+     "Terabyte-Download, nicht als freier Gewinn."),
+)
+
+#: Materialisierte Arbeitsverzeichnisse abgeschlossener Läufe. Auch
+#: wiederherstellbar, aber **teuer**: die Korpora entstehen in der
+#: prepare-Stufe, und die braucht Stunden (gemessen: 2 h 35 für elf Datensätze).
+#: Darum eigene Klasse — und je Job zu entscheiden, nicht als Ganzes.
+DERIVED = (
+    ("training_folder/jobs", "Arbeitsverzeichnisse der Läufe: zugeschnittene "
+     "Zeilenbilder, Manifeste, Logs. Aus den HF-Datensätzen wiederherstellbar, "
+     "aber nur über die prepare-Stufe, die Stunden braucht. **Je Job "
+     "entscheiden**: ein abgeschlossener Lauf braucht sein Verzeichnis nicht "
+     "mehr, ein vorbereiteter schon. Anders als `/scratch/.../runs/jobs` läuft "
+     "hier keine 30-Tage-Regel, es wird also nie von selbst leer."),
 )
 
 #: Trainierte Gewichte. Die gehören auf HuggingFace, und wo sie dort liegen, ist
@@ -79,6 +109,9 @@ PUBLISHABLE = (
      "`dh-unibe/` auf HuggingFace liegt, ist die lokale Kopie entbehrlich — "
      "je Modell prüfen, nicht pauschal."),
     ("trained-ubelix", "Trainierte Gewichte aus UBELIX-Läufen, dito."),
+    ("training_folder/bases", "Vier Einträge, am 09.10.2026 zusammen 47 MB — "
+     "kraken-Modelle aus Zenodo-Hinterlegungen, nicht die HF-Basismodelle. "
+     "Lohnt die Löschung nicht; steht hier, damit niemand sie dafür hält."),
 )
 
 
@@ -172,6 +205,17 @@ def suggestions(record: dict) -> list[dict]:
         if size:
             out.append({"path": f"{OURS}/{key}", "bytes": size,
                         "class": "wiederherstellbar", "why": why})
+    for key, why in EXPENSIVE_TO_RESTORE:
+        size = record.get("ours", {}).get(key, 0)
+        if size:
+            out.append({"path": f"{OURS}/{key}", "bytes": size,
+                        "class": "einzige lokale Kopie, aber auf HF",
+                        "why": why})
+    for key, why in DERIVED:
+        size = record.get("ours", {}).get(key, 0)
+        if size:
+            out.append({"path": f"{OURS}/{key}", "bytes": size,
+                        "class": "abgeleitet, Wiederherstellung teuer", "why": why})
     for key, why in PUBLISHABLE:
         size = record.get("ours", {}).get(key, 0)
         if size:
