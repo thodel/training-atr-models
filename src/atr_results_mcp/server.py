@@ -22,7 +22,7 @@ except ImportError:  # mcp 1.x: the same decorator API under its old name
 from .remote import SshTransport, Transport, TransportError
 
 TOOL_NAMES = ("queue", "finished", "job", "results", "draw", "prepared", "deadlines",
-              "log", "report", "slurm_job", "checkout")
+              "log", "report", "slurm_job", "storage", "checkout")
 
 INSTRUCTIONS = (
     "Read-only view of the ATR training programme on UBELIX (Slurm) for the daily "
@@ -125,6 +125,24 @@ def build_server(transport: Transport | None = None) -> Any:
         the state of any node named as unavailable), and the log's notes. Falls
         back to accounting once Slurm has forgotten the job."""
         return ask("slurm_job", slurm_job_id=slurm_job_id)
+
+    @server.tool()
+    def storage() -> dict:
+        """Belegung des research-storage (`/storage/research/wbkolleg_dh_1`) und,
+        wenn weniger als 10 % frei sind, Vorschläge was sich woanders besser
+        aufhebt — je Posten mit Grösse, Klasse und Begründung.
+
+        Die Klassen unterscheiden, was eine Löschung wirklich kostet: eine
+        zweite lokale Kopie, die einzige lokale Kopie (aber auf dem Hub, also
+        ein Download), oder abgeleitete Arbeitsdaten (wiederherstellbar nur
+        über Stunden prepare). Vorschläge gibt es ausschliesslich innerhalb von
+        `Textrecognition_Training`; die übrigen 38 Verzeichnisse des Bereichs
+        gehören anderen Projekten und werden ohne Empfehlung berichtet.
+
+        Lesend. Löscht nichts, und schlägt nichts vor, was nicht aus dem
+        Inventar belegt ist — fehlt das Inventar oder ist es älter als 14 Tage,
+        sagt die Antwort das."""
+        return ask("storage")
 
     @server.tool()
     def checkout() -> dict:

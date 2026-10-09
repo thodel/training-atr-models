@@ -443,3 +443,56 @@ def test_main_prints_json_and_reports_errors_as_json(cluster, capsys, monkeypatc
     assert out["jobs"] == [] and "_host" in out
     assert probe.main(["-", "sbatch", "{}"]) == 1
     assert json.loads(capsys.readouterr().out)["error"].startswith("unknown command")
+
+
+# ── research-storage (die tägliche Routine, statt ssh von Hand) ──────────────
+def test_storage_delegates_to_the_deployed_script(tmp_path, monkeypatch):
+    """Der Probe ist Zusteller, nicht Urheber der Regeln.
+
+    Welche Verzeichnisse wiederherstellbar sind, was nur die einzige lokale
+    Kopie ist und was abgeleitet — das steht in `research_storage.py` und darf
+    nicht ein zweites Mal hier stehen. Zwei Fassungen derselben Regeln wären
+    eine Gabelung, und genau diese Regeln haben sich am 09.10.2026 zweimal
+    geändert, weil Messungen sie widerlegt haben.
+    """
+    script = tmp_path / "ubelix" / "research_storage.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# Platzhalter\n")
+    calls = []
+
+    def run(argv, timeout=60.0):
+        calls.append(argv)
+        return json.dumps({"usage": {"free": 1, "total": 10, "free_fraction": 0.1},
+                           "below_threshold": False, "suggestions": []})
+
+    paths = probe.Paths(user="u", home=tmp_path)
+    out = probe.dispatch("storage", {}, run, paths)
+    assert calls == [["python3", str(script), "--json"]]
+    assert out["usage"]["free_fraction"] == 0.1
+    assert out["script"] == str(script)
+
+
+def test_storage_says_when_the_script_is_not_deployed(tmp_path):
+    """Nicht ausgerollt und "alles in Ordnung" sind zwei Zustände (#165).
+
+    Das Skript liegt unter ~/ubelix/, nicht im Checkout: der Checkout ist für
+    Trainingsjobs an einen Commit geheftet, und eine tägliche Prüfung darf nicht
+    davon abhängen, auf welchem Stand er steht."""
+    def run(argv, timeout=60.0):  # pragma: no cover — darf nicht gerufen werden
+        raise AssertionError("ohne ausgerolltes Skript darf nichts laufen")
+
+    out = probe.dispatch("storage", {}, run, probe.Paths(user="u", home=tmp_path))
+    assert out["deployed"] is False
+    assert "research_storage.py" in out["error"]
+
+
+def test_storage_does_not_pretend_a_broken_answer_is_a_measurement(tmp_path):
+    """Kein JSON heisst kein Ergebnis — nicht null Vorschläge."""
+    script = tmp_path / "ubelix" / "research_storage.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# Platzhalter\n")
+
+    out = probe.dispatch("storage", {}, lambda argv, timeout=60.0: "Traceback …",
+                         probe.Paths(user="u", home=tmp_path))
+    assert "kein JSON" in out["error"]
+    assert "suggestions" not in out
