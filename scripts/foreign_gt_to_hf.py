@@ -193,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         missing = [p.stem for p in pages if p.path not in urls]
         if missing:
             print(f"  ohne Bild-URL: {len(missing)}  z.B. {missing[:4]}")
-        print(f"\n  Karte (Anfang):\n")
+        print("\n  Karte (Anfang):\n")
         print("\n".join(dataset_card(source, sel, with_images=have,
                                      commit=commit).splitlines()[:22]))
         return 0

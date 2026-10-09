@@ -262,8 +262,8 @@ def report(check_only: bool, with_suggestions: bool) -> int:
     rest = {k: v for k, v in top.items() if k != OURS}
     if rest:
         biggest = sorted(rest.items(), key=lambda kv: -kv[1])[:5]
-        print(f"\n  Die grössten Verzeichnisse ausserhalb unseres Bereichs — "
-              f"ohne Empfehlung,\n  weil sie anderen Projekten gehören:")
+        print("\n  Die grössten Verzeichnisse ausserhalb unseres Bereichs — "
+              "ohne Empfehlung,\n  weil sie anderen Projekten gehören:")
         for name, size in biggest:
             print(f"  {gib(size):>12}  {name}")
     return 1 if low else 0
