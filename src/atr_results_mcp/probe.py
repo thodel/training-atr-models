@@ -84,6 +84,16 @@ class Paths:
     def checkout(self) -> Path:
         return self.home / "training-atr-models"
 
+    @property
+    def storage_script(self) -> Path:
+        """Das Prüfskript für den research-storage, wie es ausgerollt ist.
+
+        Nicht im Checkout, sondern unter ``~/ubelix/``: der Checkout ist für
+        Trainingsjobs an einen Commit geheftet, und eine tägliche Prüfung darf
+        nicht davon abhängen, auf welchem Stand er gerade steht.
+        """
+        return self.home / "ubelix" / "research_storage.py"
+
 
 def shell_runner(argv: List[str], timeout: float = 60.0) -> str:
     """Run a command and return its stdout; a non-zero exit is a ProbeError."""
@@ -718,6 +728,35 @@ def checkout(run: Runner, paths: Paths) -> Dict[str, Any]:
             "note": "submit.sh refuses a checkout that is behind origin/main or dirty"}
 
 
+# ── research-storage ────────────────────────────────────────────────────────
+def storage(run: Runner, paths: Paths) -> Dict[str, Any]:
+    """Belegung des research-storage und, bei Unterschreitung, die Vorschläge.
+
+    Ruft das ausgerollte ``research_storage.py --json`` auf statt dessen Regeln
+    hier nachzubauen. Zwei Fassungen derselben Regeln wären eine Gabelung, und
+    die Regeln sind der Teil, der sich ändert: welche Verzeichnisse
+    wiederherstellbar sind, was nur die einzige lokale Kopie ist, was abgeleitet
+    ist. Dieser Probe ist der Zusteller, nicht der Urheber.
+    """
+    script = paths.storage_script
+    if not script.exists():
+        return {"error": "%s fehlt — das Prüfskript ist auf diesem Host nicht "
+                         "ausgerollt (scp scripts/research_storage.py "
+                         "ubelix:~/ubelix/)" % script,
+                "deployed": False}
+    try:
+        out = run(["python3", str(script), "--json"], timeout=120.0)
+    except ProbeError as exc:
+        return {"error": str(exc), "deployed": True}
+    try:
+        record = json.loads(out)
+    except ValueError:
+        return {"error": "%s hat kein JSON geliefert: %s" % (script, out[:200]),
+                "deployed": True}
+    record["script"] = str(script)
+    return record
+
+
 # ── entry point ─────────────────────────────────────────────────────────────
 def dispatch(cmd: str, args: Dict[str, Any], run: Runner, paths: Paths) -> Dict[str, Any]:
     if cmd == "queue":
@@ -744,6 +783,8 @@ def dispatch(cmd: str, args: Dict[str, Any], run: Runner, paths: Paths) -> Dict[
         return slurm_job(run, paths, str(args["slurm_job_id"]))
     if cmd == "checkout":
         return checkout(run, paths)
+    if cmd == "storage":
+        return storage(run, paths)
     raise ProbeError("unknown command %r" % cmd)
 
 

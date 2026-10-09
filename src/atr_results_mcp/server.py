@@ -127,6 +127,24 @@ def build_server(transport: Transport | None = None) -> Any:
         return ask("slurm_job", slurm_job_id=slurm_job_id)
 
     @server.tool()
+    def storage() -> dict:
+        """Belegung des research-storage (`/storage/research/wbkolleg_dh_1`) und,
+        wenn weniger als 10 % frei sind, Vorschläge was sich woanders besser
+        aufhebt — je Posten mit Grösse, Klasse und Begründung.
+
+        Die Klassen unterscheiden, was eine Löschung wirklich kostet: eine
+        zweite lokale Kopie, die einzige lokale Kopie (aber auf dem Hub, also
+        ein Download), oder abgeleitete Arbeitsdaten (wiederherstellbar nur
+        über Stunden prepare). Vorschläge gibt es ausschliesslich innerhalb von
+        `Textrecognition_Training`; die übrigen 38 Verzeichnisse des Bereichs
+        gehören anderen Projekten und werden ohne Empfehlung berichtet.
+
+        Lesend. Löscht nichts, und schlägt nichts vor, was nicht aus dem
+        Inventar belegt ist — fehlt das Inventar oder ist es älter als 14 Tage,
+        sagt die Antwort das."""
+        return ask("storage")
+
+    @server.tool()
     def checkout() -> dict:
         """The training-atr-models checkout on UBELIX: HEAD, origin/main, ahead and
         behind counts, dirty files. submit.sh refuses a checkout that is behind or
