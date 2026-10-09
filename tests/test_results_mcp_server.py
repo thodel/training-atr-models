@@ -54,7 +54,8 @@ def test_the_tool_names_are_the_ones_an_allow_rule_names():
     names = [t.name for t in tools_of(build_server(Recording()))]
     assert names == list(TOOL_NAMES)
     assert set(names) == {"queue", "finished", "job", "results", "draw", "prepared",
-                          "deadlines", "log", "report", "slurm_job", "checkout"}
+                          "deadlines", "log", "report", "slurm_job", "storage",
+                          "checkout"}
 
 
 def test_every_tool_has_a_description_a_reader_can_act_on():

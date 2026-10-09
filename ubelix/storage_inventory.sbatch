@@ -24,6 +24,8 @@
 #SBATCH --output=/storage/homefs/%u/ubelix/logs/%x-%j.out
 set -euo pipefail
 REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
+# shellcheck source=pin_code.sh
+source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 echo "== $(date -Is) Inventar des research-storage"
 python3 "$REPO/scripts/research_storage.py" --inventory
 echo

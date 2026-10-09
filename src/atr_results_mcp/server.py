@@ -22,7 +22,7 @@ except ImportError:  # mcp 1.x: the same decorator API under its old name
 from .remote import SshTransport, Transport, TransportError
 
 TOOL_NAMES = ("queue", "finished", "job", "results", "draw", "prepared", "deadlines",
-              "log", "report", "slurm_job", "checkout")
+              "log", "report", "slurm_job", "storage", "checkout")
 
 INSTRUCTIONS = (
     "Read-only view of the ATR training programme on UBELIX (Slurm) for the daily "
