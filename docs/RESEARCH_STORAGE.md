@@ -10,14 +10,62 @@ Trainingsläufe:
 HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub
 ```
 
+Die tägliche Prüfung läuft über das Werkzeug **`storage`** des lesenden MCP
+`atr-results` — typisiert, lesend, und ohne Shell-Freigabe. Von Hand ginge auch:
+
 ```bash
 python3 ~/ubelix/research_storage.py --check      # sofort, ein statfs
 python3 ~/ubelix/research_storage.py --suggest    # + Vorschläge
 sbatch ubelix/storage_inventory.sbatch            # das teure du, wöchentlich
 ```
 
-Seit dem 09.10.2026 prüft eine tägliche Routine um 07:05 CEST die Belegung und
-nennt bei unter 10 % frei, was sich woanders besser aufhebt.
+Der MCP-Probe ruft dasselbe Skript mit `--json` auf, statt dessen Regeln
+nachzubauen: welche Verzeichnisse wiederherstellbar sind und was nur die einzige
+Kopie ist, ändert sich — am 09.10.2026 zweimal an einem Tag, weil Messungen es
+widerlegten. Zwei Fassungen derselben Regeln wären eine Gabelung.
+
+Seit dem 09.10.2026 prüft eine Routine täglich um 07:05 CEST und nennt bei unter
+10 % frei, was sich woanders besser aufhebt.
+
+## 0. Was am 09.10.2026 gelöscht wurde
+
+Die **alte HuggingFace-Cache-Form** unter `$HF_HOME` selbst — 59 Einträge,
+**1,83 TB**:
+
+```
+vorher   12T belegt, 642 GiB frei, 95 %
+nachher  9,8T belegt, 2,3 TB frei, 81 %
+```
+
+**1,66 TB zurückgewonnen**, der freie Anteil von 5,2 % auf 19,1 %. Protokoll mit
+jedem Eintrag und seiner Grösse unter
+`~/ubelix/logs/purge-old-cache-<zeitstempel>.log`.
+
+Vier Prüfungen vorher, und jede hat etwas verändert:
+
+1. **Liest die laufende Software diese Pfade?** Nein. `HF_HUB_CACHE` zeigt unter
+   `huggingface_hub` 1.31.0 auf `$HF_HOME/hub`; die alte Form liegt unter
+   `$HF_HOME` selbst und wird nicht konsultiert. Ein `prepare` lief währenddessen.
+2. **Liegt jeder Eintrag auf dem Hub?** 56 von 59. Die drei übrigen —
+   `towerbooks-line-test`, `-test-with-inference`, `towerbooks-rawxml-test` —
+   geben 404, sind aber **3,5-KB-Negativmarker mit zwei Dateien**, ohne Inhalt.
+3. **Ist die alte Form wirklich doppelt?** Nur zu einem Teil. Von den 59 hatten
+   **22 eine substanzielle Kopie** in `hf_hub/hub/` (0,35 TB), bei **37 war der
+   Eintrag dort ein Stummel** (1,47 TB). Meine Behauptung „36 von 37 doppelt"
+   stammte aus Namensvergleich und war falsch.
+4. **Und der grösste Posten?** 1,39 der 1,83 TB waren **ein** Eintrag:
+   `image-text_medieval-scripts_xiv-xv-xvi` mit 1.386,5 GB. Dateien gezählt:
+
+   | Ort | echte Dateien | parquet | blobs | Grösse |
+   |---|---:|---:|---:|---:|
+   | `hf_hub/<alt>` | 926 | 691 | 230 | 1.386,5 GB |
+   | `hub/` | 699 | **694** | 0 | 992 GB |
+   | `hf_hub/hub/` | 5 | 0 | 1 | 21 KB |
+
+   Die alte Form **dupliziert intern** (Snapshot-Dateien *und* Blobs, 1,26× der
+   1.098 GB auf HF), während `hub/` mit 694 parquet den vollständigeren Satz bei
+   gleicher Revision hält. Darum war die Löschung begründet — und zwar
+   umgekehrt zu meiner ersten Vermutung.
 
 ## 1. Der Stand, gemessen am 09.10.2026
 
