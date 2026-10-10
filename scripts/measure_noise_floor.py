@@ -90,6 +90,18 @@ def run(cmd: list[str], log: Path) -> int:
         return subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT).wait()
 
 
+def params_for(args: argparse.Namespace) -> KrakenTrainParams:
+    """The one configuration every seed runs — built in one place so the record
+    and the command cannot disagree about what it was."""
+    return KrakenTrainParams(
+        device=args.device, workers=args.workers, quit="fixed",
+        augment=bool(args.augment),
+        **({"batch_size": args.batch_size} if args.batch_size else {}),
+        **({"accumulate_grad_batches": args.accumulate} if args.accumulate else {}),
+        # Only meaningful with --load; train_cmd omits it for a from-scratch run.
+        resize=args.resize or ("union" if args.base_model else "fail"))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -127,6 +139,13 @@ def main(argv: list[str] | None = None) -> int:
                          "whose base must already cover the alphabet — a fine-tune "
                          "onto medieval German from a base with 251 characters is not "
                          "that run, and 'fail' would refuse it before the first step.")
+    ap.add_argument("--augment", action=argparse.BooleanOptionalAction, default=None,
+                    help="--augment or --no-augment, stated, not defaulted. The "
+                         "sweep cells pin it (both manifests: false) and "
+                         "KrakenTrainParams defaults to True, so a floor measured "
+                         "without saying would have been measured on a "
+                         "configuration no cell runs — found on 09.10.2026, one "
+                         "argument before the first run.")
     ap.add_argument("--data-digest", required=True,
                     help="the sweep's data version (#112) — a floor belongs to the "
                          "corpus it was measured on and to nothing else")
@@ -144,14 +163,13 @@ def main(argv: list[str] | None = None) -> int:
                          "as one")
     args = ap.parse_args(argv)
 
+    if args.augment is None:
+        ap.error("state --augment or --no-augment: the cells this floor will gate "
+                 "pin it, and a floor from the other setting is a floor for "
+                 "another configuration")
     from_scratch = args.base_model is None
     steps = args.steps or floor_for("kraken", from_scratch)
-    params = KrakenTrainParams(
-        device=args.device, workers=args.workers, quit="fixed",
-        **({"batch_size": args.batch_size} if args.batch_size else {}),
-        **({"accumulate_grad_batches": args.accumulate} if args.accumulate else {}),
-        # Only meaningful with --load; train_cmd omits it for a from-scratch run.
-        resize=args.resize or ("union" if args.base_model else "fail"))
+    params = params_for(args)
     effective = params.effective_batch_size
     epochs = epochs_for(steps, args.train_lines, effective)
     actual = plan_steps(args.train_lines, effective, epochs).total_steps
@@ -234,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         # table: 0.0085 spread at one shape, 0.1924 at another — so a floor
         # measured here is a LOWER BOUND for a taller cell, not its error bar.
         "spec": params.spec, "input_height": input_height(params.spec),
+        "augment": params.augment, "batch_size": params.batch_size,
         "epochs": epochs, "steps": actual, "from_scratch": from_scratch,
         "base_model": args.base_model, "seeds": args.seeds, "runs": results,
         # Travels with the number, like the commit and the digest: a floor from
@@ -315,6 +334,11 @@ def write_into_manifest(path: Path, summary: dict) -> None:
         # h64 says nothing about how far h192 moves between seeds.
         "spec": summary.get("spec"),
         "input_height": summary.get("input_height"),
+        # And the two settings that decide more than the height does: a
+        # fine-tune and a from-scratch run do not share a floor (#131), and
+        # neither do augmented and unaugmented training.
+        "base_model": summary.get("base_model"),
+        "augment": summary.get("augment"),
         "line_tail": summary.get("line_tail"),
     }
     _splice(path, {k: v for k, v in block.items() if v is not None})
