@@ -423,8 +423,8 @@ not set `HF_HOME`.** It would bypass the symlink and download everything the
 shared cache already holds again (1.8 T on 16.09.2026). Note that UBELIX sets
 `HF_HOME` to `hf_hub/` and therefore caches one level down, in `hf_hub/hub/`;
 the two sides do not share entries, and the entries at the level this symlink
-points at were deleted on 09.10.2026
-([ASTERAIX_AND_UBELIX.md](ASTERAIX_AND_UBELIX.md#the-research-share)).
+points at were deleted on 09.10.2026 (measured 10.10.2026, #207;
+[ASTERAIX_AND_UBELIX.md](ASTERAIX_AND_UBELIX.md#the-research-share)).
 
 **What must not go on the share**, each learned from an incident:
 

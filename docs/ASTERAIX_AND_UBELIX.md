@@ -155,19 +155,23 @@ and the other way round. Both sides re-download what the other already holds.
 On 09.10.2026 the old form under `hf_hub/` was deleted, 59 entries and 1.83 TB,
 after a check that *the running software does not read those paths*. That check
 was made on UBELIX, where it is true. On asteraix it is the cache the symlink
-points at. **Not verified from this session, and worth checking on asteraix
-before the next run there:**
+points at. **Measured on asteraix on 10.10.2026:**
 
-```bash
-readlink ~/.cache/huggingface/hub                      # expect …/hf_hub or …/hf_hub/hub
-ls /mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub  # which entries are left beside hub/
+```
+$ readlink ~/.cache/huggingface/hub
+/mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub
+$ ls /mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub
+CACHEDIR.TAG  datasets  hub  modules  xet
 ```
 
-If the symlink still ends in `hf_hub`, every job on asteraix now starts with a
-cold cache and refills the old form, which the next storage pass would delete
-again. The fix is to point the symlink one level down, at `hf_hub/hub/`, so that
-both sides read and write the same entries. The rule in
-[INFRASTRUCTURE.md](INFRASTRUCTURE.md#local-disk-or-the-share), *do not set
+The link ends in `hf_hub`, and no `models--*` or `datasets--*` entry is left
+at that level: `datasets`, `modules` and `xet` are what UBELIX's `HF_HOME`
+creates, `CACHEDIR.TAG` is what asteraix's hub cache left behind. So every job
+on asteraix now starts with a cold cache and refills the old form, which the
+next storage pass would delete again. The fix is to point the symlink one level
+down, at `hf_hub/hub/`, so that both sides read and write the same entries
+([#207](https://github.com/thodel/training-atr-models/issues/207)). The rule
+in [INFRASTRUCTURE.md](INFRASTRUCTURE.md#local-disk-or-the-share), *do not set
 `HF_HOME` on asteraix*, is about bypassing the share; it does not say which
 level inside the share the link should point at.
 
@@ -364,4 +368,4 @@ In the order in which closing them changes this page:
 | [#206](https://github.com/thodel/training-atr-models/issues/206) | the record says which container measured a CER, so a number from each place carries its provenance |
 | [#12](https://github.com/thodel/training-atr-models/issues/12) | a card per job on asteraix, two runs at once; and the only path on which asteraix holds something an H100 cannot (80 to 88.8 GiB) |
 | [#150](https://github.com/thodel/training-atr-models/issues/150) | the preemption log line says what actually happens |
-| the HF cache level (this page, [above](#the-research-share)) | one cache for both sides instead of two in one directory; to be checked on asteraix first |
+| [#207](https://github.com/thodel/training-atr-models/issues/207) | asteraix's symlink moves to `hf_hub/hub/`: one cache for both sides instead of two in one directory ([above](#the-research-share)) |
