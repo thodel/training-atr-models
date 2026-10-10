@@ -222,10 +222,11 @@ die materialisierten Korpora der Läufe, und sie werden nach **30 Tagen**
 gelöscht — `atr-results deadlines` nennt je Job das Datum. Platzdruck auf dem
 research-storage lässt sich nicht durch Scratch lösen und umgekehrt.
 
-## 7. Was am 10.10.2026 gelöscht wurde: 19 Modellverzeichnisse, 7,2 GB
+## 7. Was am 10.10.2026 gelöscht wurde: 25 Modellverzeichnisse, 9,8 GB
 
-Punkt 4 aus §4, umgesetzt. `training_folder/trained` von 6,0 auf 1,4 GB,
-`trained-ubelix` von 3,8 auf 1,2 GB. Nichts davon war auf idhefix in Betrieb:
+Punkt 4 aus §4, umgesetzt. `training_folder/trained` von 6,0 GB auf leer,
+`trained-ubelix` von 3,8 GB auf `_gate-samples` und das README (1 MB). Nichts
+davon war auf idhefix in Betrieb:
 jede Registrierung unter `registry/trained/` stand auf `enabled: false`, und die
 auf dem Hub liegenden Modelle bedient der Gateway aus den `hf_repo`-Einträgen
 von `config/models.yaml`, nicht vom Share.
@@ -268,20 +269,21 @@ per `cmp` gegen das Original geprüft. Die Zahlen stehen ausserdem in
 | `trocr-thun-smoke-v3` | trocr | 0,959 | Smoke des TrOCR-Backends (#121) | 1,3 GB |
 | `trocr-thun-smoke-asteraix-v2` | trocr | 0,976 | Abnahme der Pipeline auf asteraix (#10/#15) | 1,3 GB |
 
-Die neun zugehörigen Registrierungen in `registry/trained/` wurden mit
+**Über 20 % CER, keine Testmodelle, auf Anweisung ebenfalls gelöscht — 6
+Verzeichnisse, 2,6 GB.** Keines lag auf dem Hub; diese Löschung ist endgültig.
+Dieselbe Sicherung wie oben: alles ausser den Gewichten liegt unter
+`archive/deleted-models-2026-10-10/<id>/`, Metadaten per `cmp` geprüft.
+
+| Modell | Basis | CER | Was es war | Grösse |
+|---|---|---:|---|---:|
+| `training_folder/trained/qwen3vl-german-medieval-v1` | Qwen3-VL-8B | 0,232 | erster VLM-Lauf, der alle Stufen bestand (21.08., TRAINING_PLAN §9e); 4.124 Zeilen aus `medieval-scripts_xiv-xv-xvi`, 3 Epochen; abgelöst durch `qwen3vl-medieval-german-v3` (0,112) | 682 MB |
+| `training_folder/trained/qwen3vl-sg-missiven-v1` | Qwen3-VL-8B | 0,592 | Seitenmodell auf `sg-missiven` (1.667 Seiten, 1 Epoche); der Wert ist die halbierte Messung bei `max_new_tokens 256` (§9g), vor dem PageXML-Fix (#125) | 682 MB |
+| `trained-ubelix/qwen3vl-medieval-german-v1` | Qwen3-VL-4B | 0,532 | v1-Quartett auf dem durch den PageXML-Fehler gekürzten Korpus: „messen einen Fehler, nicht sich selbst"; abgelöst durch v3 (0,112) | 516 MB |
+| `trained-ubelix/qwen3.5-4b-medieval-german-v1` | Qwen3.5-4B | 0,581 | dito; Wert nach Re-Score mit Stop-Token (vorher 6,16) | 344 MB |
+| `trained-ubelix/qwen3.5-2b-medieval-german-v1` | Qwen3.5-2B | 0,588 | dito | 186 MB |
+| `trained-ubelix/qwen3.5-0.8b-medieval-german-v1` | Qwen3.5-0.8B | 0,698 | dito; Wert nach Re-Score (vorher 6,98) | 117 MB |
+
+Die zwölf zugehörigen Registrierungen in `registry/trained/` wurden mit
 entfernt, damit kein Eintrag auf ein leeres `local_path` zeigt
-(`merge_loras.py` liest auch deaktivierte Einträge).
-
-**Nicht gelöscht, obwohl über 20 % CER — 6 Verzeichnisse, 2,6 GB.** Sie
-wurden nicht zu Testzwecken erstellt, und die Entscheidung ist eine andere:
-
-| Modell | CER | Warum es steht |
-|---|---:|---|
-| `training_folder/trained/qwen3vl-german-medieval-v1` | 0,232 | erster VLM-Lauf, der alle Stufen bestand (TRAINING_PLAN §9e); Qwen3-VL-8B, einzige Kopie |
-| `training_folder/trained/qwen3vl-sg-missiven-v1` | 0,592 | der Wert ist die halbierte Messung bei `max_new_tokens 256` (§9g), nicht das Modell |
-| `trained-ubelix/qwen3vl-medieval-german-v1` | 0,532 | v1-Quartett vor dem PageXML-Fix: „messen einen Fehler, nicht sich selbst" (README dort) |
-| `trained-ubelix/qwen3.5-4b-medieval-german-v1` | 0,581 | dito |
-| `trained-ubelix/qwen3.5-2b-medieval-german-v1` | 0,588 | dito |
-| `trained-ubelix/qwen3.5-0.8b-medieval-german-v1` | 0,698 | dito |
-
-Keines davon liegt auf dem Hub; eine Löschung wäre endgültig.
+(`merge_loras.py` liest auch deaktivierte Einträge); `registry/trained/` ist
+damit leer.
