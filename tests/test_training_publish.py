@@ -671,3 +671,68 @@ def test_one_commit_throughout_is_said_once(tmp_path):
 def test_a_model_from_before_147_says_so(tmp_path):
     row = _provenance_code(card_for(tmp_path, VLM_META, weights="adapter_model.safetensors"))
     assert "not recorded" in row and "#147" in row
+
+
+# ── energy, carbon and the cluster's acknowledgement (#184) ──────────────────
+def test_a_ubelix_run_carries_the_exact_sentence(tmp_path: Path):
+    """Using UBELIX comes with the condition that work done on it says so, so the
+    wording is verbatim and not ours to improve."""
+    from atr_training.footprint import UBELIX_CREDIT
+
+    meta = {**KRAKEN_META, "progress": {"slurm_job_id": "17545199", "energy_wh": 0.0}}
+    card = card_for(tmp_path, meta)
+    assert UBELIX_CREDIT in card
+
+
+def test_a_run_off_the_cluster_does_not_claim_it(tmp_path: Path):
+    """asteraix has no scheduler, so no Slurm id — and no acknowledgement."""
+    from atr_training.footprint import UBELIX_CREDIT
+
+    card = card_for(tmp_path, {**KRAKEN_META, "progress": {"energy_wh": 44.0}})
+    assert UBELIX_CREDIT not in card
+    assert "0.044 kWh" in card, "the energy is still reported off the cluster"
+
+
+def test_the_card_states_kwh_and_both_carbon_figures(tmp_path: Path):
+    meta = {**KRAKEN_META,
+            "progress": {"energy_wh": 10_000.0, "slurm_job_id": "17545199"}}
+    card = card_for(tmp_path, meta)
+
+    assert "10.000 kWh" in card
+    assert "200 g" in card, "10 kWh at 20 g/kWh, market-based"
+    assert "1150 g" in card, "and the location-based figure beside it"
+    assert "market-based" in card and "location-based" in card
+    assert "klima.unibe.ch" in card, "the mix claim names its source"
+
+
+def test_the_card_says_the_figure_is_a_floor(tmp_path: Path):
+    """A number that looks complete and is not would be worse than none."""
+    meta = {**KRAKEN_META, "progress": {"energy_wh": 500.0}}
+    card = card_for(tmp_path, meta)
+
+    assert "This is a floor" in card
+    assert "PUE unknown" in card
+    assert "manufacture" in card
+
+
+def test_a_shared_card_is_disclosed_on_the_card(tmp_path: Path):
+    meta = {**KRAKEN_META,
+            "progress": {"energy_wh": 500.0, "gpu_shared": True}}
+    assert "not this run's" in card_for(tmp_path, meta)
+
+
+def test_an_unmeasured_run_is_blank_rather_than_zero(tmp_path: Path):
+    """Energy sampling postdates most models; a zero would read as a measurement."""
+    meta = {**KRAKEN_META, "progress": {"slurm_job_id": "17545199"}}
+    card = card_for(tmp_path, meta)
+
+    assert "Not recorded for this run" in card
+    assert "0 g" not in card
+    assert "kWh" not in card.split("## Energy and carbon")[1].split("##")[0]
+
+
+def test_a_model_without_a_progress_block_still_renders(tmp_path: Path):
+    """Every model published before #184 has no `progress` at all."""
+    card = card_for(tmp_path, KRAKEN_META)
+    assert "## Energy and carbon" not in card
+    assert card.rstrip().endswith("```") or "## Using it" in card

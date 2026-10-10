@@ -441,6 +441,20 @@ class BasePipeline(ABC):
                 into = job.progress.peak_gpu_mib.setdefault(card, {})
                 for key, value in marks.items():
                     into[key] = max(into.get(key, 0), value)
+
+            # Energy ADDS where memory takes the maximum (#184): two stages draw
+            # the sum of their power, not the larger of it. Only recorded where a
+            # wattage was actually read — a card that answers [N/A] gives 0 Wh,
+            # and 0 must not enter a total as if it had been measured.
+            if peak.total_energy_wh > 0:
+                record.energy_wh = {f"gpu{i}": round(wh, 2)
+                                    for i, wh in sorted(peak.energy_wh.items())}
+                record.gpu_shared = peak.cards_shared
+                job.progress.energy_wh = round(
+                    job.progress.energy_wh + peak.total_energy_wh, 2)
+                job.progress.gpu_shared = job.progress.gpu_shared or peak.cards_shared
+            if job.progress.slurm_job_id is None:
+                job.progress.slurm_job_id = slurm_job_id()
         except Exception as exc:  # noqa: BLE001 — a measurement must not fail a stage
             logger.warning("could not record the GPU peak for {}: {}", record.name, exc)
 
