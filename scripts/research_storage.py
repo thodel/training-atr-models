@@ -142,31 +142,60 @@ def du(path: Path) -> int:
         return 0
 
 
-def inventory(root: Path = ROOT) -> dict:
+def inventory(root: Path = ROOT, write: Path | None = None,
+              with_top: bool = True) -> dict:
     """Der teure Lauf: je Verzeichnis eine Grösse. Gehört in einen Slurm-Job.
 
-    Über 11 TB auf GPFS braucht das Minuten bis Stunden, darum wird das Ergebnis
-    geschrieben und von `--suggest` gelesen statt jedes Mal neu erhoben.
+    **Schreibt nach jeder Messung, nicht am Ende.** Der erste Versuch am
+    09.10.2026 lief 6 Stunden in den Timeout und hinterliess **nichts**, weil
+    erst der Abschluss geschrieben hätte. Ein Teilergebnis mit Datum ist
+    brauchbar; sechs Stunden ohne Ergebnis sind es nicht.
+
+    **Unser Unterbaum zuerst.** Nur er trägt die Vorschläge, und er ist in
+    Minuten gemessen. Die 38 übrigen Verzeichnisse der obersten Ebene sind rund
+    6 TB fremder Projektdaten, kosten Stunden und liefern nur die Zeile „die
+    grössten ausserhalb unseres Bereichs". Mit ``with_top=False`` bleiben sie
+    weg.
     """
     record = {"root": str(root), "measured": time.time(), "usage": df(root),
-              "top": {}, "ours": {}}
-    for entry in sorted(p for p in root.iterdir() if p.is_dir()):
-        record["top"][entry.name] = du(entry)
+              "top": {}, "ours": {}, "complete": False}
+
+    def save() -> None:
+        if write is None:
+            return
+        write.parent.mkdir(parents=True, exist_ok=True)
+        tmp = write.with_suffix(write.suffix + ".part")
+        tmp.write_text(json.dumps(record, indent=2))
+        tmp.replace(write)
+
     ours = root / OURS
     if ours.is_dir():
         for entry in sorted(p for p in ours.iterdir() if p.is_dir()):
             record["ours"][entry.name] = du(entry)
+            save()
         cache = ours / "hf_hub"
         if cache.is_dir():
             for pattern in ("datasets--*", "models--*"):
-                total = sum(du(p) for p in cache.glob(pattern))
-                record["ours"][f"hf_hub/{pattern}"] = total
+                record["ours"][f"hf_hub/{pattern}"] = sum(
+                    du(p) for p in cache.glob(pattern))
+                save()
             for name in ("hub", "xet", "modules"):
                 record["ours"][f"hf_hub/{name}"] = du(cache / name)
+                save()
         folder = ours / "training_folder"
         if folder.is_dir():
             for entry in sorted(p for p in folder.iterdir() if p.is_dir()):
                 record["ours"][f"training_folder/{entry.name}"] = du(entry)
+                save()
+    record["ours_complete"] = True
+    save()
+
+    if with_top:
+        for entry in sorted(p for p in root.iterdir() if p.is_dir()):
+            record["top"][entry.name] = du(entry)
+            save()
+    record["complete"] = True
+    save()
     return record
 
 
@@ -189,6 +218,12 @@ def load_inventory() -> tuple[dict | None, str]:
     note = f"Inventar vom {time.strftime('%d.%m.%Y %H:%M', time.localtime(record['measured']))}"
     if age_days > STALE_DAYS:
         note += f" — **{age_days:.0f} Tage alt**, die Zahlen können abweichen"
+    if not record.get("ours_complete"):
+        note += (" — **abgebrochen, bevor unser Unterbaum fertig war**: die "
+                 "Vorschläge sind unvollständig")
+    elif not record.get("complete"):
+        note += (" — unser Unterbaum ist vollständig, die übrigen Verzeichnisse "
+                 "der obersten Ebene nicht")
     return record, note
 
 
@@ -278,6 +313,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="Vorschläge auch, wenn die Schwelle eingehalten ist")
     p.add_argument("--inventory", action="store_true",
                    help="das teure du erheben und schreiben (Slurm-Job)")
+    p.add_argument("--ours-only", action="store_true",
+                   help=f"nur {OURS} messen, nicht die 38 fremden Verzeichnisse "
+                        "der obersten Ebene — das ist der Teil, der Stunden kostet "
+                        "und keine Vorschläge trägt")
     p.add_argument("--json", action="store_true", help="Maschinenform")
     args = p.parse_args(argv)
 
@@ -287,12 +326,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.inventory:
-        record = inventory()
-        INVENTORY.parent.mkdir(parents=True, exist_ok=True)
-        INVENTORY.write_text(json.dumps(record, indent=2))
+        record = inventory(write=INVENTORY, with_top=not args.ours_only)
         print(f"Inventar geschrieben: {INVENTORY}")
-        print(f"  {len(record['top'])} Verzeichnisse oben, "
-              f"{len(record['ours'])} unter {OURS}")
+        print(f"  {len(record['ours'])} Posten unter {OURS}"
+              f"{' (vollständig)' if record.get('ours_complete') else ''}")
+        print(f"  {len(record['top'])} Verzeichnisse auf der obersten Ebene"
+              f"{' (vollständig)' if record.get('complete') else ' — unvollständig'}")
         return 0
 
     if args.json:

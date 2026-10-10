@@ -496,3 +496,65 @@ def test_storage_does_not_pretend_a_broken_answer_is_a_measurement(tmp_path):
                          probe.Paths(user="u", home=tmp_path))
     assert "kein JSON" in out["error"]
     assert "suggestions" not in out
+
+
+# ── das Inventar schreibt fortlaufend (10.10.2026) ──────────────────────────
+def test_the_inventory_survives_being_cut_short(tmp_path, monkeypatch):
+    """Der erste Versuch lief sechs Stunden in den Timeout und hinterliess nichts.
+
+    Das Skript sammelte alle du-Messungen und schrieb erst am Ende. Ein
+    Teilergebnis mit Datum ist brauchbar; sechs Stunden ohne Ergebnis sind es
+    nicht. Jetzt wird nach jeder Messung geschrieben, und `ours_complete` sagt,
+    ob die Posten, die die Vorschläge tragen, vollständig sind.
+    """
+    import importlib.util
+    import sys
+
+    root = tmp_path / "research"
+    ours = root / "Textrecognition_Training"
+    (ours / "hf_hub").mkdir(parents=True)
+    (ours / "training_folder").mkdir()
+    (root / "Projekt_Fremd").mkdir()
+    (ours / "hf_hub" / "blob").write_bytes(b"x" * 1000)
+
+    spec = importlib.util.spec_from_file_location(
+        "rs", Path(__file__).resolve().parents[1] / "scripts" / "research_storage.py")
+    rs = importlib.util.module_from_spec(spec)
+    sys.modules["rs"] = rs
+    spec.loader.exec_module(rs)
+    monkeypatch.setattr(rs, "ROOT", root)
+
+    out = tmp_path / "inv.json"
+    # Erst nur unser Unterbaum: das ist der Teil, der in Minuten messbar ist.
+    rs.inventory(root, write=out, with_top=False)
+    partial = json.loads(out.read_text())
+    assert partial["ours_complete"] is True
+    assert partial["complete"] is False, "ohne die oberste Ebene ist es unvollständig"
+    assert "Projekt_Fremd" not in partial["top"]
+    assert "hf_hub" in partial["ours"]
+
+    # Und mit: dann ist beides da.
+    rs.inventory(root, write=out, with_top=True)
+    full = json.loads(out.read_text())
+    assert full["complete"] is True
+    assert "Projekt_Fremd" in full["top"]
+
+
+def test_a_partial_inventory_says_so_instead_of_suggesting_from_it(tmp_path, monkeypatch):
+    """Abgebrochen, bevor unser Unterbaum fertig war, heisst: die Vorschläge sind
+    unvollständig. Das gehört in die Antwort, nicht weggelassen (#165)."""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "rs2", Path(__file__).resolve().parents[1] / "scripts" / "research_storage.py")
+    rs = importlib.util.module_from_spec(spec)
+    sys.modules["rs2"] = rs
+    spec.loader.exec_module(rs)
+
+    inv = tmp_path / "inv.json"
+    inv.write_text(json.dumps({"measured": time.time(), "ours": {}, "top": {},
+                               "ours_complete": False, "complete": False}))
+    monkeypatch.setattr(rs, "INVENTORY", inv)
+    _, note = rs.load_inventory()
+    assert "abgebrochen" in note
