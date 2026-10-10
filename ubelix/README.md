@@ -9,6 +9,10 @@ The same VLM training subsystem as on asterAIx, driven by **Slurm** instead of t
 `atr-train` service. Nothing in `src/` or `engines/` changes — everything here is
 environment and job plumbing. Full context and cost estimates:
 [`UBELIX_PLAN.md`](https://github.com/thodel/serving-atr-inference/blob/main/docs/UBELIX_PLAN.md) (in the serving repo, where this directory came from).
+How UBELIX and asteraix are used **together** — what the two share on the
+research share, what they do not, and how a model trained here reaches
+`/models` through asteraix — is in
+[`docs/ASTERAIX_AND_UBELIX.md`](../docs/ASTERAIX_AND_UBELIX.md).
 
 | file | what it is |
 |---|---|
