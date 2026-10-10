@@ -1,14 +1,40 @@
 """Is the ground truth plausible? — auditing materialized pages before trusting a CER.
 
-Written for #52. Every model trained here so far, CTC and autoregressive alike,
-has produced **more characters than the reference contains**:
+Written for serving-atr-inference#52 — whose measurement this module rests on,
+and whose reading of that measurement was inverted. Both kraken runs there were
+scored on the same material (identical ``chars``):
 
-    kraken-thun-missiven-v1   CER 0.9838   11,191 insertions   2 deletions
+    kraken-thun-missiven-v1      CER 0.9838   11,566 chars   11,191 ins    2 del
+    kraken-medieval-scripts-v1   CER 0.7074   11,566 chars    5,381 ins   48 del
 
-That asymmetry is the whole clue, and it points away from the model. An
-undertrained CTC network collapses to blank and predicts *nothing*, which scores
-as **deletions**. Insertions outnumbering deletions 5,000:1 is the opposite
-failure: the reference is shorter than what the image actually contains.
+``hypothesis_chars == chars - insertions + deletions`` — the kraken convention,
+pinned in ``tests/test_edit_convention.py`` (#55) — makes those **377** and
+**6,233** characters against a reference of 11,566. Neither model produced more
+text than the reference contains; the first produced 3 % of it. **An
+insertion-dominated CER means the hypothesis is far too short.**
+
+The issue read the asymmetry the other way ("every model tried here outputs
+substantially more characters than the reference says are on the line"). That
+holds only for the un-adapted VLM base, whose CER of 1.837 is unreachable without
+emitting more text than the reference contains — a different run in the other
+direction, folded into one story.
+
+It matters here because the two tails of this audit point at opposite symptoms:
+
+* **px/char above the ceiling** — the crop holds more text than its reference
+  admits (a truncated or offset ``TextEquiv``). A model reading the image
+  correctly then emits more than the reference and scores **deletions**.
+* **px/char below the floor** — the reference claims more text than the crop can
+  hold. Even a perfect model reads only what is in the crop, emits less, and
+  scores **insertions**. *This* is the tail whose shape matches #52's kraken
+  numbers — if the material is at fault there at all.
+
+That last caveat is the audit's limit, and it is not a small one: an
+insertion-dominated CER is also exactly what an undertrained CTC network produces
+when it collapses to blank, which is a model fault and no business of the
+material. 377 characters out of 11,566 is more collapse than any misalignment
+explains. This audit says whether the material *could* account for the symptom.
+It does not say that it does.
 
 So before scoring a known-good model against this material (the expensive half of
 #52), ask the material a question it can answer on its own: **how many pixels of
@@ -47,9 +73,10 @@ __all__ = [
 #: Plausible range for line-width pixels per reference character, for handwriting
 #: at the resolutions dh-unibe scans at (~1600 px wide pages). Wide on purpose:
 #: the point is to catch a distribution centred at 150, not to police 12 vs 45.
-#: Below the floor means the reference claims more text than the crop can hold;
-#: above the ceiling means the crop holds more text than the reference admits —
-#: which is the direction that produces insertions.
+#: Below the floor means the reference claims more text than the crop can hold —
+#: the direction that produces **insertions**, because the model can only read
+#: what is there. Above the ceiling means the crop holds more text than the
+#: reference admits — the direction that produces **deletions**.
 PX_PER_CHAR_PLAUSIBLE = (6.0, 60.0)
 
 
@@ -112,6 +139,7 @@ class MaterialAudit:
     #: reported "20 of 96 lines (21%)" for a set where all 96 were implausible.
     implausible_count: int = 0
     too_wide_count: int = 0
+    too_narrow_count: int = 0
     #: A capped sample of the worst offenders, for a human to eyeball.
     examples: list[LineAudit] = field(default_factory=list)
     px_per_char: list[float] = field(default_factory=list)
@@ -140,9 +168,12 @@ class MaterialAudit:
             "line_width_px": percentiles(self.widths),
             "implausible_lines": self.implausible_count,
             "implausible_fraction": round(self.implausible_fraction, 4),
-            # Split out because the two directions mean opposite things, and only
-            # one of them explains an insertion-dominated CER.
+            # Split out because the two directions mean opposite things: too much
+            # image per character explains a deletion-dominated CER, too little
+            # explains an insertion-dominated one. Reporting only one of them
+            # left the tail that matches #52 uncounted.
             "too_much_image_per_char": self.too_wide_count,
+            "too_little_image_per_char": self.too_narrow_count,
         }
 
     def verdict(self) -> str:
@@ -151,14 +182,37 @@ class MaterialAudit:
             return "NO LINES — nothing here is usable as training material."
         low, high = PX_PER_CHAR_PLAUSIBLE
         wide = self.too_wide_count
+        narrow = self.too_narrow_count
         median = percentiles(self.px_per_char).get("p50", 0)
+        if wide / self.lines > 0.2 and narrow / self.lines > 0.2:
+            # Beide Seiten gerissen. Nur eine zu nennen hiesse, die Hälfte des
+            # Befundes zu verschweigen — und die genannte Seite würde die
+            # Fehlersuche in die eine Richtung lenken, die vielleicht die
+            # kleinere ist.
+            return (
+                f"SUSPECT — both directions at once: {wide} of {self.lines} lines "
+                f"({wide / self.lines:.0%}) have more than {high:.0f} px per "
+                f"reference character and {narrow} ({narrow / self.lines:.0%}) have "
+                f"less than {low:.0f} (median {median}). Some references hold less "
+                "than their crop, others more, so the CER is neither cleanly "
+                "insertion- nor deletion-dominated. The pairing is broken, not just "
+                "skewed — fix the material before reading any score from it."
+            )
         if wide / self.lines > 0.2:
             return (
                 f"SUSPECT — {wide} of {self.lines} lines ({wide / self.lines:.0%}) "
                 f"have more than {high:.0f} px of line per reference character "
                 f"(median {median}). The crops contain more text than the references "
-                "admit to, which is what produces an insertion-dominated CER. "
+                "admit to, which is what produces a deletion-dominated CER. "
                 "Fix the material before reading any score from it."
+            )
+        if narrow / self.lines > 0.2:
+            return (
+                f"SUSPECT — {narrow} of {self.lines} lines ({narrow / self.lines:.0%}) "
+                f"have less than {low:.0f} px of line per reference character "
+                f"(median {median}). The references claim more text than the crops "
+                "can hold, which is what produces an insertion-dominated CER — the "
+                "shape #52 measured. Fix the material before reading any score from it."
             )
         if self.implausible_fraction > 0.2:
             return (
@@ -169,8 +223,9 @@ class MaterialAudit:
         return (
             f"PLAUSIBLE — median {median} px per character over {self.lines} lines, "
             f"{self.implausible_fraction:.1%} outside {low:.0f}–{high:.0f}. The ground "
-            "truth is not obviously misaligned, so an insertion-dominated CER points "
-            "at training or decoding rather than at the material."
+            "truth is not obviously misaligned, so a CER dominated by either "
+            "direction points at training or decoding rather than at the material "
+            "— a blank collapse for insertions, a failure to stop for deletions."
         )
 
 
@@ -195,6 +250,8 @@ def audit_xml(xml_text: str, page: str, into: MaterialAudit) -> None:
             into.implausible_count += 1
             if ratio > high:
                 into.too_wide_count += 1
+            else:
+                into.too_narrow_count += 1
             into.examples.append(line)
 
 
@@ -212,9 +269,23 @@ def audit_pages(xml_paths: Iterable[str | Path], max_examples: int = 20) -> Mate
             audit_xml(path.read_text(encoding="utf-8", errors="replace"), path.name, audit)
         except (PageXMLError, OSError):
             audit.pages_unreadable += 1
-    # Worst offenders first — the widest per character are the ones that explain
-    # insertions, and the ones a human should eyeball against the image.
-    audit.examples.sort(key=lambda ln: ln.px_per_char or 0, reverse=True)
+    # "Worst offenders first" has to mean *how far outside the band*, not the
+    # largest px/char. Sorted by px/char alone, a set broken at the floor — the
+    # tail that explains an insertion-dominated CER, the symptom #52 actually had
+    # — was listed with its mildest case first: px/char 5.0 before 1.0, when 1.0
+    # is six times outside the band and 5.0 barely outside it. A human eyeballing
+    # the first twenty examples saw the least broken lines of the set. The key
+    # below is symmetric and scale-free, so either tail is ranked by severity.
+    def _outside(line: LineAudit) -> float:
+        low, high = PX_PER_CHAR_PLAUSIBLE
+        ratio = line.px_per_char or 0.0
+        if ratio > high:
+            return ratio / high
+        if ratio < low and ratio > 0:
+            return low / ratio
+        return 0.0
+
+    audit.examples.sort(key=_outside, reverse=True)
     del audit.examples[max_examples:]   # counts already recorded; this is display only
     return audit
 
@@ -243,13 +314,15 @@ def report(audit: MaterialAudit, as_json: bool = False) -> str:
         f"p95 {s['px_per_char'].get('p95')}   (plausible {PX_PER_CHAR_PLAUSIBLE[0]:.0f}"
         f"–{PX_PER_CHAR_PLAUSIBLE[1]:.0f})",
         f"implausible     {s['implausible_lines']} lines "
-        f"({s['implausible_fraction']:.1%}), of which "
-        f"{s['too_much_image_per_char']} have too much image per character",
+        f"({s['implausible_fraction']:.1%}): "
+        f"{s['too_much_image_per_char']} with too much image per character "
+        f"(-> deletions), "
+        f"{s['too_little_image_per_char']} with too little (-> insertions)",
         "",
         audit.verdict(),
     ]
     if audit.examples:
-        lines += ["", "worst lines (widest per character):"]
+        lines += ["", "worst lines (furthest outside the plausible band):"]
         for ln in audit.examples[:10]:
             lines.append(
                 f"  {ln.px_per_char:7.1f} px/char  {ln.width:5d}x{ln.height:<4d} px"

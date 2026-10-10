@@ -74,15 +74,21 @@ def test_normal_handwriting_reads_as_plausible(tmp_path):
 
 # ── the failure this was written to find ────────────────────────────────────
 def test_a_truncated_reference_is_flagged_as_suspect(tmp_path):
-    """Wide crops, tiny transcriptions — the shape that produces insertions and
-    almost no deletions."""
+    """Wide crops, tiny transcriptions — the shape that produces **deletions**.
+
+    A model reading such a crop correctly emits the whole line while the
+    reference holds a fragment of it, so the surplus characters are deletions
+    (``edit_details(pred, ref)``; see tests/test_edit_convention.py).
+    """
     pages = [page([("abc", 900), ("de", 850), ("fghi", 1000)]) for _ in range(4)]
     audit = audit_pages(write_pages(tmp_path, pages))
 
     assert audit.verdict().startswith("SUSPECT")
     assert "more text than the references" in audit.verdict()
+    assert "deletion-dominated" in audit.verdict()
     assert audit.implausible_fraction == 1.0   # every line, not just the sampled ones
     assert audit.summary()["too_much_image_per_char"] == audit.lines
+    assert audit.summary()["too_little_image_per_char"] == 0
 
 
 def test_the_worst_offenders_come_first(tmp_path):
@@ -94,14 +100,19 @@ def test_the_worst_offenders_come_first(tmp_path):
 
 
 def test_the_two_directions_are_reported_separately(tmp_path):
-    """A reference longer than its crop can hold is also wrong, but it produces
-    deletions, not insertions — conflating them would hide which problem this is."""
+    """A reference longer than its crop can hold produces **insertions**, not
+    deletions — and that is the tail serving-atr-inference#52 actually measured
+    (11,191 insertions against 2 deletions, a hypothesis of 377 characters
+    against 11,566). Conflating the two hides which problem this is."""
     pages = [page([("x" * 400, 900)] * 3)]  # ~2 px/char: reference too long
     audit = audit_pages(write_pages(tmp_path, pages))
     summary = audit.summary()
     assert summary["implausible_lines"] == 3
     assert summary["too_much_image_per_char"] == 0      # the other direction
+    assert summary["too_little_image_per_char"] == 3
     assert audit.verdict().startswith("SUSPECT")
+    assert "insertion-dominated" in audit.verdict()
+    assert "deletion-dominated" not in audit.verdict()
 
 
 def test_a_minority_of_odd_lines_does_not_condemn_the_set(tmp_path):
@@ -203,3 +214,74 @@ def test_a_horizontal_line_is_unaffected():
     horizontal = LineAudit(page="p.xml", index=0, chars=40, width=880, height=60, text="x" * 40)
     assert not horizontal.is_vertical
     assert horizontal.px_per_char == pytest.approx(22.0, rel=0.01)
+
+
+def test_the_narrow_tail_is_ranked_by_severity_not_by_px_per_char(tmp_path):
+    """„Worst offenders first" hiess bisher „groesstes px/char zuerst".
+
+    Bei einem am Boden kaputten Satz ist das die umgekehrte Reihenfolge: 5.0
+    px/char steht knapp unter der Schwelle, 1.0 px/char sechsfach darunter. Wer
+    die ersten zwanzig Beispiele ansah, bekam die mildesten Zeilen des Satzes zu
+    sehen — und das ist die Seite, die eine insertions-dominierte CER erklaert,
+    also genau das Symptom von serving-atr-inference#52.
+    """
+    low, _high = PX_PER_CHAR_PLAUSIBLE
+    # 900/180 = 5.0, 900/400 = 2.25, 900/900 = 1.0 px/char — alle unter dem Boden.
+    pages = [page([("x" * 180, 900), ("x" * 400, 900), ("x" * 900, 900)])]
+    audit = audit_pages(write_pages(tmp_path, pages))
+
+    ratios = [ln.px_per_char for ln in audit.examples]
+    assert all(r < low for r in ratios), "alle drei gehoeren zur engen Seite"
+    assert ratios == [pytest.approx(1.0), pytest.approx(2.25), pytest.approx(5.0)], \
+        "der schlimmste Fall zuerst, nicht der mildeste"
+    assert audit.too_narrow_count == 3 and audit.too_wide_count == 0
+
+
+def test_both_tails_can_appear_among_the_examples(tmp_path):
+    """Beide Seiten koennen zugleich vorkommen, und dann stehen beide drin —
+    nach Schwere gemischt, nicht nach Seite getrennt."""
+    low, high = PX_PER_CHAR_PLAUSIBLE
+    pages = [page([("x" * 40, 880)] * 10        # ~22 px/char: unauffaellig
+                  + [("x" * 900, 900)] * 3      # 1.0 px/char: enge Seite, schwer
+                  + [("ab", 900)] * 3)]         # 450 px/char: weite Seite, schwer
+    audit = audit_pages(write_pages(tmp_path, pages), max_examples=6)
+
+    ratios = [ln.px_per_char for ln in audit.examples]
+    assert any(r > high for r in ratios), "die weite Seite fehlt"
+    assert any(r < low for r in ratios), "die enge Seite fehlt"
+    assert all(not (low <= r <= high) for r in ratios), "unauffaellige Zeilen"
+    assert audit.too_narrow_count == 3 and audit.too_wide_count == 3
+
+
+def test_the_measurement_behind_the_module_is_recorded_correctly(tmp_path):
+    """Die Zahlen von serving-atr-inference#52, gegen die Identität geprüft.
+
+    Das Modul war auf die Lesart gebaut, jedes Modell habe mehr Text erzeugt als
+    die Referenz enthält. Über ``hypothesis_chars == chars - insertions +
+    deletions`` ergeben dieselben Zahlen das Gegenteil, und zwar drastisch. Diese
+    Rechnung steht hier, damit die berichtigte Lesart nicht wieder auf einen
+    Docstring angewiesen ist.
+    """
+    for chars, ins, dele, expected in [(11566, 11191, 2, 377),
+                                       (11566, 5381, 48, 6233)]:
+        assert chars - ins + dele == expected
+        assert expected < chars, "beide Hypothesen sind kürzer als die Referenz"
+
+
+def test_both_directions_broken_at_once_names_both(tmp_path):
+    """Nur eine Seite zu nennen verschweigt die Haelfte des Befundes.
+
+    Bei 3 von 10 Zeilen zu weit *und* 3 von 10 zu eng meldete `verdict()` den
+    weiten Zweig und schwieg ueber den engen — und lenkte die Fehlersuche damit
+    auf die Richtung, die zufaellig zuerst geprueft wird.
+    """
+    pages = [page([("x" * 40, 880)] * 4        # unauffaellig
+                  + [("x" * 900, 900)] * 3     # 1.0 px/char
+                  + [("ab", 900)] * 3)]        # 450 px/char
+    audit = audit_pages(write_pages(tmp_path, pages))
+
+    v = audit.verdict()
+    assert v.startswith("SUSPECT")
+    assert "both directions at once" in v
+    assert "3 of 10" in v and "30%" in v
+    assert audit.too_wide_count == 3 and audit.too_narrow_count == 3
