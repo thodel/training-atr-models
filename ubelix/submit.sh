@@ -94,6 +94,45 @@ PY
   export SPEC
 fi
 
+# 4. A prepare whose corpus is already compiled only ADOPTS it and is done in
+#    seconds, so it must not book the walltime of a from-scratch build: 8 CPUs x
+#    20 h was 9,600 of job_gratis's 11,520 CPU-minutes, which left the prepare
+#    PENDING on `MaxCpuRunMinsPerUser` behind any other running job of ours — by
+#    hand three times (#212). A file that declares both walltimes gets the short
+#    one when artefact_probe.py finds the spec's artefact in the cache.
+#
+#    Anything other than a plain hit keeps the long one: no declaration, no spec,
+#    a --time given by hand, no apptainer, a probe that failed, or a pin that is
+#    not this checkout's HEAD. That last one matters because the key folds in the
+#    held-out registry, which is read from the checkout: asked here it would
+#    describe a commit other than the one the job runs. A wrong short wall is a
+#    TIMEOUT; a wrong long one is only the old behaviour.
+TIME_CACHED=$(sed -n 's/^#ATR_TIME_CACHED=\(.*\)$/\1/p' "$SBATCH_FILE" | head -1)
+HAS_TIME=0
+for opt in ${EXTRA[@]+"${EXTRA[@]}"}; do
+  case "$opt" in --time|--time=*|-t|-t?*) HAS_TIME=1 ;; esac
+done
+if [ -n "$TIME_CACHED" ] && [ -n "$SPEC" ] && [ "$HAS_TIME" = 0 ] \
+   && [ "${ATR_CODE_COMMIT:-}" = "$(git -C "$REPO" rev-parse HEAD)" ]; then
+  # Its own apptainer exec rather than a second job for the validator above: the
+  # two answer different questions, and one of them must be allowed to fail
+  # without taking the submission with it.
+  PROBE=$(apptainer exec --bind /storage/research --bind /scratch --bind /rs_scratch \
+      --env PYTHONPATH="$REPO/src:$REPO/engines" \
+      "$UB/vlm-train.sif" python3 "$REPO/ubelix/artefact_probe.py" "$SPEC") || PROBE=""
+  case "$PROBE" in
+    ARTEFACT=cached)
+      echo "walltime: --time=$TIME_CACHED (the corpus is compiled; this prepare adopts it)"
+      EXTRA+=("--time=$TIME_CACHED") ;;
+    ARTEFACT=build)
+      echo "walltime: the file's --time (this prepare builds the corpus)" ;;
+    *)
+      echo "walltime: the file's --time (artefact_probe.py gave no answer)" ;;
+  esac
+fi
+# No cap re-check: the short walltime is shorter than the one preflight.py
+# already measured against the QoS, and the cpus are untouched.
+
 echo "submitting $SBATCH_FILE${SPEC:+ with SPEC=$SPEC}${EXTRA[*]:+ ${EXTRA[*]}}"
 # No --export: sbatch's default passes the whole environment, SPEC and JOB_ID
 # included, and an --export in EXTRA still sees them through ALL.

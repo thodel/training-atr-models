@@ -61,7 +61,7 @@ scheduled against, not scheduled.
 | how many at once | both, no queue | `job_gratis` **one**; `job_gpu_preemptable` four |
 | wall limit | none | 96 h on `job_gratis`, **24 h** preemptable |
 | interruption | none | preemption at any time on the preemptable QoS |
-| CPU cap | none | `job_gratis`: 11 520 CPU-minutes, cpus × remaining time, GPU jobs included |
+| CPU cap | none | `job_gratis`: **cpus × minutes ≤ 11 520**, over RUNNING jobs and their *remaining* time, GPU jobs included. A pending job is freed in place with `scontrol update JobId=<id> TimeLimit=<hh:mm:ss>`, which keeps the id the train stage depends on (#212) |
 | job store | **none** — `find ~/atr-cache -name job.json` finds nothing, so a run there appears in no report (#156) | the shared store on the research share |
 | state 05.10. 14:53 CEST | both cards **0 MiB, 0 %**; last checkpoint 16.09., last measurement 03.10. | one run, third attempt, 91.2 % after three days |
 

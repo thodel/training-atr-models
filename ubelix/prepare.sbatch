@@ -25,9 +25,23 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-# 8 x 20 h = 9,600 TRES minutes, inside job_gratis's MaxTRESRunMinsPU cpu=11520.
 # More cores would buy little: the work is dominated by streaming and PIL.
-#SBATCH --time=20:00:00
+#
+# THE WALLTIME HAS TO FIT BESIDE A RUNNING JOB, not just inside the cap (#212).
+# job_gratis's MaxCpuRunMinsPerUser is 11,520 CPU-minutes, counted as cpus x
+# *remaining* walltime over all RUNNING jobs of the user, GPU jobs included.
+# 8 x 20 h = 9,600 left 1,920 for everything else, so this prepare sat PENDING on
+# `MaxCpuRunMinsPerUser` behind any other run of ours and was unblocked by hand
+# three times. 8 x 12 h = 5,760 is half the cap, and it does not go lower than
+# that because the longest build here took 11:15:04 (job 17795292).
+#SBATCH --time=12:00:00
+# submit.sh picks between these two by asking artefact_probe.py whether the
+# spec's corpus is already compiled (#212). A prepare that only adopts an
+# artefact is done in seconds — 7 s for each of the four olmOCR page preps on
+# 09.10.2026 — and has no business booking the wall of a from-scratch build.
+# Plain `sbatch` reads neither and gets the --time above, which is the build one.
+#ATR_TIME_CACHED=00:30:00
+#ATR_TIME_BUILD=12:00:00
 #SBATCH --output=/storage/homefs/%u/ubelix/logs/%x-%j.out
 
 set -euo pipefail
