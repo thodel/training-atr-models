@@ -53,7 +53,7 @@ def test_the_tool_names_are_the_ones_an_allow_rule_names():
     is a new permission prompt that no unattended run can answer (#174)."""
     names = [t.name for t in tools_of(build_server(Recording()))]
     assert names == list(TOOL_NAMES)
-    assert set(names) == {"queue", "finished", "job", "results", "draw", "prepared",
+    assert set(names) == {"queue", "live", "finished", "job", "results", "draw", "prepared",
                           "deadlines", "log", "report", "slurm_job", "storage",
                           "checkout"}
 
@@ -66,6 +66,8 @@ def test_every_tool_has_a_description_a_reader_can_act_on():
 # ── each tool is one probe call ─────────────────────────────────────────────
 @pytest.mark.parametrize("name, args, sent", [
     ("queue", {}, {}),
+    ("live", {}, {}),
+    ("live", {"host": "asteraix"}, {"host": "asteraix"}),
     ("finished", {"days": 3}, {"days": 3}),
     ("job", {"job_id": "x"}, {"job_id": "x"}),
     ("results", {"granularity": "page"}, {"granularity": "page"}),

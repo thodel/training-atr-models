@@ -18,6 +18,16 @@ Every entry point takes ``run`` (how to execute a command) and ``paths`` (where
 things are) so the suite can drive it on a temporary directory with canned Slurm
 output and never needs the cluster.
 
+**Two job stores.** UBELIX runs keep their records under ``/scratch``; the jobs
+that the ``atr-train`` service on asteraix accepts keep theirs in the shared
+store on the research share, which the login node mounts under
+``/storage/research``. The record-reading questions (``results``, ``job``,
+``draw``, ``prepared``, ``live``) read both and say on each row which ``host``
+ran it. #156 said asteraix had no job store; it looked under ``~/atr-cache``,
+which holds only hand-run measurements. The Slurm questions (``queue``,
+``finished``, ``slurm_job``, ``log``) stay UBELIX's: asteraix has no Slurm, and
+its live state is what ``live`` reads from the record and the stage log.
+
 Times: Slurm prints local time already. ``job.json`` carries UTC with a ``Z``;
 those are converted to Europe/Zurich and labelled ``…_cest``. Epoch seconds in
 ``artefact.json`` are converted the same way.
@@ -32,10 +42,25 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 ZURICH = ZoneInfo("Europe/Zurich")
+
+#: The research share as the UBELIX login node mounts it; asteraix and idhefix
+#: mount the same filesystem under ``/mnt/wbkolleg_dh_1``.
+SHARE_ON_UBELIX = "/storage/research/wbkolleg_dh_1/Textrecognition_Training"
+
+#: ``host`` a shared-store record without one belongs to: the retired trainer on
+#: idhefix wrote 48 such records before #15 (``ATR_TRAIN_LEGACY_JOB_HOST``).
+LEGACY_HOST = "idhefix"
+#: Every record under ``/scratch`` was written by ``submit_job.py`` or
+#: ``fanout.py``, which stamp ``host: ubelix``; an older one without the stamp is
+#: still a Slurm job.
+SCRATCH_HOST = "ubelix"
+
+#: A record in one of these statuses has a runner, or waits for one.
+LIVE_STATUSES = ("queued", "preparing", "compiling", "training", "testing", "registering")
 
 #: A job whose Slurm attempt lasted less than this did not run: it is a requeue
 #: that found the record finished, or a refusal before the first real step (#153).
@@ -63,14 +88,26 @@ class Paths:
     """The cluster layout, resolvable from the environment or set by a test."""
 
     def __init__(self, user: Optional[str] = None, home: Optional[Path] = None,
-                 scratch: Optional[Path] = None) -> None:
+                 scratch: Optional[Path] = None, share: Optional[Path] = None) -> None:
         self.user = user or os.environ.get("USER") or "th19c587"
         self.home = Path(home or os.environ.get("HOME") or ("/storage/homefs/" + self.user))
         self.scratch = Path(scratch or ("/scratch/network/users/" + self.user))
+        self.share = Path(share or os.environ.get("ATR_RESULTS_SHARE") or SHARE_ON_UBELIX)
 
     @property
     def jobs_root(self) -> Path:
+        """The UBELIX job store: what every ``*.sbatch`` sets ``ATR_TRAIN_JOBS_ROOT`` to."""
         return self.scratch / "runs" / "jobs"
+
+    @property
+    def shared_jobs_root(self) -> Path:
+        """The shared job store: ``ATR_TRAIN_JOBS_ROOT`` of the service on asteraix."""
+        return self.share / "training_folder" / "jobs"
+
+    @property
+    def job_roots(self) -> List[Tuple[str, Path]]:
+        """``(store, root)`` for every job store this probe reads, scratch first."""
+        return [("scratch", self.jobs_root), ("share", self.shared_jobs_root)]
 
     @property
     def artefacts_root(self) -> Path:
@@ -265,11 +302,58 @@ def _load_job(path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def iter_jobs(paths: Paths):
-    for job_json in sorted(paths.jobs_root.glob("*/job.json")):
-        record = _load_job(job_json)
-        if record is not None and isinstance(record.get("request"), dict):
-            yield job_json.parent, record
+def _host_of(record: Dict[str, Any], store: str) -> str:
+    """The host a record belongs to, with the two stores' defaults for a missing stamp."""
+    return record.get("host") or (LEGACY_HOST if store == "share" else SCRATCH_HOST)
+
+
+def iter_jobs(paths: Paths, stores: Optional[List[str]] = None
+              ) -> Iterator[Tuple[Path, Dict[str, Any]]]:
+    """Every readable record in every store, ``host`` and ``_store`` filled in.
+
+    A store whose root does not exist yields nothing here; :func:`store_states`
+    is where "not mounted" is said, so that an empty answer is never mistaken for
+    an empty store (#165).
+    """
+    for store, root in paths.job_roots:
+        if stores and store not in stores:
+            continue
+        if not root.is_dir():
+            continue
+        for job_json in sorted(root.glob("*/job.json")):
+            record = _load_job(job_json)
+            if record is not None and isinstance(record.get("request"), dict):
+                record["host"] = _host_of(record, store)
+                record["_store"] = store
+                yield job_json.parent, record
+
+
+def find_job(paths: Paths, job_id: str) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    """The directory and record of ``job_id`` in whichever store holds it."""
+    for store, root in paths.job_roots:
+        record = _load_job(root / job_id / "job.json")
+        if record is not None:
+            record["host"] = _host_of(record, store)
+            record["_store"] = store
+            return root / job_id, record
+    return None, None
+
+
+def store_states(paths: Paths) -> Dict[str, Dict[str, Any]]:
+    """Per store: where it is, whether it is there, and how many records it holds.
+
+    The share is a mount; when it is away, its store reads as absent, and the
+    answer must say so rather than show zero asteraix rows.
+    """
+    states = {}
+    for store, root in paths.job_roots:
+        if root.is_dir():
+            states[store] = {"root": str(root), "mounted": True,
+                             "jobs": sum(1 for _ in root.glob("*/job.json"))}
+        else:
+            states[store] = {"root": str(root), "mounted": False, "jobs": None,
+                             "note": "not found on this host: its records are not in this answer"}
+    return states
 
 
 def draw_of(job_dir: Path) -> Optional[Dict[str, Any]]:
@@ -332,6 +416,7 @@ def summarise_job(job_dir: Path, record: Dict[str, Any], with_draw: bool = True)
         "started_cest": utc_to_cest(record.get("started_at")),
         "finished_cest": utc_to_cest(record.get("finished_at")),
         "host": record.get("host"),
+        "store": record.get("_store"),
         "metrics": {k: metrics.get(k) for k in
                     ("cer", "wer", "length_ratio", "truncated_cer", "samples",
                      "benchmark_cer", "benchmark_samples")} if metrics else None,
@@ -486,10 +571,9 @@ def finished(run: Runner, paths: Paths, days: int = 2) -> Dict[str, Any]:
 
 
 def job(paths: Paths, job_id: str) -> Dict[str, Any]:
-    job_dir = paths.jobs_root / job_id
-    record = _load_job(job_dir / "job.json")
-    if record is None:
-        return {"error": "no job.json under %s" % job_dir}
+    job_dir, record = find_job(paths, job_id)
+    if job_dir is None or record is None:
+        return {"error": "no %s/job.json in any store" % job_id, "stores": store_states(paths)}
     return summarise_job(job_dir, record)
 
 
@@ -507,7 +591,8 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
         metrics = summary["metrics"] or {}
         draw = summary["draw"] or {}
         rows.append({
-            "id": summary["id"], "status": summary["status"], "model_id": summary["model_id"],
+            "id": summary["id"], "host": summary["host"], "status": summary["status"],
+            "model_id": summary["model_id"], "engine": summary["engine"],
             "base_model": summary["base_model"], "granularity": summary["granularity"],
             "load_in_4bit": summary["load_in_4bit"],
             "cer": metrics.get("cer"), "wer": metrics.get("wer"),
@@ -518,24 +603,28 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
             "code_drift": bool(summary["code_drift"]),
         })
     rows.sort(key=lambda r: (r["finished_cest"] or "", r["id"]))
-    return {"jobs_root": str(paths.jobs_root), "rows": rows,
-            "note": "two CER values compare only when draw_md5 matches (#108)"}
+    return {"jobs_root": str(paths.jobs_root), "stores": store_states(paths), "rows": rows,
+            "note": "two CER values compare only when draw_md5 matches (#108); host says "
+                    "which machine trained the row, and a kraken CER was measured on "
+                    "asteraix's venv, a VLM CER in a UBELIX container (#206)"}
 
 
 def draw(paths: Paths, job_id: str) -> Dict[str, Any]:
-    own = draw_of(paths.jobs_root / job_id)
+    job_dir, _ = find_job(paths, job_id)
+    own = draw_of(job_dir) if job_dir is not None else None
     if own is None:
         return {"job_id": job_id, "draw": None,
-                "error": "no data/val_eval.jsonl: the test stage has not drawn yet"}
+                "error": "no data/val_eval.jsonl: the test stage has not drawn yet"
+                if job_dir is not None else "no %s/job.json in any store" % job_id}
     shared = []
-    for job_dir, record in iter_jobs(paths):
-        if job_dir.name == job_id:
+    for other_dir, record in iter_jobs(paths):
+        if other_dir.name == job_id:
             continue
-        other = draw_of(job_dir)
+        other = draw_of(other_dir)
         if other and other["md5"] == own["md5"]:
             metrics = record.get("metrics") or {}
-            shared.append({"id": job_dir.name, "status": record.get("status"),
-                           "cer": metrics.get("cer")})
+            shared.append({"id": other_dir.name, "host": record["host"],
+                           "status": record.get("status"), "cer": metrics.get("cer")})
     return {"job_id": job_id, "draw": own, "shared_with": shared}
 
 
@@ -560,19 +649,93 @@ def prepared(paths: Paths) -> Dict[str, Any]:
     for job_dir, record in waiting:
         summary = summarise_job(job_dir, record, with_draw=False)
         mtime = _dir_mtime(job_dir / "data") or _dir_mtime(job_dir)
+        # Only /scratch purges; the share keeps a job directory until someone
+        # deletes it (#183), so a share row carries no purge date.
+        purge = (mtime + SCRATCH_PURGE.total_seconds()
+                 if mtime and summary["store"] == "scratch" else None)
         rows.append({
-            "id": summary["id"], "status": summary["status"], "model_id": summary["model_id"],
+            "id": summary["id"], "host": summary["host"], "status": summary["status"],
+            "model_id": summary["model_id"],
             "base_model": summary["base_model"], "granularity": summary["granularity"],
             "load_in_4bit": summary["load_in_4bit"], "created_cest": summary["created_cest"],
             "data_touched_cest": epoch_to_cest(mtime),
-            "scratch_purge_cest": epoch_to_cest(mtime + SCRATCH_PURGE.total_seconds())
-            if mtime else None,
+            "scratch_purge_cest": epoch_to_cest(purge),
             "artefact": summary["artefact"],
             "superseded_by": completed_models.get(summary["model_id"], []),
         })
-    return {"rows": rows,
+    return {"rows": rows, "stores": store_states(paths),
             "note": "superseded_by lists completed jobs of the same model_id: a leftover, "
-                    "not a next step"}
+                    "not a next step; scratch_purge_cest is null for a job on the share, "
+                    "which never purges"}
+
+
+def _stage_log(job_dir: Path, stage: Optional[str]) -> Optional[Path]:
+    """The log that says where a live job is: ``logs/<stage>.log`` when the stage
+    runs a subprocess and has written to it, else ``logs/runner.log``. The same
+    choice the runner makes for a failure (``_failure_log``)."""
+    candidates = []
+    if stage:
+        candidates.append(job_dir / "logs" / ("%s.log" % stage))
+    candidates.append(job_dir / "logs" / "runner.log")
+    for path in candidates:
+        try:
+            if path.is_file() and path.stat().st_size:
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def live(paths: Paths, host: Optional[str] = None) -> Dict[str, Any]:
+    """Records with a runner, or waiting for one, on any host, read from the record.
+
+    This is the asteraix counterpart of ``queue``: there is no Slurm there, so
+    the status, the stage and the progress counter in the stage log are the
+    live state. The same reading works for a UBELIX record, and ``slurm_jobs``
+    then names what ``slurm_job`` can ask about.
+
+    A record stays live after its runner died until something closes it: on
+    asteraix the service's next reconcile marks it failed, on UBELIX nobody
+    does (``close_job`` by hand, #17). ``updated_cest`` and ``log_modified_cest``
+    are what a reader has to judge that by.
+    """
+    rows = []
+    for job_dir, record in iter_jobs(paths):
+        if record.get("status") not in LIVE_STATUSES:
+            continue
+        if host and record["host"] != host:
+            continue
+        summary = summarise_job(job_dir, record, with_draw=False)
+        progress = record.get("progress") or {}
+        log_path = _stage_log(job_dir, record.get("stage"))
+        counter = None
+        log_modified = None
+        if log_path is not None:
+            edges = read_log_edges(log_path)
+            counter = last_progress(edges["tail"])
+            log_modified = epoch_to_cest(log_path.stat().st_mtime)
+        rows.append({
+            "id": summary["id"], "host": summary["host"], "store": summary["store"],
+            "status": summary["status"], "stage": summary["stage"],
+            "model_id": summary["model_id"], "engine": summary["engine"],
+            "base_model": summary["base_model"], "granularity": summary["granularity"],
+            "queued_reason": record.get("queued_reason"),
+            "pid": record.get("pid"), "gpus": record.get("gpus") or [],
+            "created_cest": summary["created_cest"], "started_cest": summary["started_cest"],
+            "updated_cest": utc_to_cest(record.get("updated_at")),
+            "epoch": progress.get("epoch"), "epochs": progress.get("epochs"),
+            "total_steps": progress.get("total_steps"),
+            "val_accuracy": progress.get("val_accuracy"),
+            "peak_gpu_mib": progress.get("peak_gpu_mib"),
+            "log": str(log_path) if log_path else None,
+            "log_modified_cest": log_modified, "progress": counter,
+            "slurm_jobs": summary["slurm_jobs"], "artefact": summary["artefact"],
+        })
+    rows.sort(key=lambda r: (r["host"] or "", r["started_cest"] or "", r["id"]))
+    return {"host": host, "rows": rows, "stores": store_states(paths),
+            "note": "live means the record says so; a runner that died leaves the record "
+                    "live until the service (asteraix) or close_job (UBELIX) closes it, so "
+                    "read updated_cest and log_modified_cest before believing a row"}
 
 
 def deadlines(run: Runner, paths: Paths) -> Dict[str, Any]:
@@ -772,6 +935,8 @@ def dispatch(cmd: str, args: Dict[str, Any], run: Runner, paths: Paths) -> Dict[
         return draw(paths, str(args["job_id"]))
     if cmd == "prepared":
         return prepared(paths)
+    if cmd == "live":
+        return live(paths, host=args.get("host"))
     if cmd == "deadlines":
         return deadlines(run, paths)
     if cmd == "log":

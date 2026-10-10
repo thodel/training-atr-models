@@ -90,17 +90,25 @@ def write_job(root: Path, job_id: str, *, status: str = "completed", model_id: s
               base_model: str = "google/gemma-4-12B-it", granularity: str = "line",
               cer: float | None = 0.2122, draw: str | None = "a\nb\nc\n", created: str = "0870e50c79e0",
               stage_commit: str | None = "ff9effd8d99d", finished: str | None = "2026-10-05T21:42:21Z",
-              artefact: str | None = None) -> Path:
-    job_dir = root / "runs" / "jobs" / job_id
+              artefact: str | None = None, store: str = "scratch", host: str | None = "ubelix",
+              engine: str = "vllm", stage: str | None = None,
+              extra: dict | None = None) -> Path:
+    """A record in the UBELIX scratch store (``root`` is the scratch directory) or,
+    with ``store="share"``, in the shared store (``root`` is the share's
+    ``Textrecognition_Training``). ``host=None`` writes no stamp at all."""
+    if store == "share":
+        job_dir = root / "training_folder" / "jobs" / job_id
+    else:
+        job_dir = root / "runs" / "jobs" / job_id
     (job_dir / "data").mkdir(parents=True)
     record = {
-        "id": job_id, "status": status,
-        "request": {"model_id": model_id or job_id.split("-", 1)[1], "engine": "vllm",
+        "id": job_id, "status": status, "stage": stage,
+        "request": {"model_id": model_id or job_id.split("-", 1)[1], "engine": engine,
                     "base_model": base_model,
                     "params": {"granularity": granularity, "load_in_4bit": True, "epochs": 1,
                                "lora_r": 64}},
         "code": {"commit": created + "0" * 28, "dirty": False},
-        "created_at": "2026-09-30T17:03:18.891717Z", "finished_at": finished, "host": "ubelix",
+        "created_at": "2026-09-30T17:03:18.891717Z", "finished_at": finished,
         "metrics": None if cer is None else {"cer": cer, "wer": 0.28, "length_ratio": 0.82,
                                               "truncated_cer": 0.2153, "samples": 200},
         "stages": [] if stage_commit is None else [
@@ -111,6 +119,9 @@ def write_job(root: Path, job_id: str, *, status: str = "completed", model_id: s
         "registration": "not registered: this ran as Slurm job 16830477, and a Slurm job never "
                         "writes the registry (#17).\nPYTHONPATH=...",
     }
+    if host is not None:
+        record["host"] = host
+    record.update(extra or {})
     (job_dir / "job.json").write_text(json.dumps(record), encoding="utf-8")
     if draw is not None:
         (job_dir / "data" / "val_eval.jsonl").write_text(draw, encoding="utf-8")
@@ -124,7 +135,9 @@ def cluster(tmp_path: Path) -> Paths:
     scratch = tmp_path / "scratch"
     (scratch / "runs" / "jobs").mkdir(parents=True)
     (scratch / "expA" / "artefacts").mkdir(parents=True)
-    return Paths(user="th19c587", home=home, scratch=scratch)
+    share = tmp_path / "share" / "Textrecognition_Training"
+    (share / "training_folder" / "jobs").mkdir(parents=True)
+    return Paths(user="th19c587", home=home, scratch=scratch, share=share)
 
 
 # ── the cluster's Python ────────────────────────────────────────────────────
@@ -313,6 +326,127 @@ def test_prepared_lists_waiting_corpora_and_their_successors(cluster):
     assert rows["20260925T045500Z-ladder-med-qwen35-27b"]["scratch_purge_cest"]
 
 
+# ── the second store: what asteraix's service writes on the share (#156) ─────
+def test_results_read_both_stores_and_name_the_host(cluster):
+    """#156 measured `find ~/atr-cache -name job.json` → 0 and concluded asteraix
+    has no job store. It has one: the service writes training_folder/jobs on the
+    research share, which the login node mounts. Only hand-run measurements
+    have no record."""
+    write_job(cluster.scratch, "20260930T170315Z-ladder-xix-gemma4-12b")
+    write_job(cluster.share, "20261007T131819Z-kraken-german-xix-v1", store="share",
+              host="asteraix", engine="kraken", base_model="bifrost", cer=0.0912,
+              draw="k1\nk2\n")
+    write_job(cluster.share, "20260807T100000Z-thun-kurrent-v1", store="share", host=None,
+              engine="kraken", base_model="kurrent", cer=0.2350, draw=None,
+              finished="2026-08-13T10:00:00Z")
+    rows = {r["id"]: r for r in probe.results(cluster)["rows"]}
+    assert rows["20260930T170315Z-ladder-xix-gemma4-12b"]["host"] == "ubelix"
+    assert rows["20261007T131819Z-kraken-german-xix-v1"]["host"] == "asteraix"
+    assert rows["20261007T131819Z-kraken-german-xix-v1"]["engine"] == "kraken"
+    assert rows["20261007T131819Z-kraken-german-xix-v1"]["cer"] == 0.0912
+    # A share record without a stamp is the retired idhefix trainer's (#15).
+    assert rows["20260807T100000Z-thun-kurrent-v1"]["host"] == "idhefix"
+    stores = probe.results(cluster)["stores"]
+    assert stores["scratch"] == {"root": str(cluster.jobs_root), "mounted": True, "jobs": 1}
+    assert stores["share"]["mounted"] is True and stores["share"]["jobs"] == 2
+
+
+def test_an_absent_share_is_said_not_shown_as_zero_asteraix_rows(tmp_path):
+    """The share is a mount. Away, its store must read as absent (#165), and the
+    scratch rows still come."""
+    paths = Paths(user="u", home=tmp_path / "home", scratch=tmp_path / "scratch",
+                  share=tmp_path / "not-mounted")
+    write_job(paths.scratch, "20260930T170315Z-ladder-xix-gemma4-12b")
+    answer = probe.results(paths)
+    assert [r["id"] for r in answer["rows"]] == ["20260930T170315Z-ladder-xix-gemma4-12b"]
+    assert answer["stores"]["share"]["mounted"] is False
+    assert answer["stores"]["share"]["jobs"] is None
+    assert "not found" in answer["stores"]["share"]["note"]
+    assert probe.live(paths)["stores"]["share"]["mounted"] is False
+
+
+def test_job_and_draw_find_a_record_in_either_store(cluster):
+    write_job(cluster.scratch, "20260930T170315Z-ladder-xix-gemma4-12b")
+    write_job(cluster.share, "20261007T131819Z-kraken-german-xix-v1", store="share",
+              host="asteraix", engine="kraken", draw="a\nb\nc\n", cer=0.0912)
+    answer = probe.job(cluster, "20261007T131819Z-kraken-german-xix-v1")
+    assert answer["host"] == "asteraix" and answer["store"] == "share"
+    assert answer["metrics"]["cer"] == 0.0912
+    assert probe.job(cluster, "20260930T170315Z-ladder-xix-gemma4-12b")["store"] == "scratch"
+    missing = probe.job(cluster, "nope")
+    assert "error" in missing and set(missing["stores"]) == {"scratch", "share"}
+    # The same three lines on both sides: the draw query crosses the stores.
+    shared = probe.draw(cluster, "20260930T170315Z-ladder-xix-gemma4-12b")["shared_with"]
+    assert shared == [{"id": "20261007T131819Z-kraken-german-xix-v1", "host": "asteraix",
+                       "status": "completed", "cer": 0.0912}]
+    assert "any store" in probe.draw(cluster, "nope")["error"]
+
+
+def test_prepared_gives_no_purge_date_to_a_job_on_the_share(cluster):
+    write_job(cluster.scratch, "20260925T045500Z-ladder-med-qwen35-27b", status="training",
+              cer=None, draw=None, finished=None)
+    write_job(cluster.share, "20261007T131819Z-kraken-german-xix-v1", store="share",
+              host="asteraix", engine="kraken", status="training", cer=None, draw=None,
+              finished=None)
+    rows = {r["id"]: r for r in probe.prepared(cluster)["rows"]}
+    assert rows["20260925T045500Z-ladder-med-qwen35-27b"]["scratch_purge_cest"]
+    assert rows["20261007T131819Z-kraken-german-xix-v1"]["scratch_purge_cest"] is None
+    assert rows["20261007T131819Z-kraken-german-xix-v1"]["host"] == "asteraix"
+
+
+def test_live_reads_asteraix_from_the_record_and_the_stage_log(cluster):
+    """asteraix has no Slurm: its queue is the record's status and stage, and its
+    progress is the counter at the end of logs/<stage>.log — the state a person
+    read by hand on 10.10.2026 (kraken-german-xix-v1 in training on card 1)."""
+    job_dir = write_job(cluster.share, "20261007T131819Z-kraken-german-xix-v1", store="share",
+                        host="asteraix", engine="kraken", base_model="bifrost",
+                        status="training", stage="train", cer=None, draw=None, finished=None,
+                        extra={"pid": 41213, "gpus": [1], "started_at": "2026-10-07T13:20:00Z",
+                               "updated_at": "2026-10-10T07:58:00Z",
+                               "progress": {"epoch": 3, "epochs": 50, "total_steps": 12000,
+                                            "val_accuracy": 0.9412,
+                                            "peak_gpu_mib": {"gpu1": {"own_mib": 26773}}}})
+    (job_dir / "logs").mkdir()
+    (job_dir / "logs" / "train.log").write_text("stage 3/50\n 1200/4000\n")
+    write_job(cluster.share, "20260807T100000Z-thun-kurrent-v1", store="share", host=None,
+              engine="kraken", status="training", cer=None, draw=None, finished=None)
+    write_job(cluster.scratch, "20260925T045500Z-ladder-med-qwen35-27b", status="training",
+              cer=None, draw=None, finished=None)
+    write_job(cluster.scratch, "20260930T170315Z-ladder-xix-gemma4-12b")  # completed: not live
+
+    answer = probe.live(cluster, host="asteraix")
+    assert [r["id"] for r in answer["rows"]] == ["20261007T131819Z-kraken-german-xix-v1"]
+    row = answer["rows"][0]
+    assert row["stage"] == "train" and row["pid"] == 41213 and row["gpus"] == [1]
+    assert row["epoch"] == 3 and row["epochs"] == 50 and row["total_steps"] == 12000
+    assert row["peak_gpu_mib"] == {"gpu1": {"own_mib": 26773}}
+    assert row["progress"] == {"done": 1200, "total": 4000, "line": "1200/4000"}
+    assert row["log"].endswith("logs/train.log") and row["log_modified_cest"]
+    assert row["updated_cest"] == "2026-10-10 09:58 CEST"
+
+    everyone = probe.live(cluster)
+    assert [(r["host"], r["id"]) for r in everyone["rows"]] == [
+        ("asteraix", "20261007T131819Z-kraken-german-xix-v1"),
+        ("idhefix", "20260807T100000Z-thun-kurrent-v1"),
+        ("ubelix", "20260925T045500Z-ladder-med-qwen35-27b")]
+    # No stage log at all: the counter is absent, not zero.
+    assert everyone["rows"][2]["progress"] is None and everyone["rows"][2]["log"] is None
+    assert everyone["rows"][2]["slurm_jobs"] == ["16830477"]
+
+
+def test_live_falls_back_to_the_runner_log_for_an_in_process_stage(cluster):
+    """prepare and the VLM compile run in-process and write runner.log only, the
+    same case the runner's _failure_log covers."""
+    job_dir = write_job(cluster.share, "20261010T090000Z-x", store="share", host="asteraix",
+                        status="preparing", stage="prepare", cer=None, draw=None, finished=None)
+    (job_dir / "logs").mkdir()
+    (job_dir / "logs" / "prepare.log").write_text("")  # created, never written
+    (job_dir / "logs" / "runner.log").write_text("streaming pages 37/1640\n")
+    row = probe.live(cluster, host="asteraix")["rows"][0]
+    assert row["log"].endswith("logs/runner.log")
+    assert row["progress"]["done"] == 37
+
+
 # ── deadlines ───────────────────────────────────────────────────────────────
 def write_artefact(root: Path, key: str, *, built_at: float, pinned: bool, job_id: str,
                    claims: dict[str, float]) -> None:
@@ -429,8 +563,9 @@ def test_checkout_reports_head_against_origin(cluster):
 # ── dispatch ────────────────────────────────────────────────────────────────
 def test_dispatch_knows_every_tool_and_refuses_the_rest(cluster):
     run = canned({"squeue": "", "sacct": SACCT, "df": "x\nfs 1 1 1 1% /\n"})
-    for cmd in ("queue", "finished", "results", "prepared", "deadlines"):
+    for cmd in ("queue", "finished", "results", "prepared", "deadlines", "live"):
         assert isinstance(probe.dispatch(cmd, {}, run, cluster), dict)
+    assert probe.dispatch("live", {"host": "asteraix"}, run, cluster)["host"] == "asteraix"
     with pytest.raises(ProbeError):
         probe.dispatch("sbatch", {}, run, cluster)
 
