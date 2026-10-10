@@ -146,11 +146,26 @@ class Score:
     and a kraken CER are the same *kind* of number.
 
     The edit decomposition (insertions / deletions / substitutions) is what
-    separates *format compliance* from *recognition quality*: a CTC model
-    cannot over-generate (no insertions), while an autoregressive model can
-    fail to stop and produces many insertions. ``length_ratio`` shows the same
+    separates *format compliance* from *recognition quality*. **Mind the
+    direction**: the counts come from ``edit_details(pred, ref)``, so a
+    *deletion* consumes a hypothesis character — it is text the hypothesis
+    added — and an *insertion* is a reference character the hypothesis never
+    produced. That is the kraken convention (see ``ketos_cmd``) and the inverse
+    of the usual ASR one, and it gives the identity
+
+        ``hypothesis_chars == chars - insertions + deletions``
+
+    which ``tests/test_edit_convention.py`` pins (#55). So a CTC model that
+    collapses to blank scores **insertions**, while an autoregressive model
+    that fails to stop scores **deletions**. ``length_ratio`` shows the same
     pattern as a single number. ``truncated_cer`` scores the hypothesis clipped
     to the reference length, isolating reading ability from stopping ability.
+
+    Measured on the two olmOCR page arms of 10.10.2026, both exact:
+    ``page-v1`` 23806 - 22672 = 1134 = 202293 - 201159; ``cap3072``
+    54346 - 13618 = 40728 = 241887 - 201159 — the second wrote a fifth too
+    much, which its full CER punished (46.74 % vs 34.92 %) and its truncated
+    CER did not (29.29 % vs 30.89 %).
     """
 
     samples: int = 0

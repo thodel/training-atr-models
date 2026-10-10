@@ -49,6 +49,27 @@ def test_the_breakdown_always_sums_to_the_distance():
     assert bd.total == dist
 
 
+def test_the_corpus_identity_ties_the_counts_to_the_lengths():
+    """``hypothesis_chars == chars - insertions + deletions``, corpus-wide.
+
+    `ketos_cmd` derives kraken's `length_ratio` from this identity, so it is
+    load-bearing, but nothing pinned it at the corpus level — only the two
+    single-pair directions above. It also happens to be the cheapest way to
+    catch an inverted reading of a real report: on the two olmOCR page arms of
+    10.10.2026 it held exactly (1134 = 202293 - 201159 and
+    40728 = 241887 - 201159), which is what showed that `cap3072` lost twelve
+    CER points to over-generation and not to worse reading.
+    """
+    pairs = [("abcdefgh", "abcd"),      # über-generiert: deletions
+             ("ab", "abcdefgh"),        # unter-generiert: insertions
+             ("kitten", "sitting"),     # gemischt
+             ("gleich", "gleich")]      # fehlerfrei
+    s = score_pairs(pairs)
+    assert s.hypothesis_chars == s.chars - s.insertions + s.deletions
+    assert s.hypothesis_chars == sum(len(p) for p, _ in pairs)
+    assert s.chars == sum(len(r) for _, r in pairs)
+
+
 # ── length_ratio follows from it ─────────────────────────────────────────────
 
 def test_length_ratio_is_above_one_when_the_model_over_generates():
