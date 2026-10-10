@@ -45,7 +45,17 @@ source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 # "Unrecognized processing class" for a model that loads fine by hand:
 #
 #   SIF=$HOME/ubelix/vlm-train-tf5.sif JOB_ID=… submit.sh train_resumable.sbatch
-SIF=${SIF:-$HOME/ubelix/vlm-train.sif}
+# Die Vorgabe ist tf5, weil das alte Abbild die Modelle nicht laden kann, die
+# wir heute trainieren: vlm-train.sif hat transformers 4.57.6 und kennt
+# `qwen3_5` NICHT, vlm-train-tf5.sif hat 5.17.0 und kennt es. Job 17808414
+# starb daran nach 59 Sekunden, weil es ohne SIF= eingereicht wurde.
+# Gemessen 10.10.2026. Wer einen alten Lauf nachstellen will, setzt SIF
+# ausdrücklich — und sieht in dessen Log nach, welches Abbild es war.
+SIF=${SIF:-$HOME/ubelix/vlm-train-tf5.sif}
+# Ohne diese Zeile stand in keinem Log und in keinem Jobdatensatz, in
+# welchem Container eine Zahl gemessen wurde.
+TF_VERSION=$(apptainer exec "$SIF" /opt/vlm-train/bin/python -c 'import transformers; print(transformers.__version__)' 2>/dev/null)
+echo "== SIF: $SIF (transformers ${TF_VERSION:-nicht abfragbar})"
 SPEC=${SPEC:-$HOME/ubelix/specs/resumable.json}
 # Only consulted when JOB_ID is unset; see the id block below.
 STATE=$S/runs/slurm-$SLURM_JOB_ID.jobid

@@ -38,7 +38,13 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 # Overridable so the same job can run under the transformers 5.x image:
 #   sbatch --export=ALL,SIF=$HOME/ubelix/vlm-train-tf5.sif …
-SIF=${SIF:-$HOME/ubelix/vlm-train.sif}
+# Die Vorgabe ist tf5, weil das alte Abbild die Modelle nicht laden kann, die
+# wir heute trainieren: vlm-train.sif hat transformers 4.57.6 und kennt
+# `qwen3_5` NICHT, vlm-train-tf5.sif hat 5.17.0 und kennt es. Job 17808414
+# starb daran nach 59 Sekunden, weil es ohne SIF= eingereicht wurde.
+# Gemessen 10.10.2026. Wer einen alten Lauf nachstellen will, setzt SIF
+# ausdrücklich — und sieht in dessen Log nach, welches Abbild es war.
+SIF=${SIF:-$HOME/ubelix/vlm-train-tf5.sif}
 JOB_ID=${JOB_ID:-$(cat "$S/runs/last-prepared.jobid" 2>/dev/null)}
 [ -n "${JOB_ID:-}" ] || { echo "set JOB_ID=<id> from a prepare run" >&2; exit 2; }
 
@@ -73,6 +79,11 @@ case "$HF_TOKEN" in
   "")    unset HF_TOKEN; echo "== HF token: ABSENT or EMPTY (~/.hf_token) — anonymous rate limits apply" ;;
   *)     unset HF_TOKEN; echo "== HF token: ~/.hf_token does not look like a token (expected hf_…) — ignoring it" ;;
 esac
+# Ohne diese Zeile stand in keinem Log und in keinem Jobdatensatz, in
+# welchem Container eine Zahl gemessen wurde — bei zwei Abbildern, die
+# sich um eine transformers-Hauptversion unterscheiden.
+TF_VERSION=$(apptainer exec "$SIF" /opt/vlm-train/bin/python -c 'import transformers; print(transformers.__version__)' 2>/dev/null)
+echo "== SIF: $SIF (transformers ${TF_VERSION:-nicht abfragbar})"
 export ATR_TRAIN_JOBS_ROOT=$S/runs/jobs
 export ATR_TRAIN_CHECKPOINT_ROOT=$S/runs/checkpoints
 export ATR_TRAIN_TRAINED_ROOT=$S/runs/trained
