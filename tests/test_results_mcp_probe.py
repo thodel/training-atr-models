@@ -750,3 +750,94 @@ def test_a_scoped_sweep_is_not_an_aborted_one(tmp_path, monkeypatch):
                                "top": {}, "ours_complete": True, "complete": False}))
     _, note = rs.load_inventory()
     assert "nicht vermerkt" in note
+
+
+def test_a_running_sweep_is_not_an_aborted_one(tmp_path, monkeypatch):
+    """„Abgebrochen" über einen Lauf, der gerade läuft, ist eine falsche Aussage.
+
+    Am 10.10.2026 meldete der Teildatensatz eines laufenden Inventarjobs
+    „abgebrochen, bevor unser Unterbaum fertig war" — während der Job auf
+    bnode004 rechnete. Das Skript konnte laufend nicht von abgebrochen
+    unterscheiden, weil nichts im Datensatz davon wusste.
+
+    Jetzt steht `running` darin und `touched` sagt, wann zuletzt gemessen wurde.
+    Ob ein stiller Lauf beendet, abgebrochen oder nur langsam ist, weiss der
+    Datensatz **nicht** — darum nennt der Hinweis das Alter und keine Ursache
+    (#204).
+    """
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "rs4", Path(__file__).resolve().parents[1] / "scripts" / "research_storage.py")
+    rs = importlib.util.module_from_spec(spec)
+    sys.modules["rs4"] = rs
+    spec.loader.exec_module(rs)
+
+    inv = tmp_path / "inv.json"
+    monkeypatch.setattr(rs, "INVENTORY", inv)
+    now = time.time()
+
+    def write(**kw):
+        base = {"measured": now, "ours": {"hf_hub": 1}, "top": {},
+                "scope": "ours", "ours_complete": False, "complete": False}
+        inv.write_text(json.dumps({**base, **kw}))
+
+    # Läuft gerade: eben noch gemessen.
+    write(running=True, touched=now - 20)
+    _, note = rs.load_inventory()
+    assert "noch nicht fertig" in note
+    assert "abgebrochen" not in note, "ein laufender Lauf ist kein abgebrochener"
+
+    # Still, aber als laufend vermerkt: das Alter wird genannt, keine Ursache.
+    write(running=True, touched=now - 4 * 3600)
+    _, note = rs.load_inventory()
+    assert "keine neue Messung" in note
+    assert "4.0 h" in note
+    assert "beendet, hängt oder wurde abgebrochen" in note, \
+        "drei mögliche Ursachen, nicht eine behauptete"
+
+    # Ordentlich beendet, Umfang ours: der alte, richtige Hinweis.
+    write(running=False, ours_complete=True)
+    _, note = rs.load_inventory()
+    assert "verlangt" in note and "fertig" not in note
+
+    # Ein voller Durchgang zählt als fertig, auch wenn die Marke stehen blieb.
+    write(running=True, touched=now - 9999, ours_complete=True, complete=True,
+          scope="full")
+    _, note = rs.load_inventory()
+    assert "Messung" not in note and "abgebrochen" not in note
+
+
+def test_the_marker_is_set_while_measuring_and_cleared_at_the_end(tmp_path, monkeypatch):
+    """Die Marke muss vom ersten Schreiben an stehen — sonst liest ein
+    Teilergebnis sich wie ein beendeter Lauf — und am Ende fallen, in beiden
+    Umfängen (#204)."""
+    import importlib.util
+    import sys
+
+    root = tmp_path / "research"
+    (root / "Textrecognition_Training" / "hf_hub").mkdir(parents=True)
+    (root / "Projekt_Fremd").mkdir()
+
+    spec = importlib.util.spec_from_file_location(
+        "rs5", Path(__file__).resolve().parents[1] / "scripts" / "research_storage.py")
+    rs = importlib.util.module_from_spec(spec)
+    sys.modules["rs5"] = rs
+    spec.loader.exec_module(rs)
+    monkeypatch.setattr(rs, "ROOT", root)
+
+    inv = tmp_path / "inv.json"
+    seen: list[bool] = []
+    real_du = rs.du
+    monkeypatch.setattr(rs, "du", lambda p: (
+        seen.append(json.loads(inv.read_text())["running"]) if inv.exists() else None,
+        real_du(p))[1])
+
+    for with_top in (False, True):
+        seen.clear()
+        record = rs.inventory(root, write=inv, with_top=with_top)
+        assert record["running"] is False, "am Ende steht die Marke nicht mehr"
+        assert json.loads(inv.read_text())["running"] is False
+        assert seen and all(seen), "während der Messung muss sie stehen"
+        assert record["touched"] >= record["measured"]

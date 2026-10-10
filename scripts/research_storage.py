@@ -52,6 +52,14 @@ THRESHOLD = 0.10
 #: Ab wann ein Inventar als veraltet gilt. Ein alter Bericht ist nicht falsch,
 #: aber er ist etwas anderes als ein frischer, und das muss dastehen.
 STALE_DAYS = 14
+#: Ab dieser Stille gilt ein als laufend vermerkter Lauf nicht mehr als laufend.
+#: Das ist eine **Wortwahl, kein Urteil**: ob der Lauf beendet, abgebrochen oder
+#: nur langsam ist, weiss dieser Datensatz nicht, und der Hinweis behauptet es
+#: auch nicht — er nennt das Alter der letzten Messung. Die Erhebung unseres
+#: Unterbaums brauchte gemessen 12:52 (09.10.) und 26:38 (10.10., neben einem
+#: prepare), je Posten also Minuten; ein Verzeichnis der obersten Ebene kann im
+#: vollen Durchgang deutlich länger brauchen.
+STALL_SECONDS = 1800
 
 #: Was im Zwischenspeicher liegt, ist aus dem Hub wiederherstellbar — das ist
 #: die Eigenschaft eines Zwischenspeichers. Die Reihenfolge ist die Rangfolge
@@ -161,18 +169,31 @@ def inventory(root: Path = ROOT, write: Path | None = None,
     sonst sind zwei Zustände nicht unterscheidbar, die verschieden zu lesen
     sind: eine oberste Ebene, die nie verlangt war, und eine, die der Timeout
     abgeschnitten hat. Beide hinterlassen ein leeres ``top``.
+
+    **Und ein laufender Lauf ist kein abgebrochener.** ``running`` steht vom
+    ersten Schreiben an darin, ``touched`` sagt, wann zuletzt gemessen wurde.
+    Dass der Lauf gestorben ist, kann der Datensatz nicht wissen — darum nennt
+    der Hinweis das Alter der letzten Messung, statt eine Ursache zu behaupten.
     """
     record = {"root": str(root), "measured": time.time(), "usage": df(root),
               "scope": "full" if with_top else "ours",
+              "running": True, "touched": time.time(),
               "top": {}, "ours": {}, "complete": False}
 
     def save() -> None:
         if write is None:
             return
+        record["touched"] = time.time()
         write.parent.mkdir(parents=True, exist_ok=True)
         tmp = write.with_suffix(write.suffix + ".part")
         tmp.write_text(json.dumps(record, indent=2))
         tmp.replace(write)
+
+    # Einmal sofort: bis zur ersten Messung stünde sonst noch der Datensatz des
+    # vorigen Laufs da, fertig und mit seiner Marke gefallen. Das erste `du`
+    # kann Minuten dauern (`hub` sind 992 GB), und so lange sähe ein Leser
+    # einen abgeschlossenen Lauf, wo gerade einer beginnt.
+    save()
 
     ours = root / OURS
     if ours.is_dir():
@@ -202,7 +223,19 @@ def inventory(root: Path = ROOT, write: Path | None = None,
             save()
         record["complete"] = True
         save()
+    record["running"] = False
+    save()
     return record
+
+
+def _ago(seconds: float) -> str:
+    """Das Alter einer Messung in Worten. Eine Zahl, die man lesen kann, ohne
+    zu rechnen — der Hinweis wird in einem Bericht gelesen, nicht ausgewertet."""
+    if seconds < 90:
+        return f"{seconds:.0f} s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} min"
+    return f"{seconds / 3600:.1f} h"
 
 
 def load_inventory() -> tuple[dict | None, str]:
@@ -225,11 +258,20 @@ def load_inventory() -> tuple[dict | None, str]:
     if age_days > STALE_DAYS:
         note += f" — **{age_days:.0f} Tage alt**, die Zahlen können abweichen"
     scope = record.get("scope")
-    if not record.get("ours_complete"):
+    silent = time.time() - record.get("touched", record.get("measured", 0))
+    if record.get("complete"):
+        pass                                 # voller Durchgang, nichts zu sagen
+    elif record.get("running") and silent < STALL_SECONDS:
+        note += (f" — **der Lauf ist noch nicht fertig**, zuletzt vor "
+                 f"{_ago(silent)} gemessen: die Vorschläge sind so lange "
+                 "unvollständig")
+    elif record.get("running"):
+        note += (f" — seit {_ago(silent)} keine neue Messung, obwohl der Lauf "
+                 "als laufend vermerkt ist: er ist beendet, hängt oder wurde "
+                 "abgebrochen; die Vorschläge sind unvollständig")
+    elif not record.get("ours_complete"):
         note += (" — **abgebrochen, bevor unser Unterbaum fertig war**: die "
                  "Vorschläge sind unvollständig")
-    elif record.get("complete"):
-        pass                                 # voller Durchgang, nichts zu sagen
     elif scope == "ours":
         note += (" — Umfang `ours`: nur unser Unterbaum war verlangt, die "
                  "übrigen Verzeichnisse der obersten Ebene sind ungemessen")
