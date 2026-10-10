@@ -693,3 +693,60 @@ def test_a_partial_inventory_says_so_instead_of_suggesting_from_it(tmp_path, mon
     monkeypatch.setattr(rs, "INVENTORY", inv)
     _, note = rs.load_inventory()
     assert "abgebrochen" in note
+
+
+def test_a_scoped_sweep_is_not_an_aborted_one(tmp_path, monkeypatch):
+    """Ein leeres ``top`` hat zwei Ursachen, die verschieden zu lesen sind.
+
+    Mit ``--ours-only`` war die oberste Ebene nie verlangt; nach einem Timeout
+    fehlt sie. Beide Male steht dort nichts, und wer das verwechselt, hält ein
+    Teilergebnis für eine vollständige Erhebung — genau der Fehler, der am
+    09.10.2026 beinahe 992 GB echter Daten gekostet hätte. Darum steht der
+    Umfang im Datensatz (#204).
+    """
+    import importlib.util
+    import sys
+
+    root = tmp_path / "research"
+    ours = root / "Textrecognition_Training"
+    (ours / "hf_hub").mkdir(parents=True)
+    (root / "Projekt_Fremd").mkdir()
+
+    spec = importlib.util.spec_from_file_location(
+        "rs3", Path(__file__).resolve().parents[1] / "scripts" / "research_storage.py")
+    rs = importlib.util.module_from_spec(spec)
+    sys.modules["rs3"] = rs
+    spec.loader.exec_module(rs)
+    monkeypatch.setattr(rs, "ROOT", root)
+
+    inv = tmp_path / "inv.json"
+    monkeypatch.setattr(rs, "INVENTORY", inv)
+
+    rs.inventory(root, write=inv, with_top=False)
+    scoped = json.loads(inv.read_text())
+    assert scoped["scope"] == "ours"
+    assert scoped["complete"] is False
+    assert scoped["top"] == {}
+    _, note = rs.load_inventory()
+    assert "verlangt" in note, "ein gewollter Teilumfang ist kein Abbruch"
+    assert "abgebrochen" not in note
+
+    rs.inventory(root, write=inv, with_top=True)
+    full = json.loads(inv.read_text())
+    assert full["scope"] == "full"
+    assert full["complete"] is True
+    _, note = rs.load_inventory()
+    assert "verlangt" not in note and "abgebrochen" not in note
+
+    # Ein voller Durchgang, den der Timeout erwischt hat: scope sagt es.
+    inv.write_text(json.dumps({"measured": time.time(), "ours": {"hf_hub": 1},
+                               "top": {}, "scope": "full",
+                               "ours_complete": True, "complete": False}))
+    _, note = rs.load_inventory()
+    assert "abgebrochen" in note
+
+    # Und ein Datensatz von vor der scope-Angabe behauptet nichts, was er nicht weiss.
+    inv.write_text(json.dumps({"measured": time.time(), "ours": {"hf_hub": 1},
+                               "top": {}, "ours_complete": True, "complete": False}))
+    _, note = rs.load_inventory()
+    assert "nicht vermerkt" in note

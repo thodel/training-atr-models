@@ -156,8 +156,14 @@ def inventory(root: Path = ROOT, write: Path | None = None,
     6 TB fremder Projektdaten, kosten Stunden und liefern nur die Zeile „die
     grössten ausserhalb unseres Bereichs". Mit ``with_top=False`` bleiben sie
     weg.
+
+    **Der Umfang steht im Datensatz** (``scope``: ``ours`` oder ``full``), denn
+    sonst sind zwei Zustände nicht unterscheidbar, die verschieden zu lesen
+    sind: eine oberste Ebene, die nie verlangt war, und eine, die der Timeout
+    abgeschnitten hat. Beide hinterlassen ein leeres ``top``.
     """
     record = {"root": str(root), "measured": time.time(), "usage": df(root),
+              "scope": "full" if with_top else "ours",
               "top": {}, "ours": {}, "complete": False}
 
     def save() -> None:
@@ -218,12 +224,22 @@ def load_inventory() -> tuple[dict | None, str]:
     note = f"Inventar vom {time.strftime('%d.%m.%Y %H:%M', time.localtime(record['measured']))}"
     if age_days > STALE_DAYS:
         note += f" — **{age_days:.0f} Tage alt**, die Zahlen können abweichen"
+    scope = record.get("scope")
     if not record.get("ours_complete"):
         note += (" — **abgebrochen, bevor unser Unterbaum fertig war**: die "
                  "Vorschläge sind unvollständig")
-    elif not record.get("complete"):
-        note += (" — unser Unterbaum ist vollständig, die übrigen Verzeichnisse "
-                 "der obersten Ebene nicht")
+    elif record.get("complete"):
+        pass                                 # voller Durchgang, nichts zu sagen
+    elif scope == "ours":
+        note += (" — Umfang `ours`: nur unser Unterbaum war verlangt, die "
+                 "übrigen Verzeichnisse der obersten Ebene sind ungemessen")
+    elif scope == "full":
+        note += (" — **abgebrochen**: unser Unterbaum ist vollständig, die "
+                 "übrigen Verzeichnisse der obersten Ebene nicht")
+    else:
+        note += (" — Umfang nicht vermerkt (vor der `scope`-Angabe erhoben): ob "
+                 "die oberste Ebene fehlt oder nie verlangt war, lässt sich "
+                 "diesem Datensatz nicht entnehmen")
     return record, note
 
 
@@ -330,8 +346,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Inventar geschrieben: {INVENTORY}")
         print(f"  {len(record['ours'])} Posten unter {OURS}"
               f"{' (vollständig)' if record.get('ours_complete') else ''}")
-        print(f"  {len(record['top'])} Verzeichnisse auf der obersten Ebene"
-              f"{' (vollständig)' if record.get('complete') else ' — unvollständig'}")
+        if record.get("scope") == "ours":
+            print("  oberste Ebene: nicht verlangt (--ours-only)")
+        else:
+            print(f"  {len(record['top'])} Verzeichnisse auf der obersten Ebene"
+                  f"{' (vollständig)' if record.get('complete') else ' — unvollständig'}")
         return 0
 
     if args.json:
