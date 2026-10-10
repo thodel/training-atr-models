@@ -1,4 +1,4 @@
-"""The MCP server: eleven reading tools over the probe (#156, #174).
+"""The MCP server: thirteen reading tools over the probe (#156, #174).
 
 Tool names are an interface. An unattended session allows them once, by name
 (``mcp__atr-results__queue``), and a rename is a new permission prompt that
@@ -21,15 +21,18 @@ except ImportError:  # mcp 1.x: the same decorator API under its old name
 
 from .remote import SshTransport, Transport, TransportError
 
-TOOL_NAMES = ("queue", "finished", "job", "results", "draw", "prepared", "deadlines",
+TOOL_NAMES = ("queue", "live", "finished", "job", "results", "draw", "prepared", "deadlines",
               "log", "report", "slurm_job", "storage", "checkout")
 
 INSTRUCTIONS = (
-    "Read-only view of the ATR training programme on UBELIX (Slurm) for the daily "
-    "report. Times are Europe/Zurich; fields ending in _cest were converted from the "
-    "trainer's UTC. Nothing here submits, cancels or deletes. Start with queue, "
-    "finished and results; use draw before putting two CER values side by side; "
-    "deadlines warns about artefact expiry and the scratch purge."
+    "Read-only view of the ATR training programme on UBELIX (Slurm) and asteraix "
+    "(the atr-train service) for the daily report. The record tools (results, job, "
+    "draw, prepared, live) read both job stores and name the host on every row; the "
+    "Slurm tools (queue, finished, slurm_job, log) are UBELIX only, and live is what "
+    "says what runs on asteraix. Times are Europe/Zurich; fields ending in _cest were "
+    "converted from the trainer's UTC. Nothing here submits, cancels or deletes. Start "
+    "with queue, live, finished and results; use draw before putting two CER values "
+    "side by side; deadlines warns about artefact expiry and the scratch purge."
 )
 
 
@@ -61,6 +64,18 @@ def build_server(transport: Transport | None = None) -> Any:
         return ask("queue")
 
     @server.tool()
+    def live(host: str | None = None) -> dict:
+        """Job records that have a runner or wait for one (queued, preparing,
+        compiling, training, testing, registering), on every host, read from the
+        record and the stage log: status, stage, pid and cards, epoch and steps,
+        peak GPU memory, the last progress counter and when the log last moved.
+        This is how asteraix's state is read, since it has no Slurm; filter with
+        host="asteraix", "ubelix" or "idhefix". A dead runner leaves its record
+        live until the service (asteraix) or close_job (UBELIX) closes it, so
+        judge a row by updated_cest and log_modified_cest."""
+        return ask("live", host=host)
+
+    @server.tool()
     def finished(days: int = 2) -> dict:
         """Slurm jobs that ended in the last `days` days (sacct). A FAILED, TIMEOUT
         or OUT_OF_MEMORY job carries the cause line pulled from its log; a job under
@@ -71,31 +86,38 @@ def build_server(transport: Transport | None = None) -> Any:
 
     @server.tool()
     def job(job_id: str) -> dict:
-        """One training job record (job.json): status, base model, granularity,
-        4-bit flag, metrics, stages with their commits, code drift, artefact,
-        registration note, Slurm job ids, and the draw fingerprint."""
+        """One training job record (job.json) from whichever store holds it, the
+        UBELIX scratch store or the shared store asteraix writes: host, status,
+        base model, granularity, 4-bit flag, metrics, stages with their commits,
+        code drift, artefact, registration note, Slurm job ids, and the draw
+        fingerprint."""
         return ask("job", job_id=job_id)
 
     @server.tool()
     def results(status: str | None = None, granularity: str | None = None,
                 base_model: str | None = None) -> dict:
-        """The metrics table over all job records: CER, WER, length_ratio,
-        truncated_cer, samples, draw_md5. Filter by status (completed, training,
-        failed), granularity (line, page, block, mixed) or a substring of the base
-        model. Two rows compare only when draw_md5 matches."""
+        """The metrics table over all job records of both stores (UBELIX scratch
+        and the shared store asteraix writes), each row with its host: CER, WER,
+        length_ratio, truncated_cer, samples, draw_md5. Filter by status
+        (completed, training, failed), granularity (line, page, block, mixed) or
+        a substring of the base model. Two rows compare only when draw_md5
+        matches. `stores` says whether each store was readable, so an absent
+        share is not mistaken for zero asteraix rows."""
         return ask("results", status=status, granularity=granularity, base_model=base_model)
 
     @server.tool()
     def draw(job_id: str) -> dict:
         """Fingerprint (md5, lines) of a job's evaluation draw and every other job
-        that shares it. The answer to "are these two CER values comparable?"."""
+        in either store that shares it, with its host. The answer to "are these
+        two CER values comparable?"."""
         return ask("draw", job_id=job_id)
 
     @server.tool()
     def prepared() -> dict:
         """Jobs whose corpus is built but whose GPU stage never finished (status
-        preparing/training/queued), with the scratch purge date of their data and
-        whether a completed job of the same model_id supersedes them."""
+        preparing/training/queued), in either store, with the scratch purge date
+        of their data (null on the share, which never purges) and whether a
+        completed job of the same model_id supersedes them."""
         return ask("prepared")
 
     @server.tool()
