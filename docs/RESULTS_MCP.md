@@ -1,8 +1,11 @@
-# The results MCP — reading UBELIX without a shell
+# The results MCP — reading UBELIX and asteraix without a shell
 
 `src/atr_results_mcp/` answers the questions the daily training report asks
 (#156, #174), as MCP tools. Read-only: nothing in it submits, cancels, deletes
-or registers.
+or registers. It reads **both job stores**: the one UBELIX runs keep under
+`/scratch`, and the one the `atr-train` service on asteraix writes on the
+research share, which the login node mounts too. Every row says which `host`
+trained it.
 
 ## Why it exists
 
@@ -17,7 +20,7 @@ for eight hours (#174 has the table). An MCP tool is allowed **once, by name**
 
 | half | runs where | Python | job |
 |---|---|---|---|
-| `probe.py` | on the login node (submit02), sent over `ssh host python3 -` with its source on stdin | **3.9**, standard library only; the suite parses it with `feature_version=(3, 9)` | run `squeue`, `sacct`, `scontrol show`, `sinfo`, `df`, `git`; read `job.json`, logs, `artefact.json`; print JSON |
+| `probe.py` | on the login node (submit02), sent over `ssh host python3 -` with its source on stdin | **3.9**, standard library only; the suite parses it with `feature_version=(3, 9)` | run `squeue`, `sacct`, `scontrol show`, `sinfo`, `df`, `git`; read `job.json`, logs, `artefact.json` in both stores; print JSON |
 | `server.py` | wherever the MCP client is: the laptop today, asteraix behind tei later | 3.11+, the `mcp` extra | one tool per probe question, nothing else |
 
 Shipping the probe on stdin is the deployment story: no package on UBELIX, no
@@ -26,16 +29,34 @@ checkout to keep current, no version skew between a tool and what answers it.
 overrides); the answer carries `_via`. One call is one SSH round trip, about two
 seconds through the jump host.
 
+## The two job stores
+
+| store | root on the login node | written by | records carry |
+|---|---|---|---|
+| `scratch` | `/scratch/network/users/$USER/runs/jobs` | `ubelix/submit_job.py` and `fanout.py` | `host: ubelix`; purged after 30 days |
+| `share` | `/storage/research/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs` (`ATR_RESULTS_SHARE` overrides the share root) | the `atr-train` service on asteraix | `host: asteraix`; a record without `host` is the retired idhefix trainer's (#15); never purged (#183) |
+
+#156 measured `find ~/atr-cache -name job.json` on asteraix, found nothing and
+concluded that asteraix had no job store. It looked in the wrong place: every
+job the service accepts has a record in the shared store, in the same format
+as a UBELIX record. What has no record are the hand-run measurements
+(`scripts/measure_*.py`), and those still answer nothing here.
+
+Every record-reading answer carries `stores`: per store its root, whether it
+was found, and how many records it holds. A share that is not mounted reads as
+*not found*, never as zero asteraix rows (#165).
+
 ## The tools
 
 | tool | answers |
 |---|---|
-| `queue()` | running and pending jobs, every reason explained (`MaxCpuRunMinsPerUser`, `ReqNodeNotAvail` with the named node's state and GRES), and for a running job its last `k/n` counter and a verdict: `fits`, `at risk` (within 15 % of the wall), `will hit the wall` |
-| `finished(days)` | `sacct` since `now-<days>days`; a failed job carries the cause line from the END of its log, a job under 10 s is `short_run` (a requeue that found the record finished, #153), `code_drift` lists stages that ran on another commit than the job was created with |
-| `job(job_id)` | one `job.json`, summarised, with times in Europe/Zurich, the draw fingerprint and the Slurm ids from the registration note |
-| `results(status, granularity, base_model)` | the metrics table over every record: CER, WER, `length_ratio`, `truncated_cer`, samples, `draw_md5` |
-| `draw(job_id)` | md5 and size of `data/val_eval.jsonl`, and every job sharing it — the answer to "comparable?" (#108) |
-| `prepared()` | corpora built, GPU stage never finished; the scratch purge date of their data; `superseded_by` when a completed job of the same `model_id` exists |
+| `queue()` | **UBELIX:** running and pending Slurm jobs, every reason explained (`MaxCpuRunMinsPerUser`, `ReqNodeNotAvail` with the named node's state and GRES), and for a running job its last `k/n` counter and a verdict: `fits`, `at risk` (within 15 % of the wall), `will hit the wall` |
+| `live(host)` | **both stores:** records with a runner or waiting for one (`queued` … `registering`), from the record and the stage log: status, stage, pid, cards, epoch and steps, `val_accuracy`, peak GPU memory, the last `k/n` counter in `logs/<stage>.log` (else `runner.log`), when the log last moved. asteraix's `queue`, since it has no Slurm; `host="asteraix"` filters. A dead runner leaves its record live until the service (asteraix) or `close_job` (UBELIX) closes it: read `updated_cest` and `log_modified_cest` |
+| `finished(days)` | **UBELIX:** `sacct` since `now-<days>days`; a failed job carries the cause line from the END of its log, a job under 10 s is `short_run` (a requeue that found the record finished, #153), `code_drift` lists stages that ran on another commit than the job was created with |
+| `job(job_id)` | one `job.json` from whichever store holds it, summarised, with `host`, times in Europe/Zurich, the draw fingerprint and the Slurm ids from the registration note |
+| `results(status, granularity, base_model)` | the metrics table over every record of both stores, with `host` and `engine` per row: CER, WER, `length_ratio`, `truncated_cer`, samples, `draw_md5` |
+| `draw(job_id)` | md5 and size of `data/val_eval.jsonl`, and every job in either store sharing it, with its host — the answer to "comparable?" (#108) |
+| `prepared()` | corpora built, GPU stage never finished, in either store; the scratch purge date of their data (null on the share); `superseded_by` when a completed job of the same `model_id` exists |
 | `deadlines()` | artefacts with expiry (7 days after `built_at` unless pinned), claimant status, `at_risk`; the 30-day scratch purge; home usage |
 | `log(slurm_job_id, lines)` | head and tail without DEBUG and progress-bar noise, `last_raw`, and notes: code pin, drift lines, cause, last progress |
 | `report(evalset, tag)` | benchmark reports on a shared set, by CER, with `load_in_4bit` visible |
@@ -73,9 +94,13 @@ not exist yet (#156 lists it); until then the laptop runs it.
 
 ## What it does not do
 
-- **asteraix.** It has no job store (#156); its runs are hand-named JSON files.
-  Nothing here reads them. The target is (b) in #156: the same job store on
-  both hosts, then one probe serves both.
+- **asteraix's hand runs.** `scripts/measure_*.py` write hand-named JSON under
+  `~/atr-cache` on asteraix's local disk, which no other host mounts. Nothing
+  here reads them; note such a number by hand wherever it is quoted. The
+  service's jobs are covered (above).
+- **asteraix's cards.** `GET /gpu` on the trainer, proxied by the gateway as
+  `/train/gpu`, is the only reader of what the cards hold; `live` reads the
+  record's `gpus` and `peak_gpu_mib`, not `nvidia-smi`.
 - **GitHub.** Issues and PRs stay with `gh`, whose prefix rules
   (`Bash(gh issue *)`, `Bash(gh pr *)`) hold as long as the command stands alone.
 - **Writes.** `git fetch` in `checkout()` touches `.git`, not the tree. That is

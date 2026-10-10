@@ -107,7 +107,7 @@ rule plus the constraints that are not about waiting:
 | re-evaluations, rescoring a finished adapter, peak-memory and noise-floor measurements | asteraix | minutes to two hours, wanted the same day, and a walltime guess on UBELIX has already killed two rescorings ([#155](https://github.com/thodel/training-atr-models/issues/155)) |
 | anything a client submits through the gateway (`POST /train/jobs`) | asteraix | the gateway proxies to the service there; nothing of ours submits to Slurm |
 | registering a model, the promotion gate, serving | asteraix and idhefix | the registry has one writer, and a Slurm job never writes it |
-| the daily training report | reads UBELIX | the results MCP probes the UBELIX job store over SSH; asteraix has nothing it can read ([#156](https://github.com/thodel/training-atr-models/issues/156)) |
+| the daily training report | reads both | the results MCP probes both job stores from the UBELIX login node: the scratch store and the shared store asteraix writes ([RESULTS_MCP.md](RESULTS_MCP.md)); only hand-run measurements on asteraix stay invisible |
 | research-share inventory and the free-space check | UBELIX | `ubelix/storage_inventory.sbatch` weekly on a CPU node, `research_storage.py --check` daily |
 
 Both A40s on asteraix are usable for training since 05.10.2026; nothing is
@@ -209,7 +209,7 @@ on UBELIX only and has never been committed.
 
 | | asteraix | UBELIX | Consequence |
 |---|---|---|---|
-| job store | `training_folder/jobs/` on the share, written by the service. A hand-run measurement (`scripts/measure_*.py`) writes no record at all, only hand-named JSON under `~/atr-cache/` | `/scratch/network/users/$USER/runs/jobs/` (experiments: `$SCRATCH/expA/jobs` …), purged after 30 days | no reader sees both. The results MCP reads UBELIX; `GET /train/jobs` lists asteraix's store. A number from asteraix has to be noted by hand wherever it is quoted ([#156](https://github.com/thodel/training-atr-models/issues/156)) |
+| job store | `training_folder/jobs/` on the share, written by the service. A hand-run measurement (`scripts/measure_*.py`) writes no record at all, only hand-named JSON under `~/atr-cache/` | `/scratch/network/users/$USER/runs/jobs/` (experiments: `$SCRATCH/expA/jobs` …), purged after 30 days | two stores, one reader: the results MCP reads both from the login node and names the host per row; `GET /train/jobs` on the gateway lists only the shared store. A hand-run number from asteraix still has to be noted by hand wherever it is quoted ([#156](https://github.com/thodel/training-atr-models/issues/156)) |
 | `host` on a record | `asteraix` | `ubelix`, stamped by `submit_job.py` and `fanout.py` | the rules for `host: ubelix` in the service (never start, judge or cancel; 409 with a pointer to `scancel`) only apply once a UBELIX record is in the shared store, which none is today |
 | checkpoints | `~/atr-cache/checkpoints/` | `$SCRATCH/runs/checkpoints/` | a resume is only possible where the checkpoint is; a run cannot move between the places mid-way |
 | compiled corpora (artefact cache) | `~/atr-cache/artefacts/`, 100 GB budget | `$SCRATCH/expA/artefacts/`, shared by every sbatch file | the same selection is compiled once per side. A two-stage UBELIX job *claims* its entry so that stage 2 still finds it days later |
@@ -245,7 +245,9 @@ have taken since September. Each step names the place it happens.
    to register by hand, and the job ends `completed` with `promoted: false`.
 5. **Read the results, from the laptop.** `results()`, `draw()` and `job()` of
    the results MCP, or `ubelix/status.sh`. This is where the comparison of the
-   arms is made, and this is the only place it can be made today.
+   arms is made, and the same table carries asteraix's service jobs with
+   `host: asteraix`, so a kraken run on asteraix and a VLM arm on UBELIX stand
+   in one list.
 6. **Measure what the queue cannot, on asteraix.** A rescoring on another
    arm's draw (`ubelix/rescore_on_shared_draw.py` works on either side), a
    granularity evaluation, a peak-memory sample: hours, no walltime, no queue.
@@ -337,7 +339,7 @@ Two CERs are comparable only on the same draw, and the draw is a per-job file.
 | `ssh ubelix` | `srv-train`, which is the SSH alias of **idhefix** (not of asteraix, despite the name; do not rename it) | no VPN; dies when idhefix is down |
 | `ssh ubelix-direct` | direct to `submit02` | VPN |
 | `GET /train/gpu`, `/train/jobs` on the gateway, the Discord `/atr_gpu` and `/atr_jobs` commands | idhefix, proxied to asteraix | the gateway's key |
-| the results MCP (`atr-results`) | `ubelix`, then `ubelix-direct`, over SSH with the probe on stdin | the campus SSH key; runs on the laptop today |
+| the results MCP (`atr-results`) | `ubelix`, then `ubelix-direct`, over SSH with the probe on stdin; reads both job stores from there | the campus SSH key; runs on the laptop today |
 
 Two commands answer "where should the next run go" in a minute, both from
 [WHERE_A_RUN_RUNS.md](WHERE_A_RUN_RUNS.md) §6:
@@ -351,9 +353,11 @@ ssh asteraix "nvidia-smi --query-gpu=index,memory.total,memory.used,utilization.
 ```
 
 For the daily report, `queue()`, `finished(days)` and `deadlines()` of the
-results MCP replace the first of those. There is no equivalent for asteraix:
-its service answers `/health` and `/gpu` through the gateway, and its hand
-runs answer nothing.
+results MCP replace the first of those, and `live(host="asteraix")` replaces
+the second for the service's jobs: status, stage, pid, cards and the last
+progress counter, read from the record and the stage log on the share. What
+the cards hold beyond that is `/train/gpu` on the gateway, and a hand run on
+asteraix answers nothing.
 
 ## What is still open
 
@@ -362,7 +366,7 @@ In the order in which closing them changes this page:
 | Issue | What it would change here |
 |---|---|
 | [#17](https://github.com/thodel/training-atr-models/issues/17) | the trainer on asteraix submits to Slurm, watches the job, cancels with `scancel`, and **registers the result itself**. "A model's way from UBELIX to /models" becomes automatic, and a dead UBELIX job no longer stays live |
-| [#156](https://github.com/thodel/training-atr-models/issues/156) | asteraix gets the same job store as UBELIX, so that one probe reads both and a measurement on asteraix has a record |
+| [#156](https://github.com/thodel/training-atr-models/issues/156) | the probe reads both stores since 10.10.2026; what is left is a record for a hand-run measurement on asteraix, and the MCP's move from the laptop to asteraix behind tei |
 | [#171](https://github.com/thodel/training-atr-models/issues/171) | a `kraken-train.def` and arrows on UBELIX; kraken stops being asteraix-only, and the batch sweep that says where its headroom is can run |
 | [#162](https://github.com/thodel/training-atr-models/issues/162), [#163](https://github.com/thodel/training-atr-models/issues/163) | the A40-to-H100 ratio and the peak-memory table turn the placement rule from a judgement into arithmetic |
 | [#206](https://github.com/thodel/training-atr-models/issues/206) | the record says which container measured a CER, so a number from each place carries its provenance |
