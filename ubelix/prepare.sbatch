@@ -35,11 +35,17 @@
 # three times. 8 x 12 h = 5,760 is half the cap, and it does not go lower than
 # that because the longest build here took 11:15:04 (job 17795292).
 #SBATCH --time=12:00:00
-# submit.sh picks between these two by asking artefact_probe.py whether the
-# spec's corpus is already compiled (#212). A prepare that only adopts an
-# artefact is done in seconds — 7 s for each of the four olmOCR page preps on
-# 09.10.2026 — and has no business booking the wall of a from-scratch build.
-# Plain `sbatch` reads neither and gets the --time above, which is the build one.
+# A prepare that only ADOPTS a cached artefact is done in seconds — 7 s for each
+# of the four olmOCR page preps on 09.10.2026 — and has no business booking the
+# wall of a from-scratch build. Declaring ATR_TIME_CACHED is what lets submit.sh
+# ask artefact_probe.py which of the two cases this is and request the short wall
+# on a hit; it reads only that one, and anything it cannot answer keeps the
+# --time above. Plain `sbatch` reads neither and gets the --time above too, which
+# is why that one has to be the build value.
+#
+# ATR_TIME_BUILD is here so the pair can be read in one place, and it is pinned
+# to the --time directive by tests/test_ubelix_prepare_walltime.py so it cannot
+# quietly become a second, wrong answer.
 #ATR_TIME_CACHED=00:30:00
 #ATR_TIME_BUILD=12:00:00
 #SBATCH --output=/storage/homefs/%u/ubelix/logs/%x-%j.out
