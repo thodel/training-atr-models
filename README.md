@@ -37,11 +37,17 @@ flowchart TB
   venvs -- "uploads: trained models, page datasets<br/>private · by hand or auto-publish" --> hf
 ```
 
-Beschrieben in sechs Dokumenten (englisch):
+Beschrieben in acht Dokumenten (englisch):
 
 - [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — asteraix im Detail: der
   Dienst und sein Launcher, die drei venvs, der Lebenslauf eines Jobs, was
   lokal und was auf dem Share liegt, die Karten, UBELIX.
+- [`docs/ASTERAIX_AND_UBELIX.md`](docs/ASTERAIX_AND_UBELIX.md) — wie die
+  beiden Orte **zusammen** benutzt werden: wer was rechnet, was sie teilen
+  (das Share unter zwei Pfaden, der Code, der Hub) und was nicht (Job-Store,
+  Checkpoints, Registry-Schreiber, GPU-Index), ein Lauf über beide Orte vom
+  Spec bis zur Registrierung, und warum der HF-Cache heute zwei Caches in
+  einem Verzeichnis ist.
 - [`docs/WHERE_A_RUN_RUNS.md`](docs/WHERE_A_RUN_RUNS.md) — asteraix oder
   UBELIX: der Entscheidungsbaum für jede Engine, und warum die Grösse einen Lauf
   nach UBELIX drängt statt davon weg (eine A40 hat 44.42 GiB, eine H100 80 GB).

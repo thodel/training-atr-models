@@ -420,7 +420,11 @@ they start with `~`.
 `~/.cache/huggingface/hub` is a **symlink** to `hf_hub/` on the share (set on
 16.09.2026), which the separate lassberg/vlm_training project uses too. **Do
 not set `HF_HOME`.** It would bypass the symlink and download everything the
-shared cache already holds again (1.8 T on 16.09.2026).
+shared cache already holds again (1.8 T on 16.09.2026). Note that UBELIX sets
+`HF_HOME` to `hf_hub/` and therefore caches one level down, in `hf_hub/hub/`;
+the two sides do not share entries, and the entries at the level this symlink
+points at were deleted on 09.10.2026
+([ASTERAIX_AND_UBELIX.md](ASTERAIX_AND_UBELIX.md#the-research-share)).
 
 **What must not go on the share**, each learned from an incident:
 
@@ -515,7 +519,11 @@ that is the line to edit, on idhefix.
 ## UBELIX
 
 UBELIX is the university's Slurm cluster and the third place training runs. It
-has **no service**: Slurm is the supervisor.
+has **no service**: Slurm is the supervisor. This section is UBELIX as seen
+from this machine. How the two places are used together, what they share and
+what they do not, and a model's way from a Slurm job to `/models`, is in
+[ASTERAIX_AND_UBELIX.md](ASTERAIX_AND_UBELIX.md); which place a new run goes
+to is in [WHERE_A_RUN_RUNS.md](WHERE_A_RUN_RUNS.md).
 
 **Access today:** from the laptop, `ssh ubelix` jumps through `srv-train`.
 That is an SSH alias of **idhefix**, not of this machine, despite its name, and
