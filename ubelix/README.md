@@ -19,6 +19,7 @@ research share, what they do not, and how a model trained here reaches
 | `vlm-train.def` | Apptainer image: Ubuntu 24.04 + python3.12 + torch 2.8.0+cu128, mirroring `docs/idhefix-environment.md`. The repo is **not** baked in — it is bind-mounted, so code edits need no rebuild. |
 | `submit_job.py` | The one thing the service did that the runner cannot: turn a JSON `TrainRequest` into a `JobStore` record. |
 | `smoke.sbatch` | Phase 1: reproduce the Thun run on 1× RTX 4090, free QoS. |
+| `artefact_probe.py` | Asks the spec's own backend whether its corpus is already in the artefact cache, so `submit.sh` can ask for 30 minutes instead of 12 hours (#212). Runs inside the container. |
 | `report.py` | Print a finished job's status / metrics / error. |
 | `specs/*.json` | Job requests, the same body `POST /train/jobs` takes. |
 
@@ -98,6 +99,45 @@ JOB_ID=<id from stage 1> ubelix/submit.sh ubelix/train.sbatch -- \
 `submit.sh` refuses a checkout behind `origin/main` or with uncommitted changes,
 and a request above `job_gratis`'s 11,520 CPU-minutes — each has already cost a run
 (serving-atr-inference#147).
+
+### The CPU-minute cap, written out (#212)
+
+```
+cpus-per-task  x  minutes of walltime  <=  11,520        under qos job_gratis
+```
+
+Three things about that line are easy to get wrong, and each has cost a run:
+
+* It counts **only RUNNING jobs**, and for each of them the **remaining**
+  walltime, not the requested one. So the budget a new job faces moves: a train
+  stage 14 h into a 15 h allocation holds 12 x 60 = 720, not 12 x 900 = 10,800.
+* **GPU jobs are in it.** The documented stage 2 (`--cpus-per-task=12
+  --time=15:00:00`) books 10,800 CPU-minutes the moment it starts.
+* Fitting *inside* the cap is not enough — it has to fit **beside** whatever else
+  is running. `prepare.sbatch` asked for 8 x 20 h = 9,600, which is inside the
+  cap and still left only 1,920 for everything else, so it went PENDING on
+  `MaxCpuRunMinsPerUser` behind any other run of ours. Its default is now
+  **8 x 12 h = 5,760**, half the cap, and it does not go lower because the
+  longest from-scratch build here took 11:15:04 (job 17795292).
+
+**A job already waiting is freed without resubmitting it:**
+
+```bash
+scontrol update JobId=17838197 TimeLimit=12:00:00     # started within a minute
+```
+
+Lowering the limit in place is the right move rather than `scancel` and submit
+again, because **the job id survives** — and the train stage hangs off it by
+`--dependency=afterok:<prep id>`, which a new id would break.
+
+**A prepare that only adopts a cached corpus asks for 30 minutes.** `submit.sh`
+runs `ubelix/artefact_probe.py` on the spec, which computes the engine's own
+artefact key and reads the cache; on a hit it adds `--time=00:30:00` (the four
+olmOCR page preps of 09.10.2026 then took 7 s each). Every other answer keeps the
+file's 12 h: no entry, an expired one, one within a day of expiring, a `--time`
+you gave by hand, a code pin that is not HEAD, or a probe that failed. A short
+wall on a real build is a TIMEOUT; a long wall on an adoption is only a queue
+wait.
 
 **The code is pinned.** `submit.sh` exports `ATR_CODE_COMMIT` (HEAD at submission),
 and every batch file runs a git worktree of exactly that commit

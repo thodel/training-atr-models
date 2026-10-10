@@ -25,9 +25,29 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-# 8 x 20 h = 9,600 TRES minutes, inside job_gratis's MaxTRESRunMinsPU cpu=11520.
 # More cores would buy little: the work is dominated by streaming and PIL.
-#SBATCH --time=20:00:00
+#
+# THE WALLTIME HAS TO FIT BESIDE A RUNNING JOB, not just inside the cap (#212).
+# job_gratis's MaxCpuRunMinsPerUser is 11,520 CPU-minutes, counted as cpus x
+# *remaining* walltime over all RUNNING jobs of the user, GPU jobs included.
+# 8 x 20 h = 9,600 left 1,920 for everything else, so this prepare sat PENDING on
+# `MaxCpuRunMinsPerUser` behind any other run of ours and was unblocked by hand
+# three times. 8 x 12 h = 5,760 is half the cap, and it does not go lower than
+# that because the longest build here took 11:15:04 (job 17795292).
+#SBATCH --time=12:00:00
+# A prepare that only ADOPTS a cached artefact is done in seconds — 7 s for each
+# of the four olmOCR page preps on 09.10.2026 — and has no business booking the
+# wall of a from-scratch build. Declaring ATR_TIME_CACHED is what lets submit.sh
+# ask artefact_probe.py which of the two cases this is and request the short wall
+# on a hit; it reads only that one, and anything it cannot answer keeps the
+# --time above. Plain `sbatch` reads neither and gets the --time above too, which
+# is why that one has to be the build value.
+#
+# ATR_TIME_BUILD is here so the pair can be read in one place, and it is pinned
+# to the --time directive by tests/test_ubelix_prepare_walltime.py so it cannot
+# quietly become a second, wrong answer.
+#ATR_TIME_CACHED=00:30:00
+#ATR_TIME_BUILD=12:00:00
 #SBATCH --output=/storage/homefs/%u/ubelix/logs/%x-%j.out
 
 set -euo pipefail

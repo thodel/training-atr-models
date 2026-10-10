@@ -586,6 +586,16 @@ translates the paths.
   CPU-minute cap; it then **pins** the job to HEAD, and every batch file runs a
   git worktree of that commit (`ubelix/pin_code.sh`), so a queued, requeued or
   chained job runs what was submitted (serving-atr-inference#147).
+- **The CPU-minute cap is cpus × minutes ≤ 11,520 under `job_gratis`**, counted
+  over RUNNING jobs and their *remaining* walltime, GPU jobs included — so the
+  budget a new job faces moves as the others burn down, and a request has to fit
+  *beside* them, not merely inside the cap. `prepare.sbatch` asked 8 × 20 h =
+  9,600 and queued on `MaxCpuRunMinsPerUser` behind every other run; it now asks
+  8 × 12 h, and `submit.sh` lowers that to 30 minutes when `artefact_probe.py`
+  finds the spec's corpus already compiled (#212). A job already pending is
+  freed with `scontrol update JobId=<id> TimeLimit=<hh:mm:ss>` rather than
+  resubmitted, because the id survives and the train stage hangs off it by
+  `--dependency=afterok:<prep id>`.
 - **A Slurm job never writes the registry** (#17). Inside a Slurm job
   (`SLURM_JOB_ID` set) the register stage writes the weights and `metadata.json`
   and only *reads* the registry (the curated-id check): it does not disable an
