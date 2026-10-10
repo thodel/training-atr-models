@@ -194,8 +194,8 @@ def inventory(root: Path = ROOT, write: Path | None = None,
         for entry in sorted(p for p in root.iterdir() if p.is_dir()):
             record["top"][entry.name] = du(entry)
             save()
-    record["complete"] = True
-    save()
+        record["complete"] = True
+        save()
     return record
 
 
