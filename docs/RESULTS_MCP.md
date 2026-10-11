@@ -50,7 +50,7 @@ was found, and how many records it holds. A share that is not mounted reads as
 
 | tool | answers |
 |---|---|
-| `queue()` | **UBELIX:** running and pending Slurm jobs, every reason explained (`MaxCpuRunMinsPerUser`, `ReqNodeNotAvail` with the named node's state and GRES), and for a running job its last `k/n` counter and a verdict: `fits`, `at risk` (within 15 % of the wall), `will hit the wall` |
+| `queue()` | **UBELIX:** running and pending Slurm jobs, every reason explained (`MaxCpuRunMinsPerUser`, `ReqNodeNotAvail` with the named node's state and GRES), and for a running job its last `k/n` counter — from the Slurm stdout, else from the record's stage log (`stage_log`, see *Progress* below) — and a verdict: `fits`, `at risk` (within 15 % of the wall), `will hit the wall`, `unknown` with `why` |
 | `live(host)` | **both stores:** records with a runner or waiting for one (`queued` … `registering`), from the record and the stage log: status, stage, pid, cards, epoch and steps, `val_accuracy`, peak GPU memory, the last `k/n` counter in `logs/<stage>.log` (else `runner.log`), when the log last moved. asteraix's `queue`, since it has no Slurm; `host="asteraix"` filters. A dead runner leaves its record live until the service (asteraix) or `close_job` (UBELIX) closes it: read `updated_cest` and `log_modified_cest` |
 | `finished(days)` | **UBELIX:** `sacct` since `now-<days>days`; a failed job carries the cause line from the END of its log, a job under 10 s is `short_run` (a requeue that found the record finished, #153), `code_drift` lists stages that ran on another commit than the job was created with |
 | `job(job_id)` | one `job.json` from whichever store holds it, summarised, with `host`, times in Europe/Zurich, the draw fingerprint and the Slurm ids from the registration note |
@@ -58,7 +58,7 @@ was found, and how many records it holds. A share that is not mounted reads as
 | `draw(job_id)` | md5 and size of `data/val_eval.jsonl`, and every job in either store sharing it, with its host — the answer to "comparable?" (#108) |
 | `prepared()` | corpora built, GPU stage never finished, in either store; the scratch purge date of their data (null on the share); `superseded_by` when a completed job of the same `model_id` exists |
 | `deadlines()` | artefacts with expiry (7 days after `built_at` unless pinned), claimant status, `at_risk`; the 30-day scratch purge; home usage |
-| `log(slurm_job_id, lines)` | head and tail without DEBUG and progress-bar noise, `last_raw`, and notes: code pin, drift lines, cause, last progress |
+| `log(slurm_job_id, lines)` | head and tail without DEBUG and progress-bar noise, `last_raw`, and notes: code pin, drift lines, cause, last progress (with the stage-log fallback and `job_id` from the attempt line) |
 | `report(evalset, tag)` | benchmark reports on a shared set, by CER, with `load_in_4bit` visible |
 | `slurm_job(slurm_job_id)` | `scontrol show job`, the state of any node named unavailable, the log's notes; falls back to accounting once Slurm forgot the job |
 | `checkout()` | HEAD against `origin/main`, ahead/behind, dirty files of the UBELIX checkout |
@@ -67,6 +67,30 @@ Names are an interface: add tools, never rename one.
 
 Times: Slurm prints local time and is passed through. `job.json` carries UTC;
 every converted field ends in `_cest` and carries its label (`CEST`/`CET`).
+
+## Progress
+
+A `progress` field is in one of three states (#203):
+
+- `null` — no `k/n` counter in the log at all.
+- `state: found` — a counter that is the job's progress: `done`, `total`,
+  the `line` it came from and its `source`. The only state a wall projection
+  uses.
+- `state: unattributable` — the only counters come from a known false
+  source: the retry count of a hub request (`Retry 2/5`), a model load
+  (`Loading weights: 644/677`), the worktree checkout. The `line` and a `why`
+  are returned, `done` is deliberately absent, and the wall verdict is
+  `unknown` with that `why`. "Found something that looks like a counter" is
+  not "measured": on 09.10.2026 a retry count projected to "fits, 30.1 % of
+  the wall". The list of false sources is in `probe._NOT_PROGRESS`; it grows.
+
+`source` says where the counter was read: `slurm` for the job's stdout under
+`~/ubelix/logs/`, else the stage log's name (`train.log`, `runner.log`). A VLM
+run writes its step counter only to `<jobs_root>/<job_id>/logs/train.log`;
+the attempt line in the stdout (`== attempt N — job <id> (<status>)`) names the
+record, the record names its stage, and the probe reads that file when the
+stdout carries no attributable counter. The answer then also carries
+`job_id`, `stage_log` and `stage_log_modified_cest`.
 
 ## Running it
 
