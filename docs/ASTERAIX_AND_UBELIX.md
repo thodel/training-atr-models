@@ -127,7 +127,7 @@ One CIFS/GPFS filesystem, `wbkolleg_dh_1`, 12 T. Paths below are relative to
 
 | Path | Written by | Read by | Notes |
 |---|---|---|---|
-| `hf_hub/` | HF downloads from both sides | both | **two caches in one directory**, see below |
+| `hf_hub/hub/` | HF downloads from both sides | both | the one cache, since 11.10.2026; see below |
 | `training_folder/jobs/` | the asteraix service and its runners | the asteraix service; any trainer | the shared job store. 53 job directories, 1.8 TB, no purge (09.10.2026). UBELIX jobs are **not** here |
 | `training_folder/trained/MODEL_ID/` | the asteraix register stage | idhefix's engines, via `local_path` | the only place the gateway serves weights from |
 | `registry/models.yaml`, `registry/trained/*.yaml` | the gateway (curated), the asteraix register stage and gate (trained) | the gateway; asteraix for the curated-id check | one writer per file; a Slurm job never writes here |
@@ -141,39 +141,28 @@ hardlinks, `copyfile` not `copy2`, tmp-then-`os.replace` in the same directory,
 GPFS side symlinks work, which is why `fanout.py` works on `/scratch` and would
 not on `/mnt`.
 
-**The Hugging Face cache is two caches, not one.** Both sides point into
-`hf_hub/`, but not at the same level:
+**The Hugging Face cache is one cache since 11.10.2026.** Both sides read and
+write `hf_hub/hub/`: UBELIX through `HF_HOME=…/Textrecognition_Training/hf_hub`
+(`huggingface_hub` puts the cache in `HF_HOME/hub`), asteraix through the
+symlink `~/.cache/huggingface/hub -> …/hf_hub/hub`. A dataset that `prepare`
+fetched on one side is found on the other. `scripts/check_env.sh` on asteraix
+fails when the link does not end in `/hub`.
 
-| Side | Setting | Cache directory | Form |
-|---|---|---|---|
-| asteraix | `HF_HOME` unset; `~/.cache/huggingface/hub` is a symlink to `hf_hub/` | `hf_hub/` itself: `hf_hub/models--*`, `hf_hub/datasets--*` | the "old form" of [RESEARCH_STORAGE.md](RESEARCH_STORAGE.md) §0 |
-| UBELIX | `HF_HOME=…/Textrecognition_Training/hf_hub` | `hf_hub/hub/`: `hf_hub/hub/models--*`, `hf_hub/hub/datasets--*` | the current form |
-
-So a dataset `prepare` downloaded on UBELIX is not found by a job on asteraix,
-and the other way round. Both sides re-download what the other already holds.
-
-On 09.10.2026 the old form under `hf_hub/` was deleted, 59 entries and 1.83 TB,
-after a check that *the running software does not read those paths*. That check
-was made on UBELIX, where it is true. On asteraix it is the cache the symlink
-points at. **Measured on asteraix on 10.10.2026:**
-
-```
-$ readlink ~/.cache/huggingface/hub
-/mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub
-$ ls /mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub
-CACHEDIR.TAG  datasets  hub  modules  xet
-```
-
-The link ends in `hf_hub`, and no `models--*` or `datasets--*` entry is left
-at that level: `datasets`, `modules` and `xet` are what UBELIX's `HF_HOME`
-creates, `CACHEDIR.TAG` is what asteraix's hub cache left behind. So every job
-on asteraix now starts with a cold cache and refills the old form, which the
-next storage pass would delete again. The fix is to point the symlink one level
-down, at `hf_hub/hub/`, so that both sides read and write the same entries
-([#207](https://github.com/thodel/training-atr-models/issues/207)). The rule
-in [INFRASTRUCTURE.md](INFRASTRUCTURE.md#local-disk-or-the-share), *do not set
-`HF_HOME` on asteraix*, is about bypassing the share; it does not say which
-level inside the share the link should point at.
+It was not always one cache, and the history is why the check exists. From
+16.09.2026 the symlink on asteraix pointed at `hf_hub/` itself, one level up,
+so asteraix kept its entries as `hf_hub/models--*` and `hf_hub/datasets--*`,
+the "old form" of [RESEARCH_STORAGE.md](RESEARCH_STORAGE.md) §0, while UBELIX
+cached in `hf_hub/hub/`. Neither side found the other's downloads. On
+09.10.2026 the old form was deleted, 59 entries and 1.83 TB, after a check
+that *the running software does not read those paths*, which was true on
+UBELIX and not on asteraix. Measured on asteraix on 10.10.2026, the link
+still ended in `hf_hub`, and nothing but `CACHEDIR.TAG` and UBELIX's
+`datasets`, `modules` and `xet` directories was left at that level
+([#207](https://github.com/thodel/training-atr-models/issues/207)). The link
+was moved to `hf_hub/hub/` on 11.10.2026. An entry in the old form appearing
+under `hf_hub/` again means a host whose link points at the wrong level. The
+rule in [INFRASTRUCTURE.md](INFRASTRUCTURE.md#local-disk-or-the-share), *do
+not set `HF_HOME` on asteraix*, stands: it is about bypassing the share.
 
 ### The code
 
@@ -372,4 +361,3 @@ In the order in which closing them changes this page:
 | [#206](https://github.com/thodel/training-atr-models/issues/206) | the record says which container measured a CER, so a number from each place carries its provenance |
 | [#12](https://github.com/thodel/training-atr-models/issues/12) | a card per job on asteraix, two runs at once; and the only path on which asteraix holds something an H100 cannot (80 to 88.8 GiB) |
 | [#150](https://github.com/thodel/training-atr-models/issues/150) | the preemption log line says what actually happens |
-| [#207](https://github.com/thodel/training-atr-models/issues/207) | asteraix's symlink moves to `hf_hub/hub/`: one cache for both sides instead of two in one directory ([above](#the-research-share)) |
