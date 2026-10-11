@@ -12,7 +12,10 @@
 #   3. free space on / and the share
 #   4. what atr-train.service actually sets, vs. what the shell carries
 #   5. ~/.bashrc TMPDIR override that would shadow the service's TMPDIR
-#   6. the API keys: present, non-empty, and the gate's matching the gateway's
+#   6. the trainer's keys in .env: ATR_TRAIN_API_KEY (what idhefix's gateway
+#      sends), ATR_TRAIN_ALLOWED_CLIENTS, ATR_TRAIN_GATEWAY_API_KEY and
+#      ATR_TRAIN_GATEWAY_URL (what the promotion gate uses) — and the launcher's
+#      own verdict (python -m atr_training.serve --check) when the venv exists
 #
 # Exit 0 = clean.  Exit 1 = problem detected (explainers printed).
 # ──────────────────────────────────────────────────────────────────────────────
@@ -271,63 +274,90 @@ fi
 
 # ── 5. API keys ──────────────────────────────────────────────────────────────
 
-print_header "5 — API keys (gateway + promotion gate)"
+print_header "5 — The trainer's keys (.env) and the launcher's verdict"
 
 # Values are NEVER printed. This script's output gets pasted into issues; a key
 # that leaks that way has to be rotated everywhere it is configured.
-ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env"
+#
+# This box is the TRAINER, not the gateway. It never reads ATR_API_KEY (#9): the
+# gateway on idhefix holds that one. What .env here must carry is the key the
+# gateway sends on /train/* (ATR_TRAIN_API_KEY, the same name and value on both
+# hosts), the one address it may come from (ATR_TRAIN_ALLOWED_CLIENTS), and the
+# gateway's key under its own name here (ATR_TRAIN_GATEWAY_API_KEY), which the
+# promotion gate presents to /ocr. Until 11.10.2026 this section still asked for
+# ATR_API_KEY and failed on every correct asteraix .env.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${REPO_DIR}/.env"
 
 env_value() {  # $1 = variable name; empty string when absent
   [ -f "$ENV_FILE" ] || { echo ""; return; }
   grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-
 }
 
-ENV_API_KEY=$(env_value ATR_API_KEY)
-ENV_GATE_KEY=$(env_value ATR_TRAIN_GATEWAY_API_KEY)
+TRAIN_KEY=$(env_value ATR_TRAIN_API_KEY)
+ALLOWED=$(env_value ATR_TRAIN_ALLOWED_CLIENTS)
+GATE_KEY=$(env_value ATR_TRAIN_GATEWAY_API_KEY)
+GATE_URL=$(env_value ATR_TRAIN_GATEWAY_URL)
 
 if [ ! -f "$ENV_FILE" ]; then
-  fail "no .env at ${ENV_FILE} — the units load their configuration from it"
-elif [ -z "$ENV_API_KEY" ]; then
-  fail ".env has no ATR_API_KEY — the gateway will refuse every authenticated route"
+  fail "no .env at ${ENV_FILE} — the unit loads its configuration from it"
 else
-  pass ".env sets ATR_API_KEY (fingerprint $(fingerprint "$ENV_API_KEY"))"
+  if [ -z "$TRAIN_KEY" ]; then
+    fail ".env has no ATR_TRAIN_API_KEY — the launcher refuses a non-loopback bind without it"
+    info "  Generate one and set the SAME value as ATR_TRAIN_API_KEY on idhefix (OPERATIONS.md):"
+    info "    python3 -c \"import secrets; print(secrets.token_urlsafe(48))\""
+  elif [ "${#TRAIN_KEY}" -lt 32 ]; then
+    fail "ATR_TRAIN_API_KEY is shorter than 32 characters — the launcher refuses it"
+  else
+    pass ".env sets ATR_TRAIN_API_KEY (fingerprint $(fingerprint "$TRAIN_KEY"))"
+    info "  idhefix must hold the same value; compare without printing, on both hosts:"
+    info "    grep '^ATR_TRAIN_API_KEY=' .env | cut -d= -f2- | sha256sum"
+  fi
+
+  if [ -z "$ALLOWED" ]; then
+    fail ".env has no ATR_TRAIN_ALLOWED_CLIENTS — the launcher refuses a non-loopback bind"
+    info "  ufw does not filter :8204 here; the allowlist is the only source restriction."
+    info "    ATR_TRAIN_ALLOWED_CLIENTS=130.92.59.240"
+  else
+    pass "ATR_TRAIN_ALLOWED_CLIENTS = ${ALLOWED}"
+  fi
 
   # The promotion gate (#36) posts a held-out page to the gateway's /ocr. With no
-  # key it authenticates as nobody, every model registers disabled with that as
-  # the reason, and nothing is ever promoted into /models. Nothing fails loudly:
-  # the job completes, the record says "not promoted", and the cause is a blank
-  # variable set weeks earlier.
-  if [ -z "$ENV_GATE_KEY" ]; then
+  # key it authenticates as nobody, every kraken model registers disabled with
+  # that as the reason, and nothing is ever promoted into /models. Nothing fails
+  # loudly: the job completes, the record says "not promoted", and the cause is
+  # a blank variable set weeks earlier.
+  if [ -z "$GATE_KEY" ]; then
     fail ".env has no ATR_TRAIN_GATEWAY_API_KEY — the promotion gate cannot authenticate"
-    info "  Trained models will register disabled and never be promoted, silently."
-    info "    echo \"ATR_TRAIN_GATEWAY_API_KEY=\$(grep ^ATR_API_KEY= ${ENV_FILE} | cut -d= -f2-)\" >> ${ENV_FILE}"
-    info "    systemctl --user restart atr-train"
-  elif [ "$ENV_GATE_KEY" != "$ENV_API_KEY" ]; then
-    fail "ATR_TRAIN_GATEWAY_API_KEY does not match ATR_API_KEY"
-    info "  gate    fingerprint $(fingerprint "$ENV_GATE_KEY")"
-    info "  gateway fingerprint $(fingerprint "$ENV_API_KEY")"
-    info "  The gate posts to the gateway, so it must present the gateway's key."
+    info "  Trained kraken models will register disabled and never be promoted, silently."
+    info "  The value is idhefix's ATR_API_KEY; compare the hashes as above."
+  elif [ "$GATE_KEY" = "$TRAIN_KEY" ]; then
+    fail "ATR_TRAIN_GATEWAY_API_KEY equals ATR_TRAIN_API_KEY — the two keys must differ (#9)"
+    info "  A leaked inference key must not also be able to start training runs."
   else
-    pass "ATR_TRAIN_GATEWAY_API_KEY matches ATR_API_KEY"
+    pass "ATR_TRAIN_GATEWAY_API_KEY is set (fingerprint $(fingerprint "$GATE_KEY")); hash it against idhefix's ATR_API_KEY"
+  fi
+
+  if [ -z "$GATE_URL" ]; then
+    warn ".env has no ATR_TRAIN_GATEWAY_URL — the gate does not run, every model stays disabled"
+    info "    ATR_TRAIN_GATEWAY_URL=http://130.92.59.240:8200"
+  else
+    pass "ATR_TRAIN_GATEWAY_URL = ${GATE_URL}"
   fi
 fi
 
-# The shell's copy. This is the one that bit on 2026-08-11: ATR_API_KEY was unset
-# interactively, /health still answered (it is public), /models returned
-# {"detail":"missing or invalid X-API-Key"} which jq read as null, and a gate key
-# exported from the empty variable would have been empty too.
-SHELL_API_KEY="${ATR_API_KEY:-}"
-if [ -z "$SHELL_API_KEY" ]; then
-  warn "ATR_API_KEY is not set in this shell — authenticated curl calls will 401"
-  info "  /health is public and answers anyway, so the shell looks fine until"
-  info "  /models returns null. Load it from .env before running anything by hand:"
-  info "    export ATR_API_KEY=\$(grep ^ATR_API_KEY= ${ENV_FILE} | cut -d= -f2-)"
-elif [ -n "$ENV_API_KEY" ] && [ "$SHELL_API_KEY" != "$ENV_API_KEY" ]; then
-  warn "shell ATR_API_KEY differs from .env ($(fingerprint "$SHELL_API_KEY") vs $(fingerprint "$ENV_API_KEY"))"
-  info "  Commands you run by hand are talking to the gateway as someone else"
-  info "  than the services are."
+# The launcher's own verdict is the one that decides whether the unit starts
+# (exit 2 = refused). It reads .env from the working directory, so run it there.
+LAUNCHER_PY="${REPO_DIR}/.venvs/kraken-train/bin/python"
+if [ -x "$LAUNCHER_PY" ]; then
+  if LAUNCHER_OUT=$(cd "$REPO_DIR" && PYTHONPATH="${REPO_DIR}/src" "$LAUNCHER_PY" -m atr_training.serve --check --host 0.0.0.0 2>&1); then
+    pass "launcher check: the unit would start (python -m atr_training.serve --check)"
+  else
+    fail "launcher check refused the configuration:"
+    echo "$LAUNCHER_OUT" | tail -5 | sed 's/^/        /'
+  fi
 else
-  pass "shell ATR_API_KEY matches .env"
+  warn "no ${LAUNCHER_PY} — the launcher's own check was skipped (bash scripts/make_venvs.sh)"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
