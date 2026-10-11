@@ -36,7 +36,28 @@ INSTRUCTIONS = (
 )
 
 
-def build_server(transport: Transport | None = None) -> Any:
+def transport_security(public_host: str | None) -> Any:
+    """The Host headers the streamable HTTP transport accepts.
+
+    The SDK's DNS-rebinding protection allows only loopback Hosts by default.
+    Behind nginx the header says ``tei.dh.unibe.ch``, and every proxied request
+    came back ``421 Misdirected Request`` (11.10.2026, #214 A4). Naming the
+    public host keeps the protection on and lets that one name through;
+    without a public host the answer is None and the SDK default stands.
+    """
+    if not public_host:
+        return None
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[public_host, f"{public_host}:*", "127.0.0.1:*", "localhost:*"],
+        allowed_origins=[f"https://{public_host}", f"http://{public_host}",
+                         "http://127.0.0.1:*", "http://localhost:*"],
+    )
+
+
+def build_server(transport: Transport | None = None, public_host: str | None = None) -> Any:
     link = transport or SshTransport()
 
     def ask(cmd: str, **args: Any) -> dict[str, Any]:
@@ -50,10 +71,12 @@ def build_server(transport: Transport | None = None) -> Any:
     # serving the 2026-07-28 protocol; the initialize handshake is not accepted",
     # 07.10.2026). The 1.x line negotiates a 2025 revision and connects. The tool
     # API is the same under both names, so the server is written once.
+    # 2.x takes the transport security in run(), not here: __main__ passes it.
     if SERVER_GENERATION == 2:
         server = _Server(name="atr-results", version="1.0.0", instructions=INSTRUCTIONS)
     else:
-        server = _Server(name="atr-results", instructions=INSTRUCTIONS)
+        server = _Server(name="atr-results", instructions=INSTRUCTIONS,
+                         transport_security=transport_security(public_host))
 
     @server.tool()
     def queue() -> dict:

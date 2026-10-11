@@ -107,14 +107,31 @@ uv run --extra mcp python -m atr_results_mcp --call queue
 uv run --extra mcp python -m atr_results_mcp --call job '{"job_id": "20260930T170315Z-ladder-xix-gemma4-12b"}'
 ```
 
-On tei behind nginx (#156), as streamable HTTP mounted at its public path:
+Behind tei (#214), as streamable HTTP mounted at its public path. The process
+runs on asteraix as the user unit `atr-results-mcp.service`, from its own
+checkout `~/Repo/atr-results-mcp` and venv `~/.venvs/atr-results-mcp` (the
+training checkout is never pulled under a running job):
 
 ```bash
-python -m atr_results_mcp --http --port 8012 --path /mcp/atr-results/mcp
+python -m atr_results_mcp --http --host 127.0.0.1 --port 8013 --path /mcp/atr-results/mcp --public-host tei.dh.unibe.ch
 ```
 
-That deployment needs an SSH key from the serving box to submit02, which does
-not exist yet (#156 lists it); until then the laptop runs it.
+`--public-host` names the Host header nginx forwards. The SDK's DNS-rebinding
+protection allows only loopback Hosts by default, and without the flag every
+proxied request answers `421 Misdirected Request`; the flag keeps the
+protection on and lets that one name through. Port 8013 because 8012 is taken
+on tei and the tunnel maps the same number on both boxes.
+
+The chain: nginx `location /mcp/atr-results/mcp` (`auth_basic`, user
+`atr-results`, key in `/etc/nginx/.htpasswd-atr-results`) → `127.0.0.1:8013`
+on tei → `mcp-tunnel-asteraix@8013` (dh user unit, key restricted on asteraix
+to `permitopen="127.0.0.1:8013"` with `command="/bin/false"`) → the unit on
+asteraix → `ssh ubelix-direct` with `~/.ssh/id_ed25519_ubelix`, whose
+`authorized_keys` line on UBELIX forces `~/ubelix/atr_results_probe_only.sh`:
+only `python3 - <cmd> <json>` passes, everything else is refused and logged.
+
+Update on asteraix: `git -C ~/Repo/atr-results-mcp pull --ff-only &&
+systemctl --user restart atr-results-mcp`. Nothing on UBELIX needs updating.
 
 ## What it does not do
 
