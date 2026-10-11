@@ -73,7 +73,11 @@ __all__ = [
 DEFAULT_ORG = "dh-unibe"
 
 #: Linked from every card, so a reader can find how the weights were produced.
-PROJECT_URL = "https://github.com/thodel/serving-atr-inference"
+#: **This repository, not the serving one.** The training service moved out of
+#: `serving-atr-inference` on 16.09.2026 and its last line left with
+#: serving-atr-inference#207 — a card that sends a reader there sends them to a
+#: repository where the code it describes no longer exists.
+PROJECT_URL = "https://github.com/thodel/training-atr-models"
 
 METADATA_FILENAME = "metadata.json"
 CARD_FILENAME = "README.md"
@@ -564,9 +568,9 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "",
         f"# {model.model_id}",
         "",
-        f"Handwritten-text-recognition model trained on the [`serving-atr-inference`]"
-        f"({PROJECT_URL}) training service. These are the weights of the **best "
-        "validation checkpoint** of the run below — not its last epoch.",
+        f"Handwritten-text-recognition model trained with "
+        f"[`training-atr-models`]({PROJECT_URL}). These are the weights of the "
+        "**best validation checkpoint** of the run below — not its last epoch.",
         "",
         *_corpus_defects(model),
         "## Evaluation",
@@ -575,7 +579,12 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "|---|---|",
         *([f"| benchmark CER | {_pct(metrics.get('benchmark_cer'))} |",
           f"| benchmark WER | {_pct(metrics.get('benchmark_wer'))} |",
-          f"| benchmark samples | {_plain(metrics.get('benchmark_samples'))} |"]
+          # NOT "samples": the kraken path fills this from `ketos test`'s own
+          # character total (116,143 for a 2,749-line benchmark — the lines are
+          # 2,751 in the set and 2,749 after extraction). Labelled "samples" the
+          # card stated a count forty times too high, which is the class of
+          # mistake #101 is about, one field over.
+          f"| benchmark characters | {_plain(metrics.get('benchmark_samples'))} |"]
            if isinstance(metrics.get("benchmark_cer"), (int, float)) else []),
         f"| split CER | {_pct(metrics.get('cer'))} |",
         f"| split WER | {_pct(metrics.get('wer'))} |",
@@ -645,9 +654,17 @@ def _where_measured(model: TrainedModel) -> list[str]:
     note = metrics.get("note")
     if measured_on:
         # A benchmark was run — this is the primary quality claim.
-        lines = [f"Measured on **{measured_on}** (held-out documents not in training). "
-                 "The split score below is a secondary sanity check on the same data "
-                 "the model trained on."]
+        # What the split is depends on the request, so the card must not claim it.
+        # A corpus with `eval_projects` holds whole projects out; one without them
+        # takes a seeded page split inside the training projects. Saying "the same
+        # data the model trained on" was wrong for the first kind, and it is the
+        # first kind that carries the interesting number — the gap between split
+        # and benchmark is then a statement about unseen HANDS (#164: 3.12 %
+        # against 11.18 %, a factor of 3.6).
+        lines = [f"Measured on **{measured_on}** (held-out documents not in "
+                 "training). The split score below is this run's own validation "
+                 "score; what that split was is in **Training data** per corpus, "
+                 "and it is a different set from this benchmark either way."]
         if note:
             lines += ["", str(note)]
         return lines

@@ -634,9 +634,15 @@ def test_a_metric_measured_elsewhere_says_so_on_the_card(tmp_path: Path):
     card = card_for(tmp_path, meta)
 
     assert "german_test.arrow" in card
-    assert "secondary sanity check on the same data" in card
     assert "page-level and seeded" not in card
     assert "seed 20260810" in card
+    # And it must not say what that split WAS. The sentence here used to read
+    # "a secondary sanity check on the same data the model trained on", which is
+    # wrong for a request with `eval_projects`: those hold whole projects out, and
+    # the gap between split and benchmark is then about unseen hands rather than
+    # about leakage (#164). The card points at the per-corpus section instead.
+    assert "the same data the model trained on" not in card
+    assert "this run's own validation score" in card
 
 
 def test_without_that_field_the_card_is_unchanged(tmp_path: Path):
