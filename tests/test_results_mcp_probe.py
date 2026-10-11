@@ -197,9 +197,98 @@ def test_the_cause_comes_from_the_last_attempt_not_the_first():
 
 
 def test_progress_ignores_the_worktree_checkout_counter():
-    assert probe.last_progress(["Updating files: 100% (239/239), done."]) is None
+    only_checkout = probe.last_progress(["Updating files: 100% (239/239), done."])
+    assert only_checkout["state"] == "unattributable" and "done" not in only_checkout
     found = probe.last_progress(["Updating files: 100% (239/239), done.", "2350/2751"])
-    assert found == {"done": 2350, "total": 2751, "line": "2350/2751"}
+    assert found == {"state": "found", "done": 2350, "total": 2751, "line": "2350/2751",
+                     "source": None}
+    assert probe.last_progress(["nothing here"]) is None
+
+
+def test_a_retry_counter_is_not_progress_and_does_not_project():
+    """09.10.2026: `Retrying in 2s [Retry 2/5].` in the prepare log of 17795292 was
+    read as 2/5 and projected to "fits, 30.1 % of the wall" — a number that looks
+    measured and is not. The same for a model load that dies in OOM at
+    `Loading weights: 644/677` (17611939). Found-but-not-attributable is a third
+    state, and only `found` may feed the projection (#203)."""
+    retry = probe.last_progress(["Streaming x", "Retrying in 2s [Retry 2/5]."])
+    assert retry["state"] == "unattributable"
+    assert "done" not in retry and "Retry" in retry["why"]
+    wall = probe.judge_wall(8682, 72000, retry)
+    assert wall["verdict"] == "unknown" and "projected_total_s" not in wall
+    assert wall["why"] == ("the last counter is not progress: 2/5 is a known non-progress "
+                           "counter (Retrying in)")
+    shards = probe.last_progress(["Loading weights: 644/677 [00:40<00:02, 15.9it/s]"])
+    assert shards["state"] == "unattributable" and "Loading weights" in shards["why"]
+    # A real counter further up still wins over a later retry line.
+    real = probe.last_progress(["streaming pages 37/1640", "Retrying in 1s [Retry 1/5]."])
+    assert real["state"] == "found" and real["done"] == 37
+
+
+VLM_TRAIN_LOG = (
+    "{'loss': 0.7012, 'grad_norm': 1.2, 'learning_rate': 1.1e-04, 'epoch': 0.45}\r"
+    " 45%|████▌     | 8622/19162 [5:12:33<6:22:10, 2.18s/it]\r"
+    " 45%|████▌     | 8623/19162 [5:12:35<6:22:08, 2.18s/it]"
+)
+
+
+def test_queue_reads_a_vlm_run_from_its_train_log(cluster):
+    """A VLM run writes its steps to <job>/logs/train.log and nothing to the Slurm
+    stdout after the attempt line. On 09.10.2026 a run at 100 % GPU and step
+    19162/19162 read as "no progress counter in the log" (#203). The attempt line
+    names the record, the record names the stage, the stage names the file."""
+    job_dir = write_job(cluster.scratch, "20260925T045500Z-ladder-med-qwen35-27b",
+                        status="training", stage="train", cer=None, draw=None, finished=None)
+    (job_dir / "logs").mkdir()
+    (job_dir / "logs" / "train.log").write_text(VLM_TRAIN_LOG)
+    (cluster.logs / "fedmin1-17488077.out").write_text(
+        "== code: pinned to c19e1ca 2026-10-09 x\n"
+        "Updating files: 100% (299/299), done.\n"
+        "== attempt 2 — job 20260925T045500Z-ladder-med-qwen35-27b (training) on gnode34 "
+        "2026-10-09T14:00:15+02:00\n"
+        "Retrying in 2s [Retry 2/5].\n")
+    run = canned({"squeue": SQUEUE, "sinfo": SINFO})
+    row = {j["slurm_job_id"]: j for j in probe.queue(run, cluster)["jobs"]}["17488077"]
+    assert row["job_id"] == "20260925T045500Z-ladder-med-qwen35-27b"
+    assert row["stage_log"].endswith("logs/train.log") and row["stage_log_modified_cest"]
+    assert row["progress"]["source"] == "train.log"
+    assert row["progress"]["state"] == "found"
+    assert (row["progress"]["done"], row["progress"]["total"]) == (8623, 19162)
+    # 50:35 elapsed at 8623/19162 projects to ~1 h 52 of 3 h.
+    assert row["wall"]["verdict"] == "fits"
+    assert row["wall"]["projected_total_s"] == int(3035 * 19162 / 8623)
+
+
+def test_queue_says_when_the_only_counter_is_a_retry(cluster):
+    """No stage log to fall back on, and the stdout's last counter is a retry:
+    the verdict is unknown and `why` says what was found, so the "unknown"
+    invites a look instead of a made-up "fits"."""
+    (cluster.logs / "fedmin1-17488077.out").write_text(
+        "== attempt 1 — job 20261009T101216Z-nope (preparing) on cnode01\n"
+        "Retrying in 2s [Retry 2/5].\n")
+    row = {j["slurm_job_id"]: j for j in probe.queue(canned({"squeue": SQUEUE, "sinfo": SINFO}), cluster)["jobs"]}
+    fedmin = row["17488077"]
+    assert fedmin["progress"]["state"] == "unattributable"
+    assert fedmin["progress"]["source"] == "slurm"
+    assert fedmin["wall"]["verdict"] == "unknown"
+    assert "not progress" in fedmin["wall"]["why"] and "Retry" in fedmin["wall"]["why"]
+    assert "stage_log" not in fedmin  # no record of that id: nothing invented
+
+
+def test_the_stdout_counter_wins_when_it_is_real(cluster):
+    """A cropping job writes its own counter to stdout; the stage log is not
+    consulted for a counter that is already attributable."""
+    job_dir = write_job(cluster.scratch, "20260925T045500Z-ladder-med-qwen35-27b",
+                        status="training", stage="train", cer=None, draw=None, finished=None)
+    (job_dir / "logs").mkdir()
+    (job_dir / "logs" / "train.log").write_text(VLM_TRAIN_LOG)
+    (cluster.logs / "fedmin1-17488077.out").write_text(
+        "== attempt 1 — job 20260925T045500Z-ladder-med-qwen35-27b (training) on gnode34\n"
+        "2350/2751\n")
+    row = {j["slurm_job_id"]: j for j in probe.queue(canned({"squeue": SQUEUE, "sinfo": SINFO}), cluster)["jobs"]}
+    assert row["17488077"]["progress"]["source"] == "slurm"
+    assert row["17488077"]["progress"]["done"] == 2350
+    assert "stage_log" not in row["17488077"]
 
 
 def test_progress_reads_a_tqdm_bar_and_skips_dates():
@@ -420,7 +509,8 @@ def test_live_reads_asteraix_from_the_record_and_the_stage_log(cluster):
     assert row["stage"] == "train" and row["pid"] == 41213 and row["gpus"] == [1]
     assert row["epoch"] == 3 and row["epochs"] == 50 and row["total_steps"] == 12000
     assert row["peak_gpu_mib"] == {"gpu1": {"own_mib": 26773}}
-    assert row["progress"] == {"done": 1200, "total": 4000, "line": "1200/4000"}
+    assert row["progress"] == {"state": "found", "done": 1200, "total": 4000,
+                               "line": "1200/4000", "source": "train.log"}
     assert row["log"].endswith("logs/train.log") and row["log_modified_cest"]
     assert row["updated_cest"] == "2026-10-10 09:58 CEST"
 

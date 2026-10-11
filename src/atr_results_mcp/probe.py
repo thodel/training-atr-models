@@ -199,9 +199,17 @@ def slurm_seconds(text: str) -> Optional[int]:
 _NOISE = re.compile(r"\| DEBUG +\||Loading weights:|Downloading data:|Generating train split:"
                     r"|Loading checkpoint shards:|^\s*\d+/\d+\s*$")
 _PROGRESS = re.compile(r"(?<![\d:\-/.])(\d+)/(\d+)(?![\d:\-/.])")
-#: ``k/n`` counters that are not the job's progress: git checking out the pinned
-#: worktree at the start of every attempt.
-_NOT_PROGRESS = re.compile(r"Updating files:|Preparing worktree|Checking out files:")
+#: ``k/n`` counters that are not the job's progress. This is a list of KNOWN
+#: false sources, and it grows: git checking out the pinned worktree at the start
+#: of every attempt; the retry counter of a hub request that timed out (read as
+#: "2/5, fits" on 09.10.2026, #203); the shard counter of a model load (the last
+#: "progress" of a job that died in OOM while loading, 17611939).
+_NOT_PROGRESS = re.compile(r"Updating files:|Preparing worktree|Checking out files:"
+                           r"|Retry \d+/\d+|Retrying in|Loading weights:"
+                           r"|Loading checkpoint shards:")
+#: The attempt line every ``*.sbatch`` prints: names the record a Slurm job runs,
+#: which is how the Slurm log leads to ``<jobs_root>/<job_id>/logs/<stage>.log``.
+_ATTEMPT = re.compile(r"== attempt \d+ — job (\S+) \((\w+)\)")
 _DRIFT = re.compile(r"stage \w+: running [0-9a-f]+, but the job was created with [0-9a-f]+")
 _CODE = re.compile(r"^== code: .*")
 _CAUSES = [
@@ -251,18 +259,78 @@ def _strip_noise(lines: List[str]) -> List[str]:
     return [line for line in lines if not _NOISE.search(line)]
 
 
-def last_progress(lines: List[str]) -> Optional[Dict[str, Any]]:
-    """The last ``k/n`` counter in the lines, with the line it came from."""
+def last_progress(lines: List[str], source: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """The last ``k/n`` counter in the lines, in one of three states (#203).
+
+    ``None``: no counter at all. ``state: found``: a counter that is the job's
+    progress, with ``done``/``total`` and the line — the only state a wall
+    projection may use. ``state: unattributable``: the only counters are from a
+    known false source (a retry count, a shard load, the worktree checkout);
+    the line is returned so a reader can see what was there, and ``done`` is
+    deliberately absent. "Found something that looks like it" is not "measured".
+    ``source`` names the log the counter came from.
+    """
+    rejected = None
     for line in reversed(lines):
-        if _NOT_PROGRESS.search(line):
-            continue
         found = _PROGRESS.findall(line)
         if not found:
             continue
         done, total = (int(x) for x in found[-1])
-        if total > 1 and done <= total:
-            return {"done": done, "total": total, "line": line.strip()[:200]}
+        if not (total > 1 and done <= total):
+            continue
+        if _NOT_PROGRESS.search(line):
+            if rejected is None:
+                match = _NOT_PROGRESS.search(line)
+                rejected = {"state": "unattributable", "line": line.strip()[:200],
+                            "source": source,
+                            "why": "%d/%d is a known non-progress counter (%s)"
+                                   % (done, total, match.group(0).strip(" :"))}
+            continue
+        return {"state": "found", "done": done, "total": total,
+                "line": line.strip()[:200], "source": source}
+    return rejected
+
+
+def _attempt_in(lines: List[str]) -> Optional[Tuple[str, str]]:
+    """``(job_id, status)`` of the LAST attempt line: a requeued job appends."""
+    for line in reversed(lines):
+        match = _ATTEMPT.search(line)
+        if match:
+            return match.group(1), match.group(2)
     return None
+
+
+def slurm_progress(paths: "Paths", edges: Dict[str, Any]) -> Dict[str, Any]:
+    """Progress of a Slurm job: from its stdout, else from the stage log.
+
+    A VLM run writes its step counter to ``<jobs_root>/<job_id>/logs/train.log``
+    and nothing to the Slurm stdout after the attempt line; read only there, a
+    healthy run at 100 % GPU looked like "no progress counter" (#203). The
+    attempt line in the stdout names the record, the record names its stage,
+    and :func:`_stage_log` names the file. The stdout wins when it carries a
+    counter of its own (cropping and dataset jobs write theirs there).
+    """
+    progress = last_progress(edges["tail"], source="slurm")
+    answer: Dict[str, Any] = {"progress": progress}
+    attempt = _attempt_in(edges["tail"]) or _attempt_in(edges["head"])
+    if attempt is None:
+        return answer
+    job_id = attempt[0]
+    answer["job_id"] = job_id
+    if progress is not None and progress["state"] == "found":
+        return answer
+    job_dir, record = find_job(paths, job_id)
+    if job_dir is None or record is None:
+        return answer
+    stage_log = _stage_log(job_dir, record.get("stage"))
+    if stage_log is None:
+        return answer
+    answer["stage_log"] = str(stage_log)
+    answer["stage_log_modified_cest"] = epoch_to_cest(stage_log.stat().st_mtime)
+    from_stage = last_progress(read_log_edges(stage_log)["tail"], source=stage_log.name)
+    if from_stage is not None and (progress is None or from_stage["state"] == "found"):
+        answer["progress"] = from_stage
+    return answer
 
 
 def log_notes(head: List[str], tail: List[str]) -> Dict[str, Any]:
@@ -468,7 +536,14 @@ def node_states(run: Runner, nodes: List[str]) -> List[Dict[str, str]]:
 
 def judge_wall(elapsed: Optional[int], limit: Optional[int],
                progress: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Will a running job finish inside its wall? Projected from its progress line."""
+    """Will a running job finish inside its wall? Projected from its progress line.
+
+    Only a counter in state ``found`` projects. An unattributable one says so in
+    ``why`` — "unknown" invites a look, a made-up "fits" does not (#203).
+    """
+    if progress and progress.get("state") == "unattributable":
+        return {"verdict": "unknown",
+                "why": "the last counter is not progress: %s" % progress.get("why")}
     if not elapsed or not limit or not progress or not progress.get("done"):
         return {"verdict": "unknown", "why": "no progress counter in the log"}
     projected = elapsed * progress["total"] / float(progress["done"])
@@ -509,9 +584,10 @@ def queue(run: Runner, paths: Paths) -> Dict[str, Any]:
             log = find_log(paths, row.get("JobID", ""))
             progress = None
             if log is not None:
-                edges = read_log_edges(log)
-                progress = last_progress(edges["tail"])
                 entry["log"] = str(log)
+                found = slurm_progress(paths, read_log_edges(log))
+                progress = found.pop("progress")
+                entry.update(found)
             entry["progress"] = progress
             entry["wall"] = judge_wall(slurm_seconds(row.get("TimeUsed", "")),
                                        slurm_seconds(row.get("TimeLimit", "")), progress)
@@ -562,7 +638,7 @@ def finished(run: Runner, paths: Paths, days: int = 2) -> Dict[str, Any]:
             entry["log"] = str(log)
             entry["cause"] = notes["cause"]
             entry["code_drift"] = notes["code_drift"]
-            entry["progress"] = last_progress(edges["tail"])
+            entry.update(slurm_progress(paths, edges))
         if entry["short_run"]:
             entry["note"] = ("%d s is not a run: a requeue that found the record finished, "
                              "or a refusal before the first step; read cause" % elapsed)
@@ -712,7 +788,7 @@ def live(paths: Paths, host: Optional[str] = None) -> Dict[str, Any]:
         log_modified = None
         if log_path is not None:
             edges = read_log_edges(log_path)
-            counter = last_progress(edges["tail"])
+            counter = last_progress(edges["tail"], source=log_path.name)
             log_modified = epoch_to_cest(log_path.stat().st_mtime)
         rows.append({
             "id": summary["id"], "host": summary["host"], "store": summary["store"],
@@ -797,7 +873,7 @@ def log(paths: Paths, slurm_job_id: str, lines: int = 40) -> Dict[str, Any]:
     head = _strip_noise(edges["head"])[:lines]
     tail = _strip_noise(edges["tail"])[-lines:]
     notes = log_notes(edges["head"], edges["tail"])
-    notes["progress"] = last_progress(edges["tail"])
+    notes.update(slurm_progress(paths, edges))
     # A log that is nothing but progress bars at its end filters to an empty tail;
     # the last raw lines still say where the job is.
     last_raw = [line.strip()[:200] for line in edges["tail"][-3:] if line.strip()]
@@ -867,7 +943,7 @@ def slurm_job(run: Runner, paths: Paths, slurm_job_id: str) -> Dict[str, Any]:
         edges = read_log_edges(log_path)
         entry["log"] = str(log_path)
         entry["notes"] = log_notes(edges["head"], edges["tail"])
-        entry["progress"] = last_progress(edges["tail"])
+        entry.update(slurm_progress(paths, edges))
     return entry
 
 

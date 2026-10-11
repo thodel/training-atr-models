@@ -59,8 +59,11 @@ def build_server(transport: Transport | None = None) -> Any:
     def queue() -> dict:
         """Running and pending Slurm jobs of the training user, with the reason a
         pending job waits (explained), and for a running job its last progress
-        counter and a verdict whether it fits its wall (fits / at risk / will hit
-        the wall; at risk means within 15 % of the limit)."""
+        counter (from the Slurm stdout, else from the record's stage log; its
+        source and state are named, and a counter from a known false source such
+        as a retry count is `unattributable` and never projected) and a verdict
+        whether it fits its wall (fits / at risk / will hit the wall / unknown
+        with why; at risk means within 15 % of the limit)."""
         return ask("queue")
 
     @server.tool()
