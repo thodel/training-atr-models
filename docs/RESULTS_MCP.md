@@ -50,7 +50,7 @@ was found, and how many records it holds. A share that is not mounted reads as
 
 | tool | answers |
 |---|---|
-| `queue()` | **UBELIX:** running and pending Slurm jobs, every reason explained (`MaxCpuRunMinsPerUser`, `ReqNodeNotAvail` with the named node's state and GRES), and for a running job its last `k/n` counter — from the Slurm stdout, else from the record's stage log (`stage_log`, see *Progress* below) — and a verdict: `fits`, `at risk` (within 15 % of the wall), `will hit the wall`, `unknown` with `why` |
+| `queue()` | **UBELIX:** running and pending Slurm jobs, every reason explained (`MaxCpuRunMinsPerUser`, `ReqNodeNotAvail` with the named node's state and GRES), and for a running job its last `k/n` counter — from the Slurm stdout, else from the record's stage log (`stage_log`, see *Progress* below) — and a verdict: `fits`, `at risk` (within 15 % of the wall), `will hit the wall`, `unknown` — with the sum written out in `why`, the stages still ahead added from a measured sibling (`following`, see *The wall* below) |
 | `live(host)` | **both stores:** records with a runner or waiting for one (`queued` … `registering`), from the record and the stage log: status, stage, pid, cards, epoch and steps, `val_accuracy`, peak GPU memory, the last `k/n` counter in `logs/<stage>.log` (else `runner.log`), when the log last moved. asteraix's `queue`, since it has no Slurm; `host="asteraix"` filters. A dead runner leaves its record live until the service (asteraix) or `close_job` (UBELIX) closes it: read `updated_cest` and `log_modified_cest` |
 | `finished(days)` | **UBELIX:** `sacct` since `now-<days>days`; a failed job carries the cause line from the END of its log, a job under 10 s is `short_run` (a requeue that found the record finished, #153), `code_drift` lists stages that ran on another commit than the job was created with |
 | `job(job_id)` | one `job.json` from whichever store holds it, summarised, with `host`, times in Europe/Zurich, the draw fingerprint and the Slurm ids from the registration note |
@@ -91,6 +91,31 @@ the attempt line in the stdout (`== attempt N — job <id> (<status>)`) names th
 record, the record names its stage, and the probe reads that file when the
 stdout carries no attributable counter. The answer then also carries
 `job_id`, `stage_log` and `stage_log_modified_cest`.
+
+## The wall
+
+`wall.why` writes the sum out, so a verdict is checkable without the box
+(#216):
+
+```
+train: 56577 s + rest 18052 s (tqdm 10321/13704) + test ≈ 420 s + register ≈ 1 s (from 20260925T045500Z-ladder-med-qwen35-27b) = 75050 s of 86400
+```
+
+- **The rest of the running stage** is tqdm's own `<remaining` when the
+  counter line carries one (`method: tqdm`), else `elapsed × (total − done) /
+  done` (`method: ratio`). After a resume the HF trainer's bar starts at the
+  checkpoint's `global_step`: `done` holds earlier attempts' steps, `elapsed`
+  only this one, and the ratio comes out too small. tqdm's estimate is from
+  this attempt's rate and is the one to trust.
+- **The stages still ahead in the same wall** (`test` and `register` after
+  `train`, `compile` after `prepare`) are added from a measured sibling: the
+  most recently completed job of the same granularity in the same store, of
+  the same base model when one exists, with the durations from its
+  `stages[]`. `following` names that job (`from`, `match`, `seconds`). Nothing
+  is estimated: without a sibling, `uncounted_stages` and `why` say which
+  stages the sum is short of, and a sum above 70 % of the wall is `at risk`,
+  not `fits`. The TIMEOUT of 05.10.2026 fell in a page job's test stage, which
+  takes about an hour; a `fits` from the `train` counter alone was wrong.
 
 ## Running it
 
