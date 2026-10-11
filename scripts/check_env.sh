@@ -8,7 +8,8 @@
 #
 # What it checks:
 #   1. effective TMPDIR / HF_HOME and their filesystem types  (network = FAIL)
-#   2. whether ~/.cache/huggingface/hub is on the research share
+#   2. whether ~/.cache/huggingface/hub is on the research share, and at the
+#      level UBELIX caches at (…/hf_hub/hub, not …/hf_hub; #207)
 #   3. free space on / and the share
 #   4. what atr-train.service actually sets, vs. what the shell carries
 #   5. ~/.bashrc TMPDIR override that would shadow the service's TMPDIR
@@ -135,18 +136,42 @@ fi
 
 # HF hub cache — the symlink that matters
 HF_HUB_LINK="$HOME/.cache/huggingface/hub"
-echo "  ~/.cache/huggingface/hub → $(readlink -f "$HF_HUB_LINK" 2>/dev/null || echo '(broken or missing)')"
+HF_HUB_TARGET=$(readlink -f "$HF_HUB_LINK" 2>/dev/null || echo "")
+echo "  ~/.cache/huggingface/hub → ${HF_HUB_TARGET:-(broken or missing)}"
 HF_HUB_FS=$(fs_type "$HF_HUB_LINK" 2>/dev/null)
-if is_network_fs "$HF_HUB_FS"; then
+if [ ! -e "$HF_HUB_LINK" ]; then
+  warn "hub cache symlink does not exist yet"
+elif is_network_fs "$HF_HUB_FS"; then
   warn "hub cache resolves to a network filesystem (${HF_HUB_FS}) — downloads go there"
   info "  the service deliberately avoids HF_HOME to prevent this; if you set it"
   info "  in ~/.bashrc, your interactive commands will re-download what the service"
   info "  already cached (and fill the share with 16 GB per base model)"
-elif [ ! -e "$HF_HUB_LINK" ]; then
-  warn "hub cache symlink does not exist yet"
 else
   pass "hub cache is on ${HF_HUB_FS}"
 fi
+
+# The level inside the share (#207). UBELIX sets HF_HOME to …/hf_hub and
+# huggingface_hub caches in HF_HOME/hub, so the one directory both sides share
+# is …/hf_hub/hub. A link that ends in …/hf_hub keeps a second cache in the
+# old layout one level up, which UBELIX never reads and which the storage pass
+# deletes as "old form" — on 09.10.2026 it took asteraix's whole cache with it.
+case "$HF_HUB_TARGET" in
+  */hf_hub)
+    fail "hub cache symlink points at …/hf_hub, one level above the cache UBELIX uses"
+    info "  nothing of UBELIX's downloads is found here, and entries written here are"
+    info "  the 'old form' the storage pass removes.  Fix (when no job is running):"
+    info "    ln -sfn ${HF_HUB_TARGET}/hub ~/.cache/huggingface/hub"
+    ;;
+  */hf_hub/hub)
+    pass "hub cache symlink ends in hf_hub/hub — the level UBELIX caches at"
+    ;;
+  "")
+    ;;
+  *)
+    warn "hub cache resolves to ${HF_HUB_TARGET}, not under the share's hf_hub/hub"
+    info "  the shared cache both machines use is …/Textrecognition_Training/hf_hub/hub"
+    ;;
+esac
 
 # ── 2. Free disk space ───────────────────────────────────────────────────────
 
