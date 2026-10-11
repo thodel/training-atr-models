@@ -62,8 +62,11 @@ def build_server(transport: Transport | None = None) -> Any:
         counter (from the Slurm stdout, else from the record's stage log; its
         source and state are named, and a counter from a known false source such
         as a retry count is `unattributable` and never projected) and a verdict
-        whether it fits its wall (fits / at risk / will hit the wall / unknown
-        with why; at risk means within 15 % of the limit)."""
+        whether it fits its wall (fits / at risk / will hit the wall / unknown;
+        at risk means within 15 % of the limit). `wall.why` writes the sum out:
+        the rest of the running stage from tqdm's estimate or the ratio, plus
+        the stages still ahead (test after train) measured on a completed
+        sibling named in `following`; without one, `uncounted_stages` says so."""
         return ask("queue")
 
     @server.tool()

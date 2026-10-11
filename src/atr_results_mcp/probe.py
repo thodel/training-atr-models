@@ -210,6 +210,9 @@ _NOT_PROGRESS = re.compile(r"Updating files:|Preparing worktree|Checking out fil
 #: The attempt line every ``*.sbatch`` prints: names the record a Slurm job runs,
 #: which is how the Slurm log leads to ``<jobs_root>/<job_id>/logs/<stage>.log``.
 _ATTEMPT = re.compile(r"== attempt \d+ — job (\S+) \((\w+)\)")
+#: tqdm's suffix ``[elapsed<remaining, rate]``; the remaining time is computed
+#: from the rate of the running attempt and is the number to trust after a resume.
+_TQDM = re.compile(r"\[(\d+(?::\d+){1,2})<(\d+(?::\d+){1,2}),\s*([\d.]+)\s*(s/it|it/s)\]")
 _DRIFT = re.compile(r"stage \w+: running [0-9a-f]+, but the job was created with [0-9a-f]+")
 _CODE = re.compile(r"^== code: .*")
 _CAUSES = [
@@ -271,7 +274,8 @@ def last_progress(lines: List[str], source: Optional[str] = None) -> Optional[Di
     ``source`` names the log the counter came from.
     """
     rejected = None
-    for line in reversed(lines):
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
         found = _PROGRESS.findall(line)
         if not found:
             continue
@@ -286,9 +290,82 @@ def last_progress(lines: List[str], source: Optional[str] = None) -> Optional[Di
                             "why": "%d/%d is a known non-progress counter (%s)"
                                    % (done, total, match.group(0).strip(" :"))}
             continue
-        return {"state": "found", "done": done, "total": total,
-                "line": line.strip()[:200], "source": source}
+        found_progress = {"state": "found", "done": done, "total": total,
+                          "line": line.strip()[:200], "source": source}
+        # tqdm's own estimate, from the rate of THIS attempt: after a resume
+        # `done` counts earlier attempts' steps and the ratio lies (#216). The
+        # last line of a log being written is often cut mid-suffix
+        # (`11830/13704 [17:52:52<2:46:18,`), so the previous complete line of
+        # the same bar is allowed to supply it: one step stale, seconds off.
+        for candidate in lines[max(0, index - 3):index + 1][::-1]:
+            tqdm = _TQDM.search(candidate)
+            if not tqdm:
+                continue
+            counter = _PROGRESS.findall(candidate)
+            if counter and int(counter[-1][1]) == total:
+                found_progress["remaining_s"] = slurm_seconds(tqdm.group(2))
+                found_progress["rate"] = tqdm.group(3) + tqdm.group(4)
+                break
+        return found_progress
     return rejected
+
+
+#: The stages one ``*.sbatch`` runs in one Slurm job: ``prepare.sbatch`` the
+#: first group, ``train.sbatch`` the second. A counter from ``train`` has ``test``
+#: and ``register`` still ahead of it inside the same wall.
+STAGE_GROUPS = (("prepare", "compile"), ("train", "test", "register"))
+
+
+def following_stages(stage: Optional[str]) -> List[str]:
+    for group in STAGE_GROUPS:
+        if stage in group:
+            return list(group[group.index(stage) + 1:])
+    return []
+
+
+def _stage_seconds(record: Dict[str, Any]) -> Dict[str, int]:
+    """Measured duration of every completed stage in a record, by name."""
+    seconds = {}
+    for stage in record.get("stages") or []:
+        if stage.get("status") != "completed":
+            continue
+        try:
+            started = datetime.fromisoformat((stage.get("started_at") or "").replace("Z", "+00:00"))
+            finished = datetime.fromisoformat((stage.get("finished_at") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        seconds[stage.get("name")] = int((finished - started).total_seconds())
+    return seconds
+
+
+def reference_for(paths: "Paths", record: Dict[str, Any], stages: List[str]
+                  ) -> Optional[Dict[str, Any]]:
+    """How long ``stages`` took for a comparable completed job: measured from its
+    ``stages[]``, never estimated (#216).
+
+    Comparable means the same granularity in the same store, and the same base
+    model when such a job exists; the most recently finished one wins. The
+    answer names the record it came from, so the number is checkable.
+    """
+    granularity = _params(record).get("granularity")
+    base_model = (record.get("request") or {}).get("base_model")
+    best = None
+    for other_dir, other in iter_jobs(paths, stores=[record.get("_store") or "scratch"]):
+        if other.get("status") != "completed" or other_dir.name == record.get("id"):
+            continue
+        if _params(other).get("granularity") != granularity:
+            continue
+        measured = _stage_seconds(other)
+        if not all(name in measured for name in stages):
+            continue
+        same_model = (other.get("request") or {}).get("base_model") == base_model
+        key = (same_model, other.get("finished_at") or "")
+        if best is None or key > best[0]:
+            best = (key, other_dir.name, {name: measured[name] for name in stages})
+    if best is None:
+        return None
+    return {"from": best[1], "match": "base_model+granularity" if best[0][0] else "granularity",
+            "seconds": best[2]}
 
 
 def _attempt_in(lines: List[str]) -> Optional[Tuple[str, str]]:
@@ -317,19 +394,26 @@ def slurm_progress(paths: "Paths", edges: Dict[str, Any]) -> Dict[str, Any]:
         return answer
     job_id = attempt[0]
     answer["job_id"] = job_id
-    if progress is not None and progress["state"] == "found":
-        return answer
     job_dir, record = find_job(paths, job_id)
     if job_dir is None or record is None:
         return answer
-    stage_log = _stage_log(job_dir, record.get("stage"))
-    if stage_log is None:
-        return answer
-    answer["stage_log"] = str(stage_log)
-    answer["stage_log_modified_cest"] = epoch_to_cest(stage_log.stat().st_mtime)
-    from_stage = last_progress(read_log_edges(stage_log)["tail"], source=stage_log.name)
-    if from_stage is not None and (progress is None or from_stage["state"] == "found"):
-        answer["progress"] = from_stage
+    stage = record.get("stage")
+    if progress is None or progress["state"] != "found":
+        stage_log = _stage_log(job_dir, stage)
+        if stage_log is not None:
+            answer["stage_log"] = str(stage_log)
+            answer["stage_log_modified_cest"] = epoch_to_cest(stage_log.stat().st_mtime)
+            from_stage = last_progress(read_log_edges(stage_log)["tail"], source=stage_log.name)
+            if from_stage is not None and (progress is None or from_stage["state"] == "found"):
+                answer["progress"] = progress = from_stage
+    if progress is not None and progress["state"] == "found" and stage:
+        progress["stage"] = stage
+        ahead = following_stages(stage)
+        if ahead:
+            answer["following"] = reference_for(paths, record, ahead) or {
+                "from": None, "seconds": None,
+                "note": "no completed job of the same granularity measures %s" % ", ".join(ahead)}
+            answer["following"]["stages"] = ahead
     return answer
 
 
@@ -535,29 +619,60 @@ def node_states(run: Runner, nodes: List[str]) -> List[Dict[str, str]]:
 
 
 def judge_wall(elapsed: Optional[int], limit: Optional[int],
-               progress: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Will a running job finish inside its wall? Projected from its progress line.
+               progress: Optional[Dict[str, Any]],
+               following: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Will a running job finish inside its wall? The sum is written out in ``why``.
 
     Only a counter in state ``found`` projects. An unattributable one says so in
     ``why`` — "unknown" invites a look, a made-up "fits" does not (#203).
+
+    The rest of the running stage comes from tqdm's own estimate when the line
+    carries one (``remaining_s``), else from the ratio ``elapsed × total / done``.
+    After a resume the ratio lies: ``done`` counts earlier attempts' steps and
+    ``elapsed`` only this one (#216). The stages still ahead in the same wall
+    (``test`` after ``train``) are added from a measured reference; without one
+    the verdict says the sum is short of them, and a close call is not "fits".
     """
     if progress and progress.get("state") == "unattributable":
         return {"verdict": "unknown",
                 "why": "the last counter is not progress: %s" % progress.get("why")}
     if not elapsed or not limit or not progress or not progress.get("done"):
         return {"verdict": "unknown", "why": "no progress counter in the log"}
-    projected = elapsed * progress["total"] / float(progress["done"])
+    stage = progress.get("stage") or "stage"
+    if progress.get("remaining_s") is not None:
+        rest = progress["remaining_s"]
+        method = "tqdm"
+    else:
+        rest = elapsed * (progress["total"] - progress["done"]) / float(progress["done"])
+        method = "ratio"
+    parts = ["%s: %d s + rest %d s (%s %d/%d)" % (stage, elapsed, rest, method,
+                                                 progress["done"], progress["total"])]
+    projected = elapsed + rest
+    uncounted = []
+    if following and following.get("stages"):
+        if following.get("seconds"):
+            for name in following["stages"]:
+                projected += following["seconds"][name]
+                parts.append("%s ≈ %d s" % (name, following["seconds"][name]))
+            parts[-1] += " (from %s)" % following["from"]
+        else:
+            uncounted = list(following["stages"])
     fraction = projected / float(limit)
     if fraction > 1.0:
         verdict = "will hit the wall"
     elif fraction > 1.0 - WALL_MARGIN:
         verdict = "at risk"
+    elif uncounted and fraction > 1.0 - 2 * WALL_MARGIN:
+        verdict = "at risk"
     else:
         verdict = "fits"
+    why = " + ".join(parts) + " = %d s of %d" % (projected, limit)
+    if uncounted:
+        why += "; %s not counted: no completed job of this granularity to measure it" \
+               % ", ".join(uncounted)
     return {"verdict": verdict, "projected_total_s": int(projected), "limit_s": limit,
-            "fraction_of_wall": round(fraction, 3),
-            "why": "%d/%d after %d s projects to %d s of %d" % (
-                progress["done"], progress["total"], elapsed, projected, limit)}
+            "fraction_of_wall": round(fraction, 3), "method": method,
+            "uncounted_stages": uncounted, "why": why}
 
 
 def queue(run: Runner, paths: Paths) -> Dict[str, Any]:
@@ -590,7 +705,8 @@ def queue(run: Runner, paths: Paths) -> Dict[str, Any]:
                 entry.update(found)
             entry["progress"] = progress
             entry["wall"] = judge_wall(slurm_seconds(row.get("TimeUsed", "")),
-                                       slurm_seconds(row.get("TimeLimit", "")), progress)
+                                       slurm_seconds(row.get("TimeLimit", "")), progress,
+                                       entry.get("following"))
         match = re.search(r"UnavailableNodes:([\w,\-\[\]]+)", row.get("Reason", ""))
         if match:
             entry["unavailable_nodes"] = match.group(1).split(",")

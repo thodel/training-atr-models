@@ -254,9 +254,102 @@ def test_queue_reads_a_vlm_run_from_its_train_log(cluster):
     assert row["progress"]["source"] == "train.log"
     assert row["progress"]["state"] == "found"
     assert (row["progress"]["done"], row["progress"]["total"]) == (8623, 19162)
-    # 50:35 elapsed at 8623/19162 projects to ~1 h 52 of 3 h.
-    assert row["wall"]["verdict"] == "fits"
-    assert row["wall"]["projected_total_s"] == int(3035 * 19162 / 8623)
+    # The line says 6:22:08 are left (tqdm, this attempt's rate): 50:35 elapsed
+    # plus that is far over a 3 h wall, whatever the ratio 8623/19162 says (#216).
+    assert row["progress"]["remaining_s"] == 6 * 3600 + 22 * 60 + 8
+    assert row["progress"]["stage"] == "train"
+    assert row["wall"]["method"] == "tqdm"
+    assert row["wall"]["projected_total_s"] == 3035 + 6 * 3600 + 22 * 60 + 8
+    assert row["wall"]["verdict"] == "will hit the wall"
+    # No completed line job with a measured test stage in this store: said, not zero.
+    assert row["following"]["stages"] == ["test", "register"]
+    assert row["following"]["seconds"] is None
+    assert row["wall"]["uncounted_stages"] == ["test", "register"]
+    assert "test, register not counted" in row["wall"]["why"]
+
+
+# ── the wall counts the stages still ahead, and trusts tqdm over the ratio (#216)
+def test_tqdm_remaining_is_read_and_beats_the_ratio_after_a_resume():
+    """After a resume the HF trainer's bar starts at the checkpoint's global_step:
+    `done` holds earlier attempts' steps, `elapsed` only this one, and
+    `elapsed × total / done` comes out too small — optimistic, the direction
+    #203 already failed in. tqdm's `<remaining` is computed from this attempt's
+    rate and is the number to trust."""
+    found = probe.last_progress(VLM_TRAIN_LOG.split("\r"))
+    assert found["remaining_s"] == 6 * 3600 + 22 * 60 + 8 and found["rate"] == "2.18s/it"
+    # A log being written ends mid-suffix (17838224 at 11:05 CEST, 11.10.2026):
+    # the previous complete line of the same bar supplies the estimate.
+    cut = probe.last_progress(VLM_TRAIN_LOG.split("\r") + [" 45%|████▌| 8624/19162 [5:12:37<6:2"])
+    assert cut["done"] == 8624 and cut["remaining_s"] == 6 * 3600 + 22 * 60 + 8
+    # But not from a different bar: a cut line after an unrelated counter has none.
+    other = probe.last_progress(["Generating train split: 50%| 500/1000 [00:10<00:10, 50 it/s]",
+                                 " 45%|████▌| 8624/19162 [5:12:37<6:2"])
+    assert other["done"] == 8624 and "remaining_s" not in other
+    resumed = {"state": "found", "done": 10321, "total": 13704, "stage": "train",
+               "remaining_s": 90000}
+    with_tqdm = probe.judge_wall(1800, 86400, resumed)
+    assert with_tqdm["verdict"] == "will hit the wall" and with_tqdm["method"] == "tqdm"
+    assert with_tqdm["why"].startswith("train: 1800 s + rest 90000 s (tqdm 10321/13704)")
+    ratio_only = probe.judge_wall(1800, 86400, {k: v for k, v in resumed.items()
+                                                if k != "remaining_s"})
+    assert ratio_only["verdict"] == "fits" and ratio_only["method"] == "ratio"  # the lie
+
+
+def test_the_test_stage_of_a_page_job_is_added_from_a_measured_sibling(cluster):
+    """cap3072's test stage took 68 min, v1's 59; the TIMEOUT of 05.10.2026 fell in
+    the test stage. A `train` counter at a third of the wall is not `fits` when
+    the test stage measured on a sibling pushes the sum past 85 %."""
+    stages = [
+        {"name": "train", "status": "completed", "started_at": "2026-10-10T02:17:00Z",
+         "finished_at": "2026-10-10T15:58:00Z", "code": {"commit": "0b58494a18b0" + "0" * 28}},
+        {"name": "test", "status": "completed", "started_at": "2026-10-10T15:58:00Z",
+         "finished_at": "2026-10-10T17:54:40Z", "code": {"commit": "0b58494a18b0" + "0" * 28}},
+        {"name": "register", "status": "completed", "started_at": "2026-10-10T17:54:40Z",
+         "finished_at": "2026-10-10T17:54:41Z", "code": {"commit": "0b58494a18b0" + "0" * 28}},
+    ]
+    write_job(cluster.scratch, "20261008T103636Z-olmocr2-7b-medieval-page-cap3072",
+              base_model="allenai/olmOCR-2-7B-1025", granularity="page", cer=0.4674,
+              finished="2026-10-10T17:06:00Z", extra={"stages": stages})
+    # A line job of the same base model is not comparable: granularity rules.
+    write_job(cluster.scratch, "20261001T085321Z-ladder-med-olmocr2-7b",
+              base_model="allenai/olmOCR-2-7B-1025", granularity="line", cer=0.7465,
+              finished="2026-10-11T00:00:00Z", extra={"stages": stages})
+    job_dir = write_job(cluster.scratch, "20261009T174425Z-olmocr2-7b-medieval-page-px4m",
+                        base_model="allenai/olmOCR-2-7B-1025", granularity="page",
+                        status="training", stage="train", cer=None, draw=None, finished=None)
+    (job_dir / "logs").mkdir()
+    (job_dir / "logs" / "train.log").write_text("1300/1518\n")
+    (cluster.logs / "fedmin1-17488077.out").write_text(
+        "== attempt 1 — job 20261009T174425Z-olmocr2-7b-medieval-page-px4m (training) on gnode34\n")
+    row = {j["slurm_job_id"]: j for j in
+           probe.queue(canned({"squeue": SQUEUE, "sinfo": SINFO}), cluster)["jobs"]}["17488077"]
+    assert row["following"] == {
+        "from": "20261008T103636Z-olmocr2-7b-medieval-page-cap3072",
+        "match": "base_model+granularity", "seconds": {"test": 7000, "register": 1},
+        "stages": ["test", "register"]}
+    # 3035 s + 3035 × 218 / 1300 = 3544 s on its own (a third of 10 800); with the test stage 10 544.
+    wall = row["wall"]
+    assert wall["method"] == "ratio" and wall["projected_total_s"] == 10544  # 3543.9 + 7001, truncated
+    assert wall["verdict"] == "at risk"
+    assert wall["why"] == ("train: 3035 s + rest 508 s (ratio 1300/1518) + test ≈ 7000 s + "
+                           "register ≈ 1 s (from 20261008T103636Z-olmocr2-7b-medieval-page-cap3072)"
+                           " = 10544 s of 10800")
+
+
+def test_without_a_reference_the_missing_stage_is_said_and_a_close_call_is_not_fits():
+    following = {"stages": ["test"], "seconds": None, "from": None}
+    early = probe.judge_wall(3000, 10800, {"state": "found", "done": 150, "total": 164,
+                                            "stage": "train"}, following)
+    assert early["verdict"] == "fits" and early["uncounted_stages"] == ["test"]
+    assert early["why"].endswith("test not counted: no completed job of this granularity to "
+                                 "measure it")
+    late = probe.judge_wall(7700, 10800, {"state": "found", "done": 150, "total": 164,
+                                           "stage": "train"}, following)
+    assert late["fraction_of_wall"] < 0.85  # would be "fits" if nothing were ahead
+    assert late["verdict"] == "at risk"
+    # A counter from the last stage of its group has nothing ahead: no caveat.
+    assert probe.following_stages("test") == ["register"]
+    assert probe.following_stages("register") == [] and probe.following_stages(None) == []
 
 
 def test_queue_says_when_the_only_counter_is_a_retry(cluster):
