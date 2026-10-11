@@ -46,19 +46,28 @@ from atr_training.contracts import VlmTrainParams  # noqa: E402
 from atr_training.vlm_dataset import read_jsonl, worst_case_samples  # noqa: E402
 
 
-def draw(jsonl: Path, count: int, seed: int) -> tuple[list, int, str]:
-    """``(samples, considered, how)`` — half the costly tail, half at random."""
+def draw(jsonl: Path, count: int, seed: int) -> tuple[list, int, int, str]:
+    """``(samples, tail_count, considered, how)`` — half the costly tail, half random.
+
+    The two halves must stay distinguishable in the report. A draw that
+    deliberately over-samples the tail cannot state a corpus rate: "48 of 200 are
+    over budget" would be read as 24 % of the corpus when the tail half was
+    chosen *for* being expensive. The random half is the unbiased estimate; the
+    tail half says how far the worst case goes. Reporting one number for both is
+    the mistake #137 named about its own peak and this one would repeat.
+    """
     pool = list(read_jsonl(jsonl))
     if not pool:
         raise SystemExit(f"{jsonl} has no samples")
     if count >= len(pool):
-        return pool, len(pool), "the whole set"
+        return pool, 0, len(pool), "the whole set (no draw)"
     tail = worst_case_samples(pool, max(1, count // 2))
     taken = {id(s) for s in tail.samples}
     rest = [s for s in pool if id(s) not in taken]
     random.Random(seed).shuffle(rest)
     picked = [*tail.samples, *rest[: count - len(tail.samples)]]
-    return picked, len(pool), f"{len(tail.samples)} worst-case + {count - len(tail.samples)} random"
+    return (picked, len(tail.samples), len(pool),
+            f"{len(tail.samples)} worst-case + {count - len(tail.samples)} random")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,19 +96,23 @@ def main(argv: list[str] | None = None) -> int:
     # crop must not be measured at a page's pixel budget.
     collator = HTRCollator(processor, params.prompt, budget, params.kind_budgets())
 
-    picked, considered, how = draw(args.jsonl, args.samples, args.seed)
+    picked, tail_count, considered, how = draw(args.jsonl, args.samples, args.seed)
     print(f"{len(picked)} of {considered} samples ({how}), budget {budget}", flush=True)
 
     per_sample = _lengths(collator, picked, args.data_root)
+    # The tail half comes first, by construction of `draw`.
+    tail, rnd = per_sample[:tail_count], per_sample[tail_count:]
     report = {
         "jsonl": str(args.jsonl), "granularity": args.granularity,
         "base_model": base, "sequence_budget": budget,
         "samples": len(per_sample), "considered": considered, "draw": how,
-        "median": int(statistics.median(per_sample)),
-        "p90": _pct(per_sample, 90), "p99": _pct(per_sample, 99),
         "longest": max(per_sample),
-        "over_budget": sum(1 for n in per_sample if n > budget),
-        "headroom_pct": round(100 * (1 - max(per_sample) / budget), 1),
+        # How far past the budget the worst case goes, as a share of the budget.
+        "longest_over_budget_pct": round(100 * (max(per_sample) / budget - 1), 1),
+        # The honest corpus estimate: the RANDOM half only. The tail half was
+        # chosen for being expensive and cannot speak for the corpus.
+        "random_half": _half(rnd, budget),
+        "worst_case_half": _half(tail, budget),
     }
     text = json.dumps(report, indent=2)
     print(text, flush=True)
@@ -127,6 +140,17 @@ def _lengths(collator, picked, data_root: Path) -> list[int]:
         if n % 50 == 0:
             print(f"  {n}/{len(picked)} …", flush=True)
     return out
+
+
+def _half(values: list[int], budget: int) -> dict:
+    """What one half of the draw says on its own."""
+    if not values:
+        return {}
+    return {"samples": len(values),
+            "median": int(statistics.median(values)),
+            "p90": _pct(values, 90), "longest": max(values),
+            "over_budget": sum(1 for n in values if n > budget),
+            "over_budget_share": round(sum(1 for n in values if n > budget) / len(values), 3)}
 
 
 def _pct(values: list[int], q: int) -> int:
