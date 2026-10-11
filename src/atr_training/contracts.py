@@ -481,6 +481,39 @@ class VlmTrainParams(BaseModel):
     #: nothing. Set it to something that costs a few minutes of redone work.
     save_steps: int = Field(default=0, ge=0)
     max_pixels: int | None = Field(default=None, ge=32 * 32)
+    #: None takes the granularity's entry in :data:`VLM_MAX_SEQ_LEN` (line 512,
+    #: page 4096). It **dimensions nothing**: the collator calls the processor
+    #: without ``truncation`` or ``max_length``, because truncating a multimodal
+    #: sequence severs the image tokens from the placeholders indexing them and
+    #: yields an invalid sample rather than a short one (#86). It reaches exactly
+    #: one place, the collator's threshold, and what it produces is the count a
+    #: reader of an OOM needs.
+    #:
+    #: **Measured, 11.10.2026** (#138, `scripts/measure_sequence_lengths.py`) on
+    #: 200 of the 9,441 page samples of
+    #: ``20260916T115939Z-qwen3vl-german-pages-v5-asteraix``, Qwen3-VL-4B's
+    #: processor, against the page budget of 4096:
+    #:
+    #: =====================  ======  ===  =======  ===========
+    #: half of the draw       median  p90  longest  over budget
+    #: =====================  ======  ===  =======  ===========
+    #: 100 random              2,428  2,955   4,076      **0**
+    #: 100 worst-case          3,419  5,109   5,539      48
+    #: =====================  ======  ===  =======  ===========
+    #:
+    #: So **4096 fits the corpus and not its tail.** An ordinary page sits at 59 %
+    #: of the budget and the random half crossed it not once — its longest came
+    #: 20 tokens short, which is chance over 100 samples and also says the budget
+    #: sits right at the edge of the ordinary distribution. The expensive tail
+    #: crosses it in nearly half of its samples, and the worst sample costs
+    #: **35 % more than planned**.
+    #:
+    #: It therefore **stays at 4096**, which #138 allows as an answer: raising it
+    #: would move a warning threshold and allocate nothing, and a warning that
+    #: fires on the tail is the useful one. What the numbers add is the figure an
+    #: OOM is read against — a page sample can cost 5,539 tokens, not 4,096.
+    #:
+    #: Counts are per tokeniser: another base is another number.
     max_seq_len: int | None = Field(default=None, ge=32)
     #: Drop training samples whose transcription is shorter than this. 0 = off.
     #: **Training only** — validation keeps every sample, so a CER stays
