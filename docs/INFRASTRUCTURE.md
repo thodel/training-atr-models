@@ -69,8 +69,8 @@ flowchart TB
   and `registry/trained/ID.yaml`. No network call hands a model over.
 - **Hugging Face is the only outside source and sink of data.** `prepare`
   downloads the `dh-unibe/image-text_*` datasets and the base models into the
-  shared cache `hf_hub/` (the symlink behind `~/.cache/huggingface/hub`), so a
-  second job, the other machine and UBELIX reuse them. Uploads go the other way
+  shared cache `hf_hub/hub/` (the symlink behind `~/.cache/huggingface/hub`),
+  so a second job and UBELIX reuse them. Uploads go the other way
   and are always private repos under `dh-unibe`: trained models through the
   runner's auto-publish (off unless `ATR_TRAIN_AUTO_PUBLISH_MIN_ACCURACY` is set)
   or by hand with `scripts/publish_to_hub.py`, page datasets built from TEI
@@ -417,14 +417,17 @@ they start with `~`.
 | `~/atr-cache/artefacts/` | local | compiled corpora reused across jobs (#109); 38 GiB on 16.09.2026, 100 GB budget | kraken and vllm runners | the same |
 | `~/atr-cache/env-backups/` | local | `.env` backups, mode 600 | people | people |
 
-`~/.cache/huggingface/hub` is a **symlink** to `hf_hub/` on the share (set on
-16.09.2026), which the separate lassberg/vlm_training project uses too. **Do
-not set `HF_HOME`.** It would bypass the symlink and download everything the
-shared cache already holds again (1.8 T on 16.09.2026). Note that UBELIX sets
-`HF_HOME` to `hf_hub/` and therefore caches one level down, in `hf_hub/hub/`;
-the two sides do not share entries, and the entries at the level this symlink
-points at were deleted on 09.10.2026 (measured 10.10.2026, #207;
+`~/.cache/huggingface/hub` is a **symlink** to `hf_hub/hub/` on the share,
+which the separate lassberg/vlm_training project uses too. That is the level
+UBELIX caches at (`HF_HOME` there is `hf_hub/`, and `huggingface_hub` puts the
+cache in `HF_HOME/hub`), so both sides read and write the same entries. From
+16.09.2026 to 11.10.2026 the link pointed one level up, at `hf_hub/` itself,
+where it kept a second cache in the old layout that UBELIX never read and
+that the storage pass of 09.10.2026 deleted (#207;
 [ASTERAIX_AND_UBELIX.md](ASTERAIX_AND_UBELIX.md#the-research-share)).
+`scripts/check_env.sh` fails when the link does not end in `/hub`. **Do not
+set `HF_HOME`.** It would bypass the symlink and download everything the
+shared cache already holds again.
 
 **What must not go on the share**, each learned from an incident:
 

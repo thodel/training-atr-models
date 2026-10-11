@@ -65,11 +65,13 @@ STALL_SECONDS = 1800
 #: die Eigenschaft eines Zwischenspeichers. Die Reihenfolge ist die Rangfolge
 #: der Vorschläge: zuerst, was nachweislich doppelt liegt.
 RECONSTRUCTIBLE = (
-    ("hf_hub/datasets--*", "HF-Zwischenspeicher in der ALTEN Form. Am 09.10.2026 "
-     "gemessen: 36 der 37 Datensätze liegen auch in `hf_hub/hub/`, also 97 % "
-     "doppelt. Wird beim nächsten Zugriff neu geholt."),
-    ("hf_hub/models--*", "Basismodelle in der alten Cache-Form. Alle aus dem Hub, "
-     "und `prefetch_bases.sh` holt sie gezielt wieder."),
+    ("hf_hub/datasets--*", "HF-Zwischenspeicher in der ALTEN Form, eine Ebene über "
+     "`hf_hub/hub/`. Seit dem 11.10.2026 schreibt niemand mehr dorthin: asteraix' "
+     "Symlink zeigt seither auf `hf_hub/hub/` (#207). Ein Eintrag hier ist ein "
+     "Host, dessen Link auf die falsche Ebene zeigt — `scripts/check_env.sh` "
+     "dort laufen lassen. Wird beim nächsten Zugriff neu geholt."),
+    ("hf_hub/models--*", "Basismodelle in der alten Cache-Form, dieselbe Ebene. "
+     "Alle aus dem Hub, und `prefetch_bases.sh` holt sie gezielt wieder."),
     ("hf_hub/xet", "Xet-Brockenspeicher des Zwischenspeichers."),
     ("training_folder/tmp", "Temporär."),
     ("tmp", "Temporär."),
