@@ -73,7 +73,11 @@ __all__ = [
 DEFAULT_ORG = "dh-unibe"
 
 #: Linked from every card, so a reader can find how the weights were produced.
-PROJECT_URL = "https://github.com/thodel/serving-atr-inference"
+#: **This repository, not the serving one.** The training service moved out of
+#: `serving-atr-inference` on 16.09.2026 and its last line left with
+#: serving-atr-inference#207 — a card that sends a reader there sends them to a
+#: repository where the code it describes no longer exists.
+PROJECT_URL = "https://github.com/thodel/training-atr-models"
 
 METADATA_FILENAME = "metadata.json"
 CARD_FILENAME = "README.md"
@@ -378,6 +382,24 @@ def _base_cell(base: str | None) -> str:
     return f"**{title}** — {where}, requested as `{base}`"
 
 
+def _benchmark_repo(model: TrainedModel) -> str | None:
+    """The benchmark's dataset id, for the model-index ``type``.
+
+    Read off the request's first ``BenchmarkSpec`` rather than parsed out of
+    ``measured_on``, which is a label written for a reader. Without it there is
+    no machine-readable result: a card with no model-index is published and
+    readable, while a card with an unparseable ``type`` is refused in full, and a
+    guessed id would claim a score against a dataset nobody named.
+    """
+    params = model.request.get("params") or {}
+    benchmarks = params.get("benchmarks")
+    if not isinstance(benchmarks, list) or not benchmarks:
+        return None
+    first = benchmarks[0]
+    repo = first.get("hf_repo") if isinstance(first, dict) else None
+    return str(repo) if repo else None
+
+
 def _frontmatter(model: TrainedModel, licence: str | None) -> str:
     """The card's YAML header — the part the hub reads rather than displays.
 
@@ -428,9 +450,16 @@ def _frontmatter(model: TrainedModel, licence: str | None) -> str:
         # The model-index names the benchmark; the split score is documented
         # below the card table and in measured_on on the Metrics model.
         measured_on = metrics.get("measured_on")
-        if measured_on:
+        benchmark_repo = _benchmark_repo(model)
+        if measured_on and benchmark_repo:
+            # `type` must be a dataset IDENTIFIER, not the human label: the hub
+            # validates it against /^(?:[\w-]+\/)?[\w-.]+$/ and REFUSES the whole
+            # upload otherwise — which is how the first publish of
+            # kraken-german-xix-v1 failed, with the label
+            # "Federal Council minutes 1848-1903 (doi:…), 2,751 lines" in the
+            # field. `name` keeps the label, where prose belongs.
             result_dataset: dict[str, Any] = {"name": measured_on,
-                                              "type": measured_on,
+                                              "type": benchmark_repo,
                                               "split": "held-out"}
             header["model-index"] = [{
                 "name": model.model_id,
@@ -564,9 +593,9 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "",
         f"# {model.model_id}",
         "",
-        f"Handwritten-text-recognition model trained on the [`serving-atr-inference`]"
-        f"({PROJECT_URL}) training service. These are the weights of the **best "
-        "validation checkpoint** of the run below — not its last epoch.",
+        f"Handwritten-text-recognition model trained with "
+        f"[`training-atr-models`]({PROJECT_URL}). These are the weights of the "
+        "**best validation checkpoint** of the run below — not its last epoch.",
         "",
         *_corpus_defects(model),
         "## Evaluation",
@@ -575,7 +604,12 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "|---|---|",
         *([f"| benchmark CER | {_pct(metrics.get('benchmark_cer'))} |",
           f"| benchmark WER | {_pct(metrics.get('benchmark_wer'))} |",
-          f"| benchmark samples | {_plain(metrics.get('benchmark_samples'))} |"]
+          # NOT "samples": the kraken path fills this from `ketos test`'s own
+          # character total (116,143 for a 2,749-line benchmark — the lines are
+          # 2,751 in the set and 2,749 after extraction). Labelled "samples" the
+          # card stated a count forty times too high, which is the class of
+          # mistake #101 is about, one field over.
+          f"| benchmark characters | {_plain(metrics.get('benchmark_samples'))} |"]
            if isinstance(metrics.get("benchmark_cer"), (int, float)) else []),
         f"| split CER | {_pct(metrics.get('cer'))} |",
         f"| split WER | {_pct(metrics.get('wer'))} |",
@@ -645,9 +679,17 @@ def _where_measured(model: TrainedModel) -> list[str]:
     note = metrics.get("note")
     if measured_on:
         # A benchmark was run — this is the primary quality claim.
-        lines = [f"Measured on **{measured_on}** (held-out documents not in training). "
-                 "The split score below is a secondary sanity check on the same data "
-                 "the model trained on."]
+        # What the split is depends on the request, so the card must not claim it.
+        # A corpus with `eval_projects` holds whole projects out; one without them
+        # takes a seeded page split inside the training projects. Saying "the same
+        # data the model trained on" was wrong for the first kind, and it is the
+        # first kind that carries the interesting number — the gap between split
+        # and benchmark is then a statement about unseen HANDS (#164: 3.12 %
+        # against 11.18 %, a factor of 3.6).
+        lines = [f"Measured on **{measured_on}** (held-out documents not in "
+                 "training). The split score below is this run's own validation "
+                 "score; what that split was is in **Training data** per corpus, "
+                 "and it is a different set from this benchmark either way."]
         if note:
             lines += ["", str(note)]
         return lines
