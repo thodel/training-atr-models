@@ -645,6 +645,58 @@ def test_a_metric_measured_elsewhere_says_so_on_the_card(tmp_path: Path):
     assert "this run's own validation score" in card
 
 
+# ── the machine-readable half has to be machine-readable ─────────────────────
+import re  # noqa: E402 — used only by the identifier check below
+
+#: The hub's own pattern for a dataset id in the model-index.
+HUB_DATASET_ID = re.compile(r"^(?:[\w-]+/)?[\w\-.]+$")
+
+
+def _benchmarked(label="Federal Council minutes 1848-1903 (doi:10.5281/zenodo.4746342), 2,751 lines",
+                 repo="dh-unibe/image-text_federal-minutes-testset"):
+    meta = json.loads(json.dumps(KRAKEN_META))
+    meta["metrics"].update(measured_on=label, benchmark_cer=0.1118, benchmark_wer=0.3962)
+    if repo is not None:
+        meta["request"]["params"] = {"benchmarks": [
+            {"hf_repo": repo, "project": "TEST_federal_minutes", "label": label}]}
+    return meta
+
+
+def test_the_benchmark_result_names_a_dataset_id_not_its_label(tmp_path: Path):
+    """The hub validates `dataset.type` and REFUSES the whole upload otherwise.
+    The first publish of `kraken-german-xix-v1` failed exactly here, with the
+    human label in the field — so the card was generated, reviewed and rejected
+    by the hub rather than by us."""
+    header = frontmatter(card_for(tmp_path, _benchmarked()))
+    dataset = header["model-index"][0]["results"][0]["dataset"]
+
+    assert dataset["type"] == "dh-unibe/image-text_federal-minutes-testset"
+    assert HUB_DATASET_ID.match(dataset["type"]), dataset["type"]
+    assert "2,751 lines" in dataset["name"], "the label belongs in name"
+    assert dataset["split"] == "held-out"
+
+
+def test_a_benchmark_without_a_named_dataset_gets_no_model_index(tmp_path: Path):
+    """A card with no machine-readable result is published and readable; a card
+    with an unparseable one is refused in full. Guessing an id from the label
+    would claim a score against a dataset nobody named."""
+    card = card_for(tmp_path, _benchmarked(repo=None))
+    header = frontmatter(card)
+
+    assert "model-index" not in header
+    assert "11.18 %" in card, "the number is still on the card for a reader"
+
+
+def test_the_split_result_already_used_an_id(tmp_path: Path):
+    """The branch without a benchmark was always right — this pins that the fix
+    did not change it."""
+    header = frontmatter(card_for(tmp_path, KRAKEN_META))
+    dataset = header["model-index"][0]["results"][0]["dataset"]
+
+    assert dataset["type"] == "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi"
+    assert HUB_DATASET_ID.match(dataset["type"])
+
+
 def test_without_that_field_the_card_is_unchanged(tmp_path: Path):
     """Every other model's provenance sentence must stay exactly as published."""
     card = card_for(tmp_path, KRAKEN_META)

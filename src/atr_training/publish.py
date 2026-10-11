@@ -382,6 +382,24 @@ def _base_cell(base: str | None) -> str:
     return f"**{title}** — {where}, requested as `{base}`"
 
 
+def _benchmark_repo(model: TrainedModel) -> str | None:
+    """The benchmark's dataset id, for the model-index ``type``.
+
+    Read off the request's first ``BenchmarkSpec`` rather than parsed out of
+    ``measured_on``, which is a label written for a reader. Without it there is
+    no machine-readable result: a card with no model-index is published and
+    readable, while a card with an unparseable ``type`` is refused in full, and a
+    guessed id would claim a score against a dataset nobody named.
+    """
+    params = model.request.get("params") or {}
+    benchmarks = params.get("benchmarks")
+    if not isinstance(benchmarks, list) or not benchmarks:
+        return None
+    first = benchmarks[0]
+    repo = first.get("hf_repo") if isinstance(first, dict) else None
+    return str(repo) if repo else None
+
+
 def _frontmatter(model: TrainedModel, licence: str | None) -> str:
     """The card's YAML header — the part the hub reads rather than displays.
 
@@ -432,9 +450,16 @@ def _frontmatter(model: TrainedModel, licence: str | None) -> str:
         # The model-index names the benchmark; the split score is documented
         # below the card table and in measured_on on the Metrics model.
         measured_on = metrics.get("measured_on")
-        if measured_on:
+        benchmark_repo = _benchmark_repo(model)
+        if measured_on and benchmark_repo:
+            # `type` must be a dataset IDENTIFIER, not the human label: the hub
+            # validates it against /^(?:[\w-]+\/)?[\w-.]+$/ and REFUSES the whole
+            # upload otherwise — which is how the first publish of
+            # kraken-german-xix-v1 failed, with the label
+            # "Federal Council minutes 1848-1903 (doi:…), 2,751 lines" in the
+            # field. `name` keeps the label, where prose belongs.
             result_dataset: dict[str, Any] = {"name": measured_on,
-                                              "type": measured_on,
+                                              "type": benchmark_repo,
                                               "split": "held-out"}
             header["model-index"] = [{
                 "name": model.model_id,
