@@ -171,3 +171,22 @@ def test_the_shipped_probe_is_the_file_in_this_package():
     link = SshTransport(hosts=["h"], runner=lambda *a, **k: None)
     assert link.probe_source == remote.PROBE_PATH.read_text(encoding="utf-8")
     assert "def dispatch" in link.probe_source
+
+
+# ── the Host header behind nginx ────────────────────────────────────────────
+def test_the_public_host_passes_the_dns_rebinding_check_and_loopback_still_does():
+    """Behind nginx the Host header says tei.dh.unibe.ch. The SDK's default allows
+    loopback only, and every proxied request answered 421 (#214 A4). Naming the
+    host keeps the protection on and lets that one name through."""
+    from atr_results_mcp.server import transport_security
+
+    security = transport_security("tei.dh.unibe.ch")
+    assert security.enable_dns_rebinding_protection is True
+    assert "tei.dh.unibe.ch" in security.allowed_hosts
+    assert "127.0.0.1:*" in security.allowed_hosts
+    assert "https://tei.dh.unibe.ch" in security.allowed_origins
+    # Without a public host the SDK default stands: loopback only, nothing named.
+    assert transport_security(None) is None
+    assert transport_security("") is None
+    # build_server takes the host on both SDK generations without complaint.
+    assert [t.name for t in tools_of(build_server(Recording(), public_host="tei.dh.unibe.ch"))] == list(TOOL_NAMES)

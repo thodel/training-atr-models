@@ -15,16 +15,20 @@ import json
 import sys
 
 from .remote import SshTransport
-from .server import SERVER_GENERATION, TOOL_NAMES, build_server
+from .server import SERVER_GENERATION, TOOL_NAMES, build_server, transport_security
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="atr_results_mcp")
     parser.add_argument("--http", action="store_true", help="serve streamable HTTP instead of stdio")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8012)
+    # 8013: 8012 is taken on tei, and the tunnel maps the same number on both boxes.
+    parser.add_argument("--port", type=int, default=8013)
     parser.add_argument("--path", default="/mcp",
                         help="public mount path behind a proxy, e.g. /mcp/atr-results/mcp")
+    parser.add_argument("--public-host", default=None,
+                        help="the Host header nginx forwards, e.g. tei.dh.unibe.ch; without it "
+                             "only loopback Hosts pass and every proxied request answers 421")
     parser.add_argument("--call", metavar="TOOL", choices=TOOL_NAMES,
                         help="run one tool and print its answer")
     parser.add_argument("args", nargs="?", default="{}", help="JSON arguments for --call")
@@ -36,10 +40,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 1 if "error" in result else 0
 
-    server = build_server()
+    server = build_server(public_host=opts.public_host)
     if opts.http and SERVER_GENERATION == 2:
         server.run(transport="streamable-http", host=opts.host, port=opts.port,
-                   streamable_http_path=opts.path)
+                   streamable_http_path=opts.path,
+                   transport_security=transport_security(opts.public_host))
     elif opts.http:
         # mcp 1.x keeps the bind address in settings, not in run().
         server.settings.host = opts.host
