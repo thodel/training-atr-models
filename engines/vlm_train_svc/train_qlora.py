@@ -30,6 +30,7 @@ from atr_training.vlm_dataset import (
     fit_pixels,
     chat_example,
     read_jsonl,
+    SequenceTally,
 )
 
 
@@ -220,12 +221,15 @@ class HTRCollator:
         self.prompt = prompt
         self.max_seq_len = max_seq_len
         self.ignore_index = -100
-        #: Samples that tokenized past ``max_seq_len``. Counted, never truncated.
-        self.over_budget = 0
-        #: The longest tokenized sequence seen, over budget or not. Over-budget
-        #: alone says how often, not how far — and "20 % of samples are 1 % over"
-        #: is a different run from "2 % are 60 % over" (#138).
-        self.longest = 0
+        #: Samples over ``max_seq_len`` (counted, never truncated) and the longest
+        #: sequence seen, over budget or not — "20 % of samples are 1 % over" is a
+        #: different run from "2 % are 60 % over" (#138).
+        #:
+        #: In **shared memory**, because `Trainer` runs this collator inside the
+        #: DataLoader's worker processes: plain attributes were mutated in each
+        #: worker's own copy and the parent wrote its untouched zeros into seven
+        #: job records. See :class:`atr_training.vlm_dataset.SequenceTally`.
+        self.tally = SequenceTally()
         # The processor's own budget is set once, to the largest kind in the job.
         # With one granularity that is the whole story. In a mixed corpus (#59) it
         # is not: a line crop must not arrive with a page's budget, or the mix
@@ -277,12 +281,12 @@ class HTRCollator:
             image.close()
 
         length = int(inputs["input_ids"].shape[1])
-        self.longest = max(self.longest, length)
+        self.tally.saw(length, self.max_seq_len)
         if length > self.max_seq_len:
-            self.over_budget += 1
-            if self.over_budget <= 3 or self.over_budget % 100 == 0:
+            over = self.tally.over_budget
+            if over <= 3 or over % 100 == 0:
                 print(f"warning: a sample tokenized to {length} tokens, over "
-                      f"max_seq_len={self.max_seq_len} ({self.over_budget} so far). "
+                      f"max_seq_len={self.max_seq_len} ({over} so far). "
                       "Not truncated — truncating a multimodal sequence produces an "
                       "invalid sample rather than a shorter one.", flush=True)
 
@@ -937,9 +941,10 @@ def main(argv: list[str] | None = None) -> int:
                     # truncated — see HTRCollator — so these are samples that
                     # cost more than planned, and until #138 the count existed
                     # only in a printed line kept every hundredth time.
-                    "sequence_budget": args.max_seq_len,
-                    "over_budget_samples": collator.over_budget,
-                    "max_sequence_tokens": collator.longest,
+                    # From the tally, which reports None rather than 0 when no
+                    # sample was ever observed: the contract reserves 0 for
+                    # "measured, all of it fitted" (#138).
+                    **collator.tally.as_record(args.max_seq_len),
                     # Per card, reset just before the loop — see above (#163).
                     "peak_gpu_mib": peak_gpu_mib},
                    indent=2),

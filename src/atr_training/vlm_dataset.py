@@ -60,6 +60,7 @@ __all__ = [
     "write_jsonl",
     "read_jsonl",
     "chat_example",
+    "SequenceTally",
 ]
 
 
@@ -624,6 +625,68 @@ FALLBACK_CELL_PX = 32
 #: (measured against transformers 5.17.0 on 2026-09-25). There is no continuous
 #: knob to round to, so a request lands on a step or it does not run at all.
 SOFT_TOKEN_STEPS = (70, 140, 280, 560, 1120)
+
+
+class SequenceTally:
+    """Counts a collator keeps while a DataLoader's **worker processes** run it.
+
+    Plain attributes do not work here, and the cost of finding that out was seven
+    runs. `HTRCollator` is handed to `Trainer` as its `data_collator`, PyTorch
+    runs `collate_fn` inside the worker subprocesses whenever
+    `dataloader_num_workers > 0` (the default here is 4), and each worker mutates
+    its **own copy**. The parent reads back the values it started with, so
+    `over_budget_samples` and `max_sequence_tokens` were `0` in every record
+    since #139 built them — and `0` is the contract's word for "measured, all of
+    it fitted", while the truth was "never observed". Measured on asteraix:
+
+        num_workers=0: parent sees longest= 239 over= 47   (truth: 239 / 47)
+        num_workers=2: parent sees longest=   0 over=  0
+        num_workers=4: parent sees longest=   0 over=  0
+
+    So the counters live in shared memory, which forked workers inherit. The
+    `fork` start method is the Linux default and what both boxes use; under
+    `spawn` a `multiprocessing.Value` is not picklable and the DataLoader would
+    fail loudly at startup, which is the right failure — a wrong zero is worse
+    than a crash.
+    """
+
+    def __init__(self) -> None:
+        from multiprocessing import Value
+
+        self._over = Value("q", 0)
+        self._longest = Value("q", 0)
+
+    def saw(self, length: int, budget: int) -> None:
+        """Record one tokenized sequence. The caller does the logging."""
+        with self._longest.get_lock():
+            if length > self._longest.value:
+                self._longest.value = length
+        if length > budget:
+            with self._over.get_lock():
+                self._over.value += 1
+
+    @property
+    def over_budget(self) -> int:
+        return int(self._over.value)
+
+    @property
+    def longest(self) -> int:
+        return int(self._longest.value)
+
+    def as_record(self, budget: int) -> dict[str, int | None]:
+        """What goes on the job record.
+
+        ``longest == 0`` means no sample was ever observed — an empty run, or a
+        mechanism that did not work. It is reported as ``None``, because the
+        contract reserves ``0`` for "measured, nothing was over budget" and a
+        number that cannot tell those apart is the bug this class exists for.
+        """
+        longest = self.longest
+        if longest <= 0:
+            return {"sequence_budget": budget, "over_budget_samples": None,
+                    "max_sequence_tokens": None}
+        return {"sequence_budget": budget, "over_budget_samples": self.over_budget,
+                "max_sequence_tokens": longest}
 
 
 class VisualBudgetError(VlmDatasetError):

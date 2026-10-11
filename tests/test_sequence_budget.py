@@ -64,7 +64,7 @@ def test_max_seq_len_only_warns_and_is_reported():
 
     assert len(uses) == 2, uses
     assert any("HTRCollator" in u for u in uses), uses
-    assert any('"sequence_budget"' in u for u in uses), uses
+    assert any("as_record(args.max_seq_len)" in u for u in uses), uses
 
 
 def test_the_budget_still_has_a_per_granularity_default():
@@ -91,21 +91,42 @@ def test_an_unmeasured_run_says_nothing_rather_than_zero():
 
 def test_the_subprocess_reports_all_three():
     """`training_summary.json` is the channel that already existed and that the
-    VLM runner did not read."""
+    VLM runner did not read.
+
+    Asserted on the **keys the tally emits** rather than on literals in the
+    writer: the three used to be spelled out there, and spelling them out is what
+    made the two tests below pass while the values were zeros.
+    """
+    from atr_training.vlm_dataset import SequenceTally
+
     text = COLLATOR.read_text(encoding="utf-8")
     summary = text[text.index('(out_dir / "training_summary.json")'):]
     summary = summary[:summary.index("encoding=")]
+    assert "as_record" in summary, summary
 
     for key in ("sequence_budget", "over_budget_samples", "max_sequence_tokens"):
-        assert f'"{key}"' in summary, key
+        assert key in SequenceTally().as_record(1024), key
 
 
 def test_the_collator_tracks_the_longest_not_only_the_count():
     """"20 % of samples are 1 % over" is a different run from "2 % are 60 %
-    over", and a count alone cannot tell them apart."""
-    text = COLLATOR.read_text(encoding="utf-8")
+    over", and a count alone cannot tell them apart.
 
-    assert "self.longest = max(self.longest, length)" in text
+    This used to assert that the line `self.longest = max(self.longest, length)`
+    existed in the source. It did exist, for two weeks, in a process whose value
+    nobody could read — the collator runs in the DataLoader's workers and the
+    parent wrote back its own zeros. A test that reads source can confirm that
+    code is present; only one that runs it can say the number arrives. See
+    `tests/test_sequence_tally.py`.
+    """
+    from atr_training.vlm_dataset import SequenceTally
+
+    tally = SequenceTally()
+    for length in (300, 1500, 900):
+        tally.saw(length, 1024)
+
+    assert tally.longest == 1500, "the longest, not only the count"
+    assert tally.over_budget == 1
 
 
 # ── the runner carries it across ────────────────────────────────────────────
