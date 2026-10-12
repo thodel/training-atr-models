@@ -8,6 +8,11 @@ through the jump host).
 Hosts are tried in order. ``ubelix`` goes through ``srv-train`` (idhefix) and has
 hung in banner exchange while the VPN was fine; ``ubelix-direct`` reaches submit02
 without the jump. The answer says which one served it (``_via``).
+
+When no host answers, the error says what kind of failure it was, because the
+usual cause depends on where the server runs: on the laptop a timeout is the
+VPN, on asteraix (behind tei, #214) the campus network; a refused key is the
+``authorized_keys`` line or its forced command on UBELIX, never the VPN.
 """
 from __future__ import annotations
 
@@ -41,6 +46,27 @@ def default_hosts() -> list[str]:
 def strip_banner(stderr: str) -> str:
     return "\n".join(line for line in stderr.splitlines()
                      if not any(marker in line for marker in _BANNER_MARKERS)).strip()
+
+
+
+def why_no_host(failures: list[str]) -> str:
+    """The likely cause behind a list of per-host failures, in one clause.
+
+    A refused key (``Permission denied``, ``Host key verification failed``, the
+    forced command's ``refused``) is a key problem whatever the network does.
+    Only when every host timed out is it the network: the VPN from the laptop,
+    the campus network from asteraix — the message names both, since the server
+    does not know where it runs.
+    """
+    text = " ".join(failures)
+    if any(m in text for m in ("Permission denied", "Host key verification failed", "refused")):
+        return ("the key was refused — on UBELIX the authorized_keys line or its forced "
+                "command, not the VPN")
+    if any(m in text for m in ("timed out", "no answer within", "Connection refused",
+                               "No route to host", "Could not resolve")):
+        return ("no route to the login node — from the laptop that is usually the VPN, "
+                "from asteraix the campus network")
+    return "cause unclear from ssh's output"
 
 
 class SshTransport:
@@ -87,5 +113,4 @@ class SshTransport:
                 if stderr and "error" in result:
                     result["_stderr"] = stderr[-300:]
             return result
-        raise TransportError("no host answered; VPN missing is the usual cause. "
-                             + " | ".join(failures))
+        raise TransportError("no host answered; %s. %s" % (why_no_host(failures), " | ".join(failures)))
