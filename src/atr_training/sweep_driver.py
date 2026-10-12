@@ -53,7 +53,7 @@ from loguru import logger
 
 from atr_training.convergence import epochs_for as _epochs_for
 from atr_training.rungs import DEFAULT_ETA, Promotion, plan_rungs, promote
-from atr_training.sweep_manifest import SweepConfig, SweepManifest
+from atr_training.sweep_manifest import SweepConfig, SweepManifest, params_fields
 
 __all__ = [
     "SweepError", "Preempted", "Metric", "METRICS", "SweepState", "SweepDriver",
@@ -338,6 +338,17 @@ class SweepDriver:
         self.yield_policy = yield_policy
         self.metric = METRICS[state.metric]
 
+    @property
+    def budgets_in_steps(self) -> bool:
+        """Does the engine take the budget as written?
+
+        ``ketos`` is told epochs, so a step budget has to be turned into them
+        against the corpus size. The VLM engine takes ``max_steps`` (#138) — and
+        has to: on a 405k-line corpus at effective batch 16 the smallest epoch
+        count is already ~25,000 steps, so no epoch count can say "3,000".
+        """
+        return "max_steps" in (params_fields(self.manifest.engine) or ())
+
     # ── the ladder ──────────────────────────────────────────────────────────
     def ladder(self, n_configs: int) -> list[int]:
         """How many configurations enter each rung.
@@ -355,7 +366,15 @@ class SweepDriver:
         params = dict(config.params)
         batch = int(params.get("batch_size", 1) or 1)
         accumulate = int(params.get("accumulate_grad_batches", 1) or 1)
-        params["epochs"] = epochs_for(steps, self.state.train_lines or 0, batch * accumulate)
+        if self.budgets_in_steps:
+            # The cap is the budget; the epoch count only has to cover it, and
+            # one epoch covers it until the corpus size is known.
+            params["max_steps"] = steps
+            params["epochs"] = (epochs_for(steps, self.state.train_lines, batch * accumulate)
+                                if self.state.train_lines else 1)
+        else:
+            params["epochs"] = epochs_for(steps, self.state.train_lines or 0,
+                                          batch * accumulate)
         return {
             "engine": self.manifest.engine,
             "model_id": f"{self.manifest.name}-r{rung}-{config.config_id}",
@@ -585,7 +604,7 @@ class SweepDriver:
 
     def run(self) -> list[Promotion]:
         configs = {c.config_id: c for c in self.manifest.configs()}
-        if self.state.train_lines is None:
+        if self.state.train_lines is None and not self.budgets_in_steps:
             raise SweepError(
                 "this sweep does not know its corpus size yet, so it cannot turn "
                 "a step budget into epochs. Pass --train-lines for the first run; "

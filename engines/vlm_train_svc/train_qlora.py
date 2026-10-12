@@ -63,6 +63,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="ceiling; keep training while validation loss improves")
     p.add_argument("--patience", type=int, default=2)
     p.add_argument("--min-delta", type=float, default=1e-4)
+    p.add_argument("--max-steps", type=int, default=None,
+                   help="end the run after this many optimizer steps, whatever "
+                        "the epoch count says; warmup and checkpoints are sized "
+                        "on the capped run")
     p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--accumulate-grad-batches", type=int, default=16)
     p.add_argument("--lrate", type=float, default=2e-4)
@@ -784,8 +788,19 @@ def main(argv: list[str] | None = None) -> int:
     ceiling_epochs = max(args.epochs, args.max_epochs or args.epochs)
     steps_per_epoch = max(1, math.ceil(
         len(train_ds) / (args.batch_size * args.accumulate_grad_batches)))
-    warmup = warmup_kwarg(args.warmup_ratio, steps_per_epoch * ceiling_epochs)
-    plan = checkpoint_plan(steps_per_epoch, ceiling_epochs, args.save_steps)
+    # A step budget (#138) ends the run before the epochs do, and everything
+    # sized on the run's length — the warmup, the checkpoint interval — is sized
+    # on the capped length: a 3,000-step rung must not warm up for 5 % of 25,000.
+    total_steps = steps_per_epoch * ceiling_epochs
+    if args.max_steps:
+        total_steps = min(total_steps, args.max_steps)
+        print(f"budget: --max-steps {args.max_steps} ends the run at {total_steps} "
+              f"of {steps_per_epoch * ceiling_epochs} optimizer steps "
+              f"({total_steps / steps_per_epoch:.2f} epoch(s) of {steps_per_epoch})",
+              flush=True)
+    warmup = warmup_kwarg(args.warmup_ratio, total_steps)
+    plan = checkpoint_plan(min(steps_per_epoch, total_steps), ceiling_epochs,
+                           args.save_steps)
     print(f"checkpoints: {plan.kwargs['save_strategy']} — {plan.reason}", flush=True)
 
     trainer = Trainer(
@@ -795,6 +810,9 @@ def main(argv: list[str] | None = None) -> int:
             # The ceiling. The callback decides when to stop below it; without a
             # ceiling this is just `epochs` and the callback never fires.
             num_train_epochs=max(args.epochs, args.max_epochs or args.epochs),
+            # -1 is the Trainer's own "no cap"; a positive value overrides the
+            # epoch count and the schedule is laid out over it.
+            max_steps=args.max_steps or -1,
             per_device_train_batch_size=args.batch_size,
             per_device_eval_batch_size=args.batch_size,
             gradient_accumulation_steps=args.accumulate_grad_batches,
@@ -837,7 +855,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     ceiling = max(args.epochs, args.max_epochs or args.epochs)
-    if ceiling > args.epochs:
+    if args.max_steps:
+        # The continuation callback counts evaluations, and a run capped below
+        # one epoch never evaluates. A step budget decides when to stop.
+        print(f"continuation: off, a budget of {args.max_steps} optimizer steps "
+              "ends the run", flush=True)
+    elif ceiling > args.epochs:
         policy = ContinuationPolicy(
             min_epochs=args.epochs, max_epochs=ceiling,
             patience=args.patience, min_delta=args.min_delta,
@@ -936,6 +959,7 @@ def main(argv: list[str] | None = None) -> int:
                     "train_samples": len(train_ds),
                     "val_samples": len(val_ds),
                     "epochs": args.epochs,
+                    "max_steps": args.max_steps,
                     "effective_batch_size": args.batch_size * args.accumulate_grad_batches,
                     # What the collator saw. Over-budget samples are not
                     # truncated — see HTRCollator — so these are samples that

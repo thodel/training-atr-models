@@ -706,6 +706,7 @@ class BasePipeline(ABC):
             train_lines=job.progress.train_lines,
             effective_batch=params.effective_batch_size,
             epochs=params.epochs,
+            max_steps=getattr(params, "max_steps", None),
         )
         if verdict is None:
             return

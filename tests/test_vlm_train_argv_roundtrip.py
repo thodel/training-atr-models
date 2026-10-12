@@ -24,6 +24,9 @@ PARAM_SETS = [
                    gradient_checkpointing=False, modules_to_save=["lm_head"]),
     VlmTrainParams(max_pixels=123_456, max_seq_len=1024, wandb_run="htr-run-1",
                    lr_scheduler="linear", optim="adamw_torch", workers=0),
+    # A sweep rung: the budget in steps, not epochs (#138).
+    VlmTrainParams(epochs=1, max_steps=3000, load_in_4bit=False, batch_size=16,
+                   accumulate_grad_batches=1),
 ]
 
 

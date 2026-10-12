@@ -58,28 +58,8 @@ from atr_training.ketos_cmd import (  # noqa: E402
     train_cmd,
 )
 from atr_training.manifests import binary_manifest  # noqa: E402
+from atr_training.noise_floor import is_collapsed, write_floor  # noqa: E402
 from atr_training.vgsl_geometry import input_height  # noqa: E402
-
-
-#: A hypothesis this short is not a bad reading, it is no reading. CTC blank
-#: collapse emits the blank label at nearly every timestep, so the output is
-#: empty and every reference character counts as missing.
-COLLAPSE_LENGTH_RATIO = 0.05
-
-
-def is_collapsed(cer: float | None, length_ratio: float | None) -> bool:
-    """Did this run produce nothing, rather than something poor?
-
-    Both signals, because either alone can be misread: a CER at or above 1.0 can
-    also come from a model that over-generates, and a length ratio near zero
-    could in principle accompany a short but correct reading of a long page. An
-    empty hypothesis shows both at once.
-    """
-    if cer is None:
-        return False
-    if length_ratio is not None and length_ratio <= COLLAPSE_LENGTH_RATIO:
-        return True
-    return cer >= 1.0
 
 
 def run(cmd: list[str], log: Path) -> int:
@@ -289,19 +269,10 @@ def write_into_manifest(path: Path, summary: dict) -> None:
 
     Retyping the number is how it ends up stale or attached to the wrong corpus,
     so the manifest's own data version is checked against the measurement's
-    first. The written block is the shape `sweep_manifest` validates: a bare
-    number would parse, but nobody reading it later could say where it came from.
+    first (`noise_floor.write_floor`). The written block is the shape
+    `sweep_manifest` validates: a bare number would parse, but nobody reading
+    it later could say where it came from.
     """
-    import yaml
-
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    digest = str(((raw.get("data") or {}).get("digest") or "")).strip()
-    if digest != summary["data_digest"]:
-        raise ValueError(
-            f"{path} runs on data {digest!r} and this floor was measured on "
-            f"{summary['data_digest']!r}. A floor belongs to the corpus and the "
-            "budget it was measured at; writing it here would license a ranking "
-            "it never earned.")
     block = {
         "value": summary["noise_floor"]["spread"],
         "measured_on": summary["data_digest"],
@@ -317,43 +288,7 @@ def write_into_manifest(path: Path, summary: dict) -> None:
         "input_height": summary.get("input_height"),
         "line_tail": summary.get("line_tail"),
     }
-    _splice(path, {k: v for k, v in block.items() if v is not None})
-
-
-def _splice(path: Path, block: dict) -> None:
-    """Write the block into the manifest **without re-dumping the file**.
-
-    `yaml.safe_dump` of the parsed document would have worked and would have
-    deleted every comment in it — and in these manifests the comments are the
-    reasoning: which axes were left out and why, which base and why not another.
-    A measurement that silently erased that would have cost more than it added.
-    """
-    import yaml
-
-    rendered = yaml.safe_dump({"noise_floor": block}, sort_keys=False,
-                              allow_unicode=True).rstrip("\n").splitlines()
-    lines = path.read_text(encoding="utf-8").splitlines()
-    kept, index, replaced = [], 0, False
-    while index < len(lines):
-        line = lines[index]
-        if line.startswith("noise_floor:"):
-            # Drop the old block: itself and everything indented under it.
-            index += 1
-            while index < len(lines) and (not lines[index].strip()
-                                          or lines[index][:1].isspace()):
-                index += 1
-            kept.extend(rendered)
-            replaced = True
-            continue
-        kept.append(line)
-        index += 1
-    if not replaced:
-        # Before `notes:` when there is one, so the prose stays at the bottom
-        # where a reader expects it; otherwise at the end.
-        at = next((i for i, line in enumerate(kept) if line.startswith("notes:")),
-                  len(kept))
-        kept[at:at] = rendered + [""]
-    path.write_text("\n".join(kept).rstrip("\n") + "\n", encoding="utf-8")
+    write_floor(path, block)
 
 
 if __name__ == "__main__":

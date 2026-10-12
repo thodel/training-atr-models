@@ -461,6 +461,13 @@ class VlmTrainParams(BaseModel):
     #: How much better counts as better. Without it a loss that improves in the
     #: fifth decimal reads as improvement and the run never stops on its own.
     min_delta: float = Field(default=1e-4, ge=0.0)
+    #: A budget in optimizer steps that ends the run before the epochs do. None
+    #: = train the epochs. Set, it overrides them on the Trainer (``max_steps``)
+    #: and the learning-rate schedule spans the capped run. A sweep rung budgets
+    #: in steps, and on a 405k-line corpus at effective batch 16 the smallest
+    #: epoch count is already ~25,000 of them — so without this a "3,000-step"
+    #: screening rung silently ran a whole epoch (#138, found 12.10.2026).
+    max_steps: int | None = Field(default=None, ge=1)
     #: Page samples can exceed 4 k tokens, so >1 risks OOM; scale with grad accum.
     batch_size: int = Field(default=1, ge=1)
     accumulate_grad_batches: int = Field(default=16, ge=1)

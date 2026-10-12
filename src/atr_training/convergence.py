@@ -82,6 +82,9 @@ class StepBudget:
     train_lines: int
     effective_batch: int
     epochs: int
+    #: A step budget that ends the run before the epochs do (``max_steps``,
+    #: #138). None = the epochs decide.
+    cap: int | None = None
 
     @property
     def steps_per_epoch(self) -> int:
@@ -89,7 +92,8 @@ class StepBudget:
 
     @property
     def total_steps(self) -> int:
-        return self.steps_per_epoch * max(1, self.epochs)
+        full = self.steps_per_epoch * max(1, self.epochs)
+        return min(full, self.cap) if self.cap else full
 
     def batch_for(self, floor: int) -> int:
         """The largest effective batch that would clear ``floor`` at these epochs.
@@ -109,8 +113,10 @@ class ConvergenceVerdict:
     reason: str = ""
 
 
-def plan_steps(train_lines: int, effective_batch: int, epochs: int) -> StepBudget:
-    return StepBudget(train_lines=train_lines, effective_batch=effective_batch, epochs=epochs)
+def plan_steps(train_lines: int, effective_batch: int, epochs: int,
+               cap: int | None = None) -> StepBudget:
+    return StepBudget(train_lines=train_lines, effective_batch=effective_batch,
+                      epochs=epochs, cap=cap)
 
 
 def epochs_for(steps: int, train_lines: int, effective_batch: int) -> int:
@@ -144,6 +150,7 @@ def check_convergence(
     train_lines: int | None,
     effective_batch: int,
     epochs: int,
+    max_steps: int | None = None,
 ) -> ConvergenceVerdict | None:
     """Judge a configuration. ``None`` when there is nothing to judge.
 
@@ -154,7 +161,7 @@ def check_convergence(
     if not train_lines or train_lines < 1:
         return None
 
-    budget = plan_steps(train_lines, effective_batch, epochs)
+    budget = plan_steps(train_lines, effective_batch, epochs, cap=max_steps)
     floor = floor_for(engine, from_scratch)
     if budget.total_steps >= floor:
         return ConvergenceVerdict(True, budget, floor)
@@ -162,6 +169,8 @@ def check_convergence(
     suggested_batch = budget.batch_for(floor)
     needed_epochs = math.ceil(floor / budget.steps_per_epoch)
     start = "from scratch" if from_scratch else f"as a {engine} fine-tune"
+    if max_steps and max_steps < budget.steps_per_epoch * budget.epochs:
+        start += f", capped by max_steps {max_steps:,}"
     remedy = (
         "fine-tune from a base model instead (`base_model` + `resize: \"union\"`)"
         if from_scratch else "train for longer"

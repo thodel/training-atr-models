@@ -89,6 +89,7 @@ def train_cmd(
         "--max-epochs", str(params.max_epochs or params.epochs),
         "--patience", str(params.patience),
         "--min-delta", str(params.min_delta),
+        *(["--max-steps", str(params.max_steps)] if params.max_steps else []),
            "--batch-size", str(params.batch_size),
            "--accumulate-grad-batches", str(params.accumulate_grad_batches),
            "--lrate", str(params.lrate),

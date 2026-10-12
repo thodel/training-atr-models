@@ -205,6 +205,12 @@ budget:
   # 16, which is ~25,000 optimizer steps. A screening rung at 3,000 is an eighth
   # of that: enough to separate three learning rates, far too little to call a
   # model trained — which is what a rung 0 is for.
+  #
+  # The engine takes this as `max_steps` (#138, 12.10.2026). It has to: the only
+  # budget it took before was epochs, and `epochs_for(3000, 405k, 16)` rounds up
+  # to the smallest epoch count — one, which is ~25,000 steps. Every "3,000-step"
+  # cell would have trained a whole epoch, rung 1 would have equalled rung 0,
+  # and nothing would have said so. Found one check before the first run.
   steps: 3000
   rungs: [3, 1]
   # 3x3,000 + 1x9,000 = 18,000, plus room for one preempted cell.
@@ -258,8 +264,15 @@ notes: |
   before them (#115). Three learning rates an octave apart should separate well
   beyond any plausible floor — but "should" is the state, not the result, and
   the kraken side of this project has twice produced a confident ordering that
-  the floor then swallowed. Measure it with scripts/measure_noise_floor.py
-  --write-to this file, on cell one, before trusting a gap.
+  the floor then swallowed. Measure it with
+
+    scripts/measure_vlm_noise_floor.py config/sweeps/vlm-xix-effective-batch-01.yaml \
+        --seeds 42 43 44 45 --write-to config/sweeps/vlm-xix-effective-batch-01.yaml
+
+  — cell one, four seeds, at this budget, through the trainer — before trusting
+  a gap, and BEFORE starting the sweep: the driver yields the card to any job it
+  did not submit. (scripts/measure_noise_floor.py is the kraken measurement; it
+  drives ketos itself and cannot run a VLM.)
 
   WHAT CELL ONE IS FOR. It reproduces v2's hyperparameters at this sweep's
   budget. If it lands far from v2's 0.0533 the sweep has a data or budget

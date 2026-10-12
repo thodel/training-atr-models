@@ -25,8 +25,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import httpx
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -34,46 +32,7 @@ from atr_training.sweep_driver import (  # noqa: E402
     IDLE_S, METRICS, YIELD_POLICIES, SweepDriver, SweepError, SweepState,
 )
 from atr_training.sweep_manifest import ManifestError, load_manifest  # noqa: E402
-
-
-class HttpTrainer:
-    """The trainer over HTTP. Three calls, all of them already in its API."""
-
-    def __init__(self, base_url: str, api_key: str | None = None,
-                 timeout: float = 30.0) -> None:
-        headers = {"X-API-Key": api_key} if api_key else {}
-        self._client = httpx.Client(base_url=base_url.rstrip("/"), headers=headers,
-                                    timeout=timeout)
-
-    def verify(self, request: dict) -> dict:
-        response = self._client.post("/jobs/verify", json=request)
-        response.raise_for_status()
-        return response.json()
-
-    def submit(self, request: dict) -> dict:
-        response = self._client.post("/jobs", json=request)
-        response.raise_for_status()
-        return response.json()
-
-    def job(self, job_id: str) -> dict:
-        response = self._client.get(f"/jobs/{job_id}")
-        response.raise_for_status()
-        return response.json()
-
-    def jobs(self) -> list[dict]:
-        """Every job the trainer knows, in the shape `requested_jobs` needs.
-
-        ``fields=summary`` because the whole record of every job is 807 KB for
-        42 of them (serving-atr-inference#107) and this is polled while waiting.
-        """
-        response = self._client.get("/jobs", params={"fields": "summary"})
-        response.raise_for_status()
-        return response.json().get("jobs", [])
-
-    def cancel(self, job_id: str) -> dict:
-        response = self._client.post(f"/jobs/{job_id}/cancel")
-        response.raise_for_status()
-        return response.json()
+from atr_training.trainer_http import HttpTrainer  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
