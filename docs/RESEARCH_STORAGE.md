@@ -206,14 +206,36 @@ sondern ein Risiko.
 `--check` ist ein `statfs` und dauert Millisekunden. Die Aufschlüsselung je
 Verzeichnis ist ein `du` über rund 11 TB auf GPFS und dauert Stunden. Also:
 
-- **täglich** `--check` — eine Zahl, eine Schwelle, und bei Unterschreitung die
-  Vorschläge aus dem letzten Inventar
-- **wöchentlich** `ubelix/storage_inventory.sbatch` — das `du`, als Slurm-Job
-  mit zwei Kernen
+- **täglich um 07:05 CEST** `--check`, über das `storage`-Werkzeug des lesenden
+  MCP — eine Zahl, eine Schwelle, und bei Unterschreitung die Vorschläge aus dem
+  letzten Inventar. **Die Routine löscht nie etwas.** Fehlt das Inventar, reicht
+  sie den Erhebungslauf selbst nach (am 10.10.2026 getan: `17837561`).
+- **wöchentlich** `ubelix/storage_inventory.sbatch` — das `du`, als Slurm-Job mit
+  zwei Kernen, Vorgabe `--ours-only`, 12 h Limit
 
 Fehlt das Inventar oder ist es älter als 14 Tage, **sagt die Prüfung das** statt
 Vorschläge aus veralteten Zahlen zu machen. Kein Inventar und ein altes Inventar
 sind zwei Zustände, nicht einer (#165).
+
+**Warum `--ours-only` die Vorgabe ist.** Nur `Textrecognition_Training` trägt
+Vorschläge; die 38 übrigen Verzeichnisse der obersten Ebene sind rund 6 TB
+fremder Projektdaten und liefern bloss die Zeile „die grössten ausserhalb
+unseres Bereichs". Gemessene Laufzeiten unseres Unterbaums, 23 Posten:
+
+| Job | Umfang | Dauer |
+|---|---|---|
+| `17811111` | voll | **TIMEOUT nach 6 h, kein Ergebnis** |
+| `17837880` | `ours` | 12:52 |
+| `17838919` | `ours` | 18:46 |
+| `17849470` | `ours` | 26:38 (neben einem laufenden prepare) |
+| `17855509` | `ours` | 15:01 |
+
+**Und warum nach jeder Messung geschrieben wird.** `17811111` lief sechs Stunden
+in den Timeout und hinterliess **nichts**, weil erst der Abschluss geschrieben
+hätte. Ein Teilergebnis mit Datum ist brauchbar; sechs Stunden ohne Ergebnis sind
+es nicht. Geschrieben wird atomar über eine `.part`-Datei, und einmal sofort beim
+Start — sonst stünde bis zur ersten Messung noch der fertige Datensatz des
+vorigen Laufs da, und das erste `du` ist `hub` mit 992 GB.
 
 ## 6. Scratch ist etwas anderes
 
@@ -287,3 +309,66 @@ Die zwölf zugehörigen Registrierungen in `registry/trained/` wurden mit
 entfernt, damit kein Eintrag auf ein leeres `local_path` zeigt
 (`merge_loras.py` liest auch deaktivierte Einträge); `registry/trained/` ist
 damit leer.
+
+## 8. Was der Inventardatensatz über sich selbst sagt
+
+Ein leeres `top` hatte zwei Ursachen, die verschieden zu lesen sind, und der
+Datensatz nannte keine davon: mit `--ours-only` war die oberste Ebene nie
+verlangt, nach einem Timeout fehlt sie. Dazu meldete `complete: true` neben
+leerem `top`, was sich wie eine vollständige Erhebung liest. Vier Felder trennen
+die Fälle jetzt:
+
+| Feld | Bedeutung |
+|---|---|
+| `scope` | `"ours"` oder `"full"` — **was verlangt war**, gesetzt beim Anlegen |
+| `ours_complete` | unser Unterbaum ist durchgemessen |
+| `complete` | nur beim **vollen** Durchgang wahr |
+| `running` / `touched` | Laufmarke und Zeitpunkt der letzten Messung |
+
+Daraus die vier Hinweise, die `--check` und `--suggest` ausgeben:
+
+```
+laufend, eben gemessen      → **der Lauf ist noch nicht fertig**, zuletzt vor 15 s gemessen
+laufend vermerkt, 4 h still → seit 4.0 h keine neue Messung … er ist beendet, hängt
+                              oder wurde abgebrochen; die Vorschläge sind unvollständig
+beendet, Umfang ours        → nur unser Unterbaum war verlangt, die übrigen
+                              Verzeichnisse der obersten Ebene sind ungemessen
+ohne scope (alter Datensatz) → Umfang nicht vermerkt: ob die oberste Ebene fehlt
+                              oder nie verlangt war, lässt sich nicht entnehmen
+```
+
+**`STALL_SECONDS` (1800) ist eine Wortwahl, kein Urteil.** Ob ein stiller Lauf
+beendet, abgebrochen oder nur langsam ist, weiss dieser Datensatz nicht, und der
+Hinweis behauptet es auch nicht — er nennt das Alter der letzten Messung und
+drei mögliche Ursachen. Vorher stand dort „abgebrochen" über einen Job, der auf
+bnode004 rechnete.
+
+Am echten Job durchgemessen (`17855509`, 10.10.2026): beim Start sofort
+geschrieben, mitten im Lauf `running: true` mit 11 von 23 Posten und „noch nicht
+fertig, zuletzt vor 22 s gemessen", am Ende `running: false`,
+`ours_complete: true`, `complete: false`, `scope: "ours"`, 23 Posten.
+
+## 9. Der Stand nach den Löschungen, gemessen am 10.10.2026
+
+`17849470`, 09:33 CEST, `scope: ours`, 23 Posten. **19,1 % frei** (2,3 TiB von
+12,0 TiB) — vorher 5,2 %.
+
+| Posten | Grösse |
+|---|---:|
+| `training_folder` | 1,89 TB — davon `jobs` 1,89, `trained` 0,006, `bases` 0,047 GB |
+| `hf_hub` | 1,35 TB — davon `hub` 0,95, `xet` 0,0003 |
+| `hub` (alte Form) | 1,07 TB — ein einziger Datensatz |
+| `archive` | 0,011 TB |
+| alles übrige | < 0,01 TB |
+
+**`hf_hub/hub` ist von 21 KB auf 949 GB gewachsen, und das ist kein Duplikat.**
+Die Zunahme sind die Datensätze, die der `german-kurrent-xvi-xix`-prepare
+(`17795292`, 11:15:04) gezogen hat: `zh-regierungsratsprotokolle` 308 GB,
+`kurrent-xix` 294 GB, `koenigsfelden-charters-post-1500` 17 GB,
+`german-20th-century` 12 GB, und neun weitere.
+
+**Der Befund aus §3 hält, am 10.10. nachgemessen:** `hub/…medieval-scripts…` ist
+992 GB in 699 Dateien, `hf_hub/hub/…medieval-scripts…` weiterhin **21 KB in 5
+Dateien**. `hub` bleibt die einzige lokale Kopie. Dass derselbe Name in beiden
+Formen vorkommt, heisst nichts — Grössen und Dateizahlen entscheiden, und genau
+diese Verwechslung hätte am 09.10. beinahe 992 GB echter Daten gekostet.

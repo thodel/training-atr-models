@@ -13,9 +13,19 @@ it was available the moment ``prepare`` finished:
 annealing the learning rate across all of them" — it did neither: kraken sizes
 the cycle in samples, so the rate sat frozen near ``lrate/25`` (#96). The step
 count is what this guard is about and is unaffected.) An
-unconverged CTC network has not learned blank-dominance and emits a character at
-nearly every timestep — which *is* an insertion-dominated CER, and which then
-cost two days to diagnose (11,191 insertions against 2 deletions).
+unconverged CTC network collapses to **blank** and emits almost nothing — which
+*is* an insertion-dominated CER under this project's convention, where an
+insertion is a reference character the hypothesis did not produce, and which
+then cost two days to diagnose (11,191 insertions against 2 deletions, so
+``11,566 - 11,191 + 2 =`` **377** characters of output against a reference of
+11,566).
+
+That sentence read "has not learned blank-dominance and emits a character at
+nearly every timestep" until 2026-10-12. Both failure modes are real for CTC —
+over-emission before blank-dominance is learned, collapse to blank after — but
+they score in opposite directions, and the numbers cited right beside it are the
+collapse. See ``docs/EVAL_SETS.md`` for the identity that settles such a
+question without re-deriving the convention.
 
 Every other guard in this subsystem protects a resource: the disk, the GPU, the
 filesystem, the honesty of the report. This one protects the **experiment**.

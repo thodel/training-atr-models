@@ -68,14 +68,26 @@ what makes it a controlled result. The training render is the default since, and
 The paragraph below was written on 07.10. It diagnosed the error *shape*
 correctly and the *cause* wrongly, which is the more instructive failure: Its error budget is
 **17 027 insertions** against 4 783 deletions and 4 567 substitutions — on
-114 960 reference characters, it invents 15 % of the text. Compare the two arms
+114 960 reference characters, it *omits* a net 10.7 % of the text. Compare the two arms
 that read normally: E4B is 2 039 / 2 529 / 7 202 and Qwen3.5-4B is
 1 437 / 1 388 / 4 995, both substitution-dominated, which is what a reading error
 looks like. Insertion-dominated is what a *generation* error looks like.
 
-Its length ratio of 0.894 cannot be read as "it writes too little". A model with
-three times more insertions than deletions and a total length *below* the
-reference is writing far too much on some lines and losing text on others — the
+**That sentence read "it invents 15 % of the text" until 2026-10-12**, which is
+the direction backwards, and the doc's own `length_ratio` disproves it. Under
+this project's convention an insertion is a reference character the hypothesis
+did *not* produce (`docs/EVAL_SETS.md`), so
+
+    hypothesis_chars = 114 960 − 17 027 + 4 783 = 102 716 → ratio 0.893
+
+reproduces the 0.894 in the table above to three digits. The arm wrote **less**
+than the reference, not more. The error *shape* — insertion-dominated, so a
+generation failure rather than a reading one — was right, and it is what the
+prompt mismatch explains; only the sign was wrong.
+
+Its length ratio of 0.894 therefore says what it looks like: on balance the arm
+writes too little. But 4 783 deletions beside 17 027 insertions means it is not
+uniformly short — it loses text on most lines and over-runs on some, the
 two-peaked distribution this project has now met three times, and the mean hides
 it again. `truncated_cer` is 0.200, so the eleven lines at the generation cap are
 not the story either.
@@ -132,6 +144,136 @@ hypothesis the ladder tests, not a result).
 **Generation is worth as much as size.** At an identical 4 B, changing the family
 generation moved the CER 0.85 points — most of a doubling. "Which base" is not a
 second-order question to be settled once and forgotten.
+
+### 1b. The first 9 B and 27 B, measured — on the medieval corpus
+
+Measured 09.–10.10.2026, all four on the **same draw `8686f6ad`**, which is the
+condition #108 sets before two CER values may be put side by side. The 4 B row is
+`qwen3vl-medieval-german-v3` re-scored onto that draw by job `17838796`, so it is
+in the table rather than beside it:
+
+| Arm | Base | CER on `8686f6ad` | 4-bit |
+|---|---|---:|---|
+| `ladder-med-qwen35-27b` | `Qwen/Qwen3.5-27B` | **9.55 %** | yes |
+| `ladder-med-qwen35-9b` | `Qwen/Qwen3.5-9B` | 12.13 % | yes |
+| `qwen3vl-medieval-german-v3` | `Qwen/Qwen3-VL-4B-Instruct` | 12.59 % | no |
+| `ladder-med-olmocr2-7b` | `allenai/olmOCR-2-7B-1025` | 74.65 % | yes |
+
+On its own draw the 4 B reference reads 11.20 %, so the draw itself is worth 1.4
+points — which is the whole reason #108 exists.
+
+**What this does and does not say.** The 27 B is the best medieval line model
+this project has, by 3.0 points over the 4 B reference. But the step **4 B → 9 B
+is only 0.46 points**, where the 19th-century ladder above pays ~2.2 points per
+doubling. Three confounds sit in that gap and none of them is settled here: the
+4 B row is bf16 while both ladder arms are **4-bit** (#138 is that question, still
+unmeasured on this corpus), the 4 B row is a different family generation
+(Qwen3-VL against Qwen3.5), and **both ladder arms carry `code_drift: true`** —
+they ran on a different commit than the one they were created with. The
+extrapolation in §1 was made for the 19th-century corpus and is not touched by
+these numbers.
+
+olmOCR-2 at 74.65 % is not a surprise to be explained away: it is a
+page-conditioned model asked to read single lines, which is the same finding as
+serving#165 from the other side.
+
+**Und der Qwen3.8-27B steht nicht in dieser Tabelle, obwohl er fertig ist.**
+`ladder-med-qwen38-27b-v2` lief am 11.10.2026 durch (21:25:39) und misst **12.15 %**
+— aber auf Ziehung `9fe26816`, die er mit keinem anderen Lauf teilt (`draw`
+meldet `shared_with: []`). Damit ist die Frage, für die der Arm eingereiht wurde
+— zahlt die Generation 3.5 → 3.8 bei gleicher Grösse? — **nicht beantwortet**:
+12.15 % und die 9.55 % des Qwen3.5-27B liegen auf verschiedenen Ziehungen, und
+§1d sagt, warum das trotz gepinnter Revisionen passieren konnte. Dass 12.15 %
+fast genau auf den 12.13 % des 9 B liegt, ist keine Aussage, sondern ein
+Zusammentreffen zweier Zahlen aus verschiedenen Töpfen.
+
+Ein Re-Score auf `8686f6ad` würde es entscheiden und nach der Messung von
+`17838796` **3:45** kosten. Bis dahin bleibt der Arm gemessen und unvergleichbar.
+
+### 1c. The olmOCR page arms: a raised cap broke stopping, not reading
+
+Four page arms over the same artefact `2ad500ee8414`, differing only in the
+geometry and prompt knobs. The first to finish was `cap3072` (job `17653686`,
+14:49:24, 10.10.2026), against the `page-v1` baseline on draw `cb4d1c88`:
+
+| Arm | CER | `truncated_cer` | `length_ratio` |
+|---|---:|---:|---:|
+| `olmocr2-7b-medieval-page-nativeprompt` | **34.38 %** | 28.31 % | 1.083 |
+| `olmocr2-7b-medieval-german-page-v1` (Grundlinie) | 34.92 % | 30.89 % | 1.006 |
+| `olmocr2-7b-medieval-page-px1288` | 41.14 % | 36.46 % | 1.053 |
+| `olmocr2-7b-medieval-page-cap3072` | 46.74 % | **29.29 %** | 1.202 |
+
+Alle drei Arme liefen bis 11.10.2026 durch; der vierte (`px4m`) wurde abgebrochen
+(`17807894`, 0 s) und fehlt. **Keiner der drei Regler kauft mehr als ein halbes
+Punkt**: olmOCRs eigener Prompt liegt 0.54 Punkte vor der Grundlinie, beide
+Geometrie-Regler dahinter. Der Pixelbudget-Regler `px1288` verliert gleichmässig
+(`truncated_cer` 36.46 %, also auch beschnitten schlechter — das ist echt
+schlechteres Lesen). Der Token-Regler verliert anders:
+
+The two metrics point opposite ways, and together they are precise. Clipped to
+the reference length the cap arm reads **better** than the baseline (29.29 %
+against 30.89 %); unclipped it is twelve points worse, because it writes a fifth
+too much. The edit decomposition says the same thing: 54 346 deletions against
+13 618 insertions, and 54 346 − 13 618 = 40 728 = 241 887 − 201 159 exactly.
+**Raising the token cap to 3 072 did not cost reading ability, it cost stopping
+ability** — so the next iteration belongs in the stop-token and EOS handling, not
+in the recognition path. Die beiden Regler scheitern also auf verschiedene Weise,
+und nur `truncated_cer` trennt das: `px1288` liest schlechter, `cap3072` hört
+schlechter auf.
+
+### 1e. Das Kurrent-und-Druck-Modell ist gemessen
+
+`qwen3.5-4b-german-kurrent-xvi-xix-v1` lief am 11.10.2026 um 22:36 durch und
+misst **8.82 %** CER (WER 24.90 %, `length_ratio` 0.997, `truncated_cer` 9.10 %)
+auf 198 Zeilen der Ziehung `1c7eb9b3`. Das ist das Modell über die 20
+Datensätze aus #187 — 17 eigene und 6 fremde, abzüglich der drei flachen (#201).
+Zwei Einschränkungen gehören dazu: `code_drift: true`, und die Ziehung teilt es
+mit keinem anderen Lauf, es ist also mit keiner Zahl dieser Seite vergleichbar.
+Der Korpusbau dafür kostete 11:15:04 (`17795292`).
+
+### 1d. Which container produced a number is only knowable from 10.10.2026
+
+Two images differ by a transformers major version — `vlm-train.sif` has 4.57.6
+and does not know `qwen3_5`, `vlm-train-tf5.sif` has 5.17.0 and does — and until
+10.10.2026 **neither the job record nor the Slurm log named which one ran**
+(#206). Both train-sbatch defaulted to the old image, which is what killed
+`17808414` after 59 seconds. The default is now tf5 and the image is logged
+before anything loads:
+
+    == SIF: /storage/homefs/th19c587/ubelix/vlm-train-tf5.sif (transformers 5.17.0)
+
+For every CER measured before that line existed, the container is not
+recoverable from the record. For `17653688`, submitted 08.10. and still running
+when the fix landed, it was recoverable only from the live process (`ps` on
+gnode25 showed `vlm-train-tf5.sif`, carried in from the submitting environment by
+`--export=ALL`) — and that evidence dies with the job.
+
+The same gap sits one layer over, on the **dataset revision**: the four medieval
+corpora were pinned in no spec and resolved to no recorded sha. Here it is still
+determinable, by luck rather than by record — each one's newest HF commit is from
+April 2026, months before the September runs, and the cache holds exactly one
+snapshot per dataset whose sha equals `refs/main`:
+
+| Dataset | revision | newest commit |
+|---|---|---|
+| `image-text_rats-und-richtebuecher_xv-xvi` | `011e82080411…` | 2026-04-09 |
+| `image-text_bullinger-autoren` | `85ea246a5021…` | 2026-04-26 |
+| `image-text_koenigsfelden-charters-post-1500` | `fac683bee395…` | 2026-04-09 |
+| `image-text_aaeb-xiv-xvii` | `2a9b66116db3…` | 2026-04-26 |
+
+Das garantiert die **Eingaben** — und nicht die Ziehung. `ladder-med-qwen38-27b-v2`
+lief auf genau diesen vier shas und landete trotzdem auf der Ziehung
+`9fe26816`, die es mit **keinem** anderen Lauf teilt. Der Grund steht in seinem
+eigenen Datensatz: `artefact: "6ccb85e621d3 built by this job"`. Die Geschwister
+hinterliessen gar keinen Cache-Eintrag (`artefact: null`), es war also nichts zu
+übernehmen, und v2 hat das Korpus neu materialisiert — unter einem anderen
+Commit als sie (`code_drift: true` bei beiden Geschwistern, `false` bei v2).
+
+**Gepinnte Revisionen machen die Daten gleich, nicht die Ziehung.** Wer
+vergleichen will, braucht beides: dieselben Eingaben *und* denselben
+`draw_md5` — oder einen Re-Score auf die fremde Ziehung, der nach `17838796`
+3:45 kostet. Hätte einer der vier Datensätze im Sommer einen Commit bekommen,
+wäre schon die erste Hälfte unbeantwortbar gewesen.
 
 ## 2. Why this costs no prepare at all
 
