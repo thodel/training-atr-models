@@ -193,6 +193,16 @@ hatte. Und **der Vergleich hat einen Konfundierer**: der Qwen3.5-27B trägt
 verschiedenen Commits. Die geteilte Ziehung schliesst die Daten gleich, nicht
 den Code.
 
+**Der Kontrollarm dafür ist eingereiht**: `ladder-med-qwen35-27b-v2`, dieselbe
+Spezifikation wie der 3.8er mit **genau zwei** geänderten Feldern (`base_model`
+und `model_id`, von 721 verglichenen). Weil `_cache_key` in
+`engines/vlm_train_svc/runner.py` nur Auswahl, Split, `granularity`,
+`max_sample_chars` und `min_train_chars` umfasst und **nicht das Basismodell**,
+übernimmt er das Artefakt `6ccb85e621d3` des 3.8ers — und damit dessen Korpus
+*und* dessen Ziehung `9fe26816`. Dann unterscheiden die beiden Arme sich in
+nichts als dem Basismodell: gleiche Daten, gleiche Ziehung, gleicher Commit.
+Erst dieser Vergleich trennt die 1.22 Punkte in Generation und Drift.
+
 Damit relativiert sich §1 oben: „Generation is worth as much as size" stimmt als
 Aussage über die *Grösse* des Effekts, nicht über sein Vorzeichen. Beim Sprung
 Qwen3-VL-4B → Qwen3.5-4B auf dem 19.-Jahrhundert-Korpus zahlte die neuere
@@ -212,8 +222,10 @@ geometry and prompt knobs. The first to finish was `cap3072` (job `17653686`,
 | `olmocr2-7b-medieval-page-px1288` | 41.14 % | 36.46 % | 1.053 |
 | `olmocr2-7b-medieval-page-cap3072` | 46.74 % | **29.29 %** | 1.202 |
 
-Alle drei Arme liefen bis 11.10.2026 durch; der vierte (`px4m`) wurde abgebrochen
-(`17807894`, 0 s) und fehlt. **Keiner der drei Regler kauft mehr als ein halbes
+Alle drei Arme liefen bis 11.10.2026 durch. Der vierte (`px4m`) wurde am 11.10.
+abgebrochen (`17807894`, 0 s) und steht seit 12.10. wieder im Lauf — `deadlines`
+zeigt ihn als Anspruch auf `2ad500ee8414` mit `last_used` 14:42 —, fehlt in der
+Tabelle also nur noch vorläufig. **Keiner der drei Regler kauft mehr als ein halbes
 Punkt**: olmOCRs eigener Prompt liegt 0.54 Punkte vor der Grundlinie, beide
 Geometrie-Regler dahinter. Der Pixelbudget-Regler `px1288` verliert gleichmässig
 (`truncated_cer` 36.46 %, also auch beschnitten schlechter — das ist echt
