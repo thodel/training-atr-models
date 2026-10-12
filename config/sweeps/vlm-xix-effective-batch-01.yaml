@@ -1,0 +1,259 @@
+# The first VLM sweep (#138, the last open part of #12).
+#
+# ONE AXIS, THREE CELLS. #138 asks for batch size and learning rate as one axis
+# and says why: linear scaling ties them, so varying them separately ranks
+# compute time rather than learning — a larger batch at an unchanged rate simply
+# takes fewer steps over the same data. `effective_batch` below is therefore a
+# coupled axis (692f632): one value carries all three parameters.
+#
+# WHY `accumulate_grad_batches` MOVES AND `batch_size` DOES NOT. They multiply to
+# the effective batch, and `convergence.epochs_for` reads the product — but they
+# cost differently. Raising `batch_size` multiplies activation memory; raising
+# the accumulation does not. A sweep about learning dynamics must not confound
+# the two, so memory is held constant here and only the effective batch moves.
+# What `batch_size` should be is a VRAM question and was answered separately
+# (#137): bf16 on one A40 peaked at 27,763 of 45,486 MiB at batch 1 on page
+# samples, and these are line samples at an eighth of the tokens.
+#
+# WHAT IS DELIBERATELY ABSENT
+#
+#   batch_size        — see above: a memory axis masquerading as a learning one.
+#   max_seq_len       — measured and settled: 4096 fits the corpus and not its
+#                       tail, and raising it moves a warning threshold rather
+#                       than allocating anything (#138, 422d9f7). The line
+#                       budget of 512 is what applies here.
+#   load_in_4bit      — #137 measured bf16 as 22 % FASTER and fitting on one
+#                       card, so `false` is the setting, not a question. It is
+#                       in `base`, not on an axis.
+#   lora_r            — a real question and a smaller one than the effective
+#                       batch. Fixed at the 64 every run here has used.
+#   seed              — a sweep that varies the seed measures seed noise.
+#                       Varying it is what the noise floor does, on one
+#                       configuration, on purpose.
+#
+# NOT RUNNABLE YET, AND ON PURPOSE. `data.digest` and the four `revision`s are
+# absent, so `parse_manifest` refuses this file. Both need the boxes, which were
+# unreachable when it was written, and neither may be guessed:
+#
+#   * the revisions make the artefact PINNED. An unpinned artefact expires after
+#     seven days (artefact_cache.UNPINNED_MAX_AGE_DAYS) and a three-rung ladder
+#     runs longer — rung 1 would then be compared against a validation partition
+#     rebuilt between the rungs. This is not hypothetical: the artefact these
+#     corpora were last measured on expired between 03.10. and 12.10.2026 and
+#     took the sample set with it.
+#   * the digest identifies the bytes rather than a description of them, and it
+#     CHANGES when the revisions go in — so it has to be computed after them and
+#     before the first run, never after.
+#
+# Fill them with, on asteraix:
+#
+#   for r in dh-unibe/image-text_zh-regierungsratsprotokolle \
+#            dh-unibe/image-text_kurrent-xix \
+#            dh-unibe/image-text_parlamentsdienste-protokolle \
+#            dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix; do
+#     .venvs/kraken-train/bin/python -c \
+#       "import sys;from huggingface_hub import HfApi;print(sys.argv[1], HfApi().dataset_info(sys.argv[1]).sha)" "$r"
+#   done
+#
+# and then, with the revisions written in above:
+#
+#   .venvs/kraken-train/bin/python -c "import yaml,sys;sys.path.insert(0,'src');\
+#   from atr_training.contracts import DatasetSpec;\
+#   from atr_training.artefact_cache import key_for_specs;\
+#   d=yaml.safe_load(open('config/sweeps/vlm-xix-effective-batch-01.yaml'))['data']['datasets'];\
+#   print(key_for_specs([DatasetSpec.model_validate(x) for x in d],'vllm').digest)"
+
+name: vlm-xix-effective-batch-01
+engine: vllm
+base_model: Qwen/Qwen3-VL-4B-Instruct
+
+data:
+  # The corpora of `qwen3vl-german-xix-v2`, copied verbatim from its job record
+  # (20260916T090417Z-qwen3vl-german-xix-v2 on UBELIX) rather than retyped — the
+  # same reason the kraken manifest copies from ubelix/specs/. The project lists
+  # are long and the point of this sweep is that the data is NOT the variable.
+  train: the four 19th-century corpora of qwen3vl-german-xix-v2
+  eval: the 10 % validation partition of that corpus — identical for all three
+  # digest: absent on purpose, see the header.
+  datasets:
+    - hf_repo: dh-unibe/image-text_zh-regierungsratsprotokolle
+      granularity: page
+      all_projects: true
+      max_pages: 20000
+      partition: 0.9
+      seed: 42
+    - hf_repo: dh-unibe/image-text_kurrent-xix
+      granularity: page
+      max_pages: 19808
+      partition: 0.9
+      seed: 42
+      train_projects:
+        - TRAIN_CITlab_Bassermann_0_4
+        - TRAIN_CITlab_Bassermann_Manuscripts
+        - TRAIN_CITlab_Bassermann_Manuscripts_0_2
+        - TRAIN_CITlab_Binder_Kochbuch_2
+        - TRAIN_CITlab_Escher_M1
+        - TRAIN_CITlab_Gusbeth
+        - TRAIN_CITlab_Handschriftliche_Archivquellen
+        - TRAIN_CITlab_Konzilsprotkolle_B_Schwartz_5_2018
+        - TRAIN_CITlab_MargareteSick
+        - TRAIN_CITlab_MargareteSick20180731
+        - TRAIN_CITlab_MargareteSick20180731a
+        - TRAIN_CITlab_MÜLLER
+        - TRAIN_CITlab_Protokoll_Hoftheater_1806
+        - TRAIN_CITlab_Rehlen_1834_a
+        - TRAIN_CITlab_RvE_Barlaam_HS_D_
+        - TRAIN_CITlab_Steiner
+        - TRAIN_CITlab_Suppes
+        - TRAIN_CITlab_Suppes_3500
+        - TRAIN_CITlab_Tagebuch_Arnold_v1
+        - TRAIN_CITlab_umkc_Roland_M1
+        - TRAIN_CITlab_umkc_Roland_M2
+        - hufeland_privatbesitz_1829
+        - nn_msgermqu2124_1827
+        - nn_msgermqu2345_1827
+        - parthey
+      eval_projects:
+        - TEST_CITlab_Bassermann_0_4
+        - TEST_CITlab_Bassermann_Manuscripts
+        - TEST_CITlab_Bassermann_Manuscripts_0_2
+        - TEST_CITlab_Binder_Kochbuch_2
+        - TEST_CITlab_Escher_M1
+        - TEST_CITlab_Gusbeth
+        - TEST_CITlab_Handschriftliche_Archivquellen
+        - TEST_CITlab_Konzilsprotkolle_B_Schwartz_5_2018
+        - TEST_CITlab_MargareteSick
+        - TEST_CITlab_MargareteSick20180731
+        - TEST_CITlab_MargareteSick20180731a
+        - TEST_CITlab_MÜLLER
+        - TEST_CITlab_Protokoll_Hoftheater_1806
+        - TEST_CITlab_Rehlen_1834_a
+        - TEST_CITlab_RvE_Barlaam_HS_D_
+        - TEST_CITlab_Steiner
+        - TEST_CITlab_Suppes
+        - TEST_CITlab_Suppes_3500
+        - TEST_CITlab_Tagebuch_Arnold_v1
+        - TEST_CITlab_umkc_Roland_M1
+        - TEST_CITlab_umkc_Roland_M2
+    - hf_repo: dh-unibe/image-text_parlamentsdienste-protokolle
+      granularity: page
+      max_pages: 138
+      partition: 0.9
+      seed: 42
+      train_projects:
+        - "1849_01"
+        - "1849_02"
+        - "1849_03"
+        - "1849_04"
+        - "1849_05"
+        - "1849_06"
+        - "1849_07"
+        - "1849_08"
+        - "637157213248534270_verkleinert"
+    - hf_repo: dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix
+      granularity: page
+      max_pages: 52
+      partition: 0.9
+      seed: 42
+      train_projects:
+        - Nationalrat_01__Sitzung_–_06_11_1848
+        - Nationalrat_02__Sitzung_–_07_11_1848
+        - Nationalrat_03__Sitzung_–_08_11_1848
+        - Nationalrat_04__Sitzung_–_09_11_1848
+        - Nationalrat_05__Sitzung_–_10_11_1848
+        - Nationalrat_06__Sitzung_–_13_11_1848
+        - Nationalrat_07__Sitzung_–_14_11_1848
+        - Nationalrat_08__Sitzung_–_15_11_1848
+        - Nationalrat_09__Sitzung_–_18_11_1848
+        - Nationalrat_10__Sitzung_–_21_11_1848
+        - Nationalrat_11__Sitzung_–_22_11_1848
+        - Nationalrat_12__Sitzung_–_23_11_1848
+        - Nationalrat_13__Sitzung_–_24_11_1848
+        - Nationalrat_14__Sitzung_–_25_11_1848
+        - Nationalrat_15__Sitzung_–_27_11_1848
+        - Nationalrat_16__Sitzung_–_28_11_1848
+        - Nationalrat_17__Sitzung_–_29_11_1848
+        - Ständerat_01__Sitzung_–_06_11_1848
+        - Ständerat_02__Sitzung_–_08_11_1848
+        - Ständerat_03__Sitzung_–_09_11_1848
+        - Ständerat_04__Sitzung_–_11_11_1848
+        - Ständerat_05__Sitzung_–_14_11_1848
+        - Ständerat_06__Sitzung_–_15_11_1848
+        - Ständerat_07__Sitzung_–_21_11_1848
+        - Ständerat_08__Sitzung_–_23_11_1848
+        - Ständerat_09__Sitzung_–_24_11_1848
+        - Ständerat_10__Sitzung_–_25_11_1848
+        - Ständerat_11__Sitzung_–_27_11_1848
+        - Ständerat_12__Sitzung_–_28_11_1848
+        - Ständerat_13__Sitzung_–_28_11_1848
+        - VBV_01__Sitzung_–_16_11_1848
+        - VBV_02__Sitzung_–_17_11_1848
+        - VBV_03__Sitzung_–_20_11_1848
+        - VBV_04__Sitzung_–_24_11_1848
+        - VBV_05__Sitzung_–_29_11_1848
+
+budget:
+  # `qwen3vl-german-xix-v2` trained one epoch over 405k lines at effective batch
+  # 16, which is ~25,000 optimizer steps. A screening rung at 3,000 is an eighth
+  # of that: enough to separate three learning rates, far too little to call a
+  # model trained — which is what a rung 0 is for.
+  steps: 3000
+  rungs: [3, 1]
+  # 3x3,000 + 1x9,000 = 18,000, plus room for one preempted cell.
+  max_total_steps: 22000
+
+base:
+  granularity: line
+  load_in_4bit: false
+  batch_size: 16
+  accumulate_grad_batches: 1
+  lrate: 2.0e-4
+  lora_r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  gradient_checkpointing: true
+  seed: 42
+  workers: 4
+  device: cuda:0
+
+axes:
+  # The coupled axis. Cell one IS `qwen3vl-german-xix-v2`'s setting, so the
+  # baseline is measured here, at this budget, on this corpus — without it
+  # "better" would be a comparison across sweeps, which the noise floor forbids.
+  effective_batch:
+    - {batch_size: 16, accumulate_grad_batches: 1, lrate: 2.0e-4}
+    - {batch_size: 16, accumulate_grad_batches: 2, lrate: 4.0e-4}
+    - {batch_size: 16, accumulate_grad_batches: 4, lrate: 8.0e-4}
+
+baseline:
+  # The number to beat, and the two fields that keep the leaderboard from
+  # comparing across sets. 0.0533 is v2's own validation split at ~25,000 steps;
+  # this sweep's rung 0 runs 3,000, so the verdict line will say "not
+  # comparable" — which is correct and is why the winner gets measured on the
+  # federal-minutes benchmark afterwards, where v2 scored 7.65 %.
+  model: qwen3vl-german-xix-v2
+  value: 0.0533
+  metric: cer
+  measured_on: its own 10 % validation partition, 200-sample stratified draw
+  draw_md5: e04ca483
+
+notes: |
+  METRIC. Run this with --metric cer. `benchmark_cer` cannot be filled by the
+  sweep: BenchmarkSpec names one hf_repo plus one project, and this sweep's own
+  validation partition is drawn across four corpora. The winner is measured on
+  dh-unibe/image-text_federal-minutes-testset / TEST_federal_minutes afterwards,
+  the way kraken-german-xix-v1 was (11.18 %) — that is the number comparable with
+  v2's 7.65 % and qwen3.5-4b-v2's 6.80 %.
+
+  NO NOISE FLOOR YET, and this sweep must not be read as a ranking until there
+  is one. `noise_floor` is measured on a corpus and a budget and cannot exist
+  before them (#115). Three learning rates an octave apart should separate well
+  beyond any plausible floor — but "should" is the state, not the result, and
+  the kraken side of this project has twice produced a confident ordering that
+  the floor then swallowed. Measure it with scripts/measure_noise_floor.py
+  --write-to this file, on cell one, before trusting a gap.
+
+  WHAT CELL ONE IS FOR. It reproduces v2's hyperparameters at this sweep's
+  budget. If it lands far from v2's 0.0533 the sweep has a data or budget
+  problem, not a hyperparameter finding — and that is worth knowing before the
+  other two cells are read.
