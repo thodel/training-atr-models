@@ -1,10 +1,13 @@
 """The first VLM sweep's manifest (#138, the last open part of #12).
 
-It is a **draft on purpose**: `data.digest` and the four `revision`s need the
-boxes and may not be guessed, so `parse_manifest` refuses the file as it stands.
-This checks the design that does not depend on them, by parsing a copy with the
-two filled in — so the file on disk cannot be run by accident and the decisions
-in it are still pinned.
+It was a draft that refused to parse until the four `revision`s and the digest
+could be read off the boxes — filled 12.10.2026, `pinned: True`. The tests that
+held the draft shut now hold the pinning instead, because that is the property
+worth keeping: an unpinned artefact expires after seven days, a three-rung
+ladder runs longer, and rung 1 would then be compared against a validation
+partition rebuilt between the rungs. The artefact these corpora were last
+measured on expired between 03.10. and 12.10.2026 and took the sample set with
+it, which is why this is checked and not trusted.
 """
 
 from __future__ import annotations
@@ -21,38 +24,53 @@ from atr_training.sweep_manifest import ManifestError, parse_manifest
 MANIFEST = (Path(__file__).resolve().parents[1] / "config" / "sweeps"
             / "vlm-xix-effective-batch-01.yaml")
 RAW = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
-#: A revision shape the parser accepts, used only to make the draft parseable
-#: here. Deliberately not a real sha: a test that invented one would be the
-#: first place someone copied it from.
-FAKE_REV = "0" * 40
 
 
 def runnable_copy() -> dict:
-    raw = copy.deepcopy(RAW)
-    raw["data"]["digest"] = "sha256:" + "0" * 64
-    for spec in raw["data"]["datasets"]:
-        spec["revision"] = FAKE_REV
-    return raw
+    """The manifest as it is. Kept as a function so the design tests below read
+    the same whether the file is a draft or pinned."""
+    return copy.deepcopy(RAW)
 
 
-# ── it must not be runnable as it stands ─────────────────────────────────────
-def test_the_file_on_disk_refuses_to_parse():
-    """Absent on purpose. The digest changes when the revisions go in, so it has
-    to be computed after them and before the first run — and a manifest carrying
-    a plausible-looking placeholder is one somebody runs."""
-    with pytest.raises(ManifestError):
-        parse_manifest(RAW, source=str(MANIFEST))
+# ── it is pinned, and that is not housekeeping ───────────────────────────────
+def test_the_file_on_disk_parses():
+    assert parse_manifest(RAW, source=str(MANIFEST)).name == "vlm-xix-effective-batch-01"
 
 
-def test_no_dataset_claims_a_revision_yet():
-    assert all(spec.get("revision") is None for spec in RAW["data"]["datasets"])
+@pytest.mark.parametrize("index", range(4))
+def test_every_dataset_names_a_revision(index):
+    """Without one the artefact is unpinned, expires after seven days, and a
+    ladder that outlives it compares its rungs against different data."""
+    revision = RAW["data"]["datasets"][index].get("revision")
+
+    assert isinstance(revision, str) and len(revision) == 40, revision
+    assert revision != "0" * 40, "a placeholder is worse than an absence"
+    assert all(ch in "0123456789abcdef" for ch in revision), revision
 
 
-def test_the_header_says_how_to_fill_both():
+def test_the_digest_is_a_sha256_and_not_a_placeholder():
+    digest = RAW["data"]["digest"]
+
+    assert digest.startswith("sha256:")
+    assert len(digest.split(":", 1)[1]) == 64
+    assert set(digest.split(":", 1)[1]) != {"0"}
+
+
+def test_the_header_says_how_both_were_obtained():
     text = MANIFEST.read_text(encoding="utf-8")
     assert "key_for_specs" in text, "the digest command"
     assert "dataset_info" in text, "the revision command"
     assert "UNPINNED_MAX_AGE_DAYS" in text, "why pinning is not housekeeping"
+    assert "pinned: True" in text, "what the computation reported"
+
+
+def test_a_manifest_error_is_still_what_a_missing_digest_gets():
+    """The draft refused to parse, and that guard must keep working — it is what
+    stops a half-filled manifest from running."""
+    without = copy.deepcopy(RAW)
+    del without["data"]["digest"]
+    with pytest.raises(ManifestError):
+        parse_manifest(without)
 
 
 # ── the design ───────────────────────────────────────────────────────────────
