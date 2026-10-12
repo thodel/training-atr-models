@@ -368,18 +368,100 @@ class SweepManifest:
             labels[BASE_AXIS] = {**labels[BASE_AXIS], "None": "from scratch"}
         out: list[SweepConfig] = []
         for point in itertools.product(*(self.axes[n] for n in names)):
-            chosen = dict(zip(names, point))
+            # A **coupled** axis carries a mapping of several parameters as one
+            # value, so they move together and the cross product stays one
+            # dimension wide. That is what "batch size and learning rate are one
+            # axis, not two" requires (#138): linear scaling ties them, and
+            # varying them separately ranks compute time rather than learning —
+            # a larger batch at an unchanged rate simply takes fewer steps over
+            # the same data. The axis name is then a label, not a parameter.
+            chosen: dict[str, Any] = {}
+            coupled: dict[str, Any] = {}
+            for name, value in zip(names, point):
+                if isinstance(value, Mapping):
+                    coupled.update({str(k): v for k, v in value.items()})
+                    chosen[name] = value
+                else:
+                    chosen[name] = value
             # `base_model` is a request field, not a ketos parameter, so it is
             # swept and shown but never passed as one.
             base = chosen.get(BASE_AXIS, self.base_model)
-            params = canonical({k: v for k, v in {**self.base, **chosen}.items()
-                                if k != BASE_AXIS})
+            # A coupled axis contributes its KEYS to the parameters; its own name
+            # contributes nothing, or the request would carry a parameter called
+            # after the axis.
+            flat = {k: v for k, v in chosen.items()
+                    if k != BASE_AXIS and not isinstance(v, Mapping)}
+            params = canonical({**self.base, **flat, **coupled})
             out.append(SweepConfig(
                 config_id=config_id(params, data_digest=self.data_digest,
                                     base_model=base),
                 params=params, axes=canonical(chosen),
                 base_model=str(base) if base else None, labels=labels))
         return out
+
+
+#: The engines whose parameter classes a manifest may be checked against. An
+#: engine missing here is not refused — it is simply unchecked, and says so.
+PARAMS_FOR = {"kraken": "KrakenTrainParams", "vllm": "VlmTrainParams",
+              "trocr": "TrocrTrainParams"}
+
+
+def params_fields(engine: str) -> frozenset[str] | None:
+    """The parameter names ``engine`` accepts, or None when it has no class here.
+
+    Why this exists: ``VlmTrainParams`` and the others ignore unknown fields
+    (pydantic's default), so ``btach_size: 4`` in a manifest is **dropped in
+    silence**. In a single run that costs one wrong run. In a sweep it is worse
+    than that: every cell then trains with identical parameters, each one gets a
+    different ``config_id`` from the misspelled key, and the leaderboard ranks
+    seed noise as if it were an effect — a confident ordering of nothing.
+    """
+    from atr_training import contracts
+
+    name = PARAMS_FOR.get(engine)
+    model = getattr(contracts, name, None) if name else None
+    return frozenset(model.model_fields) if model is not None else None
+
+
+def _check_param_names(engine: str, base: Mapping, axes: Mapping, where: str) -> None:
+    """Refuse a `base` or `axes` key the engine's parameters do not have."""
+    known = params_fields(engine)
+    if known is None:
+        return
+    # name -> where it was written, for a message that points at the line.
+    offered: dict[str, str] = {str(key): "base" for key in base}
+    for name, values in axes.items():
+        if name == BASE_AXIS:
+            continue
+        for value in values:
+            if isinstance(value, Mapping):          # a coupled axis: its keys
+                for key in value:
+                    offered[str(key)] = f"axes.{name}.{key}"
+            else:
+                offered[str(name)] = f"axes.{name}"
+    unknown = {k: v for k, v in offered.items() if k not in known}
+    if unknown:
+        listed = ", ".join(v if v != "base" else f"base.{k}"
+                           for k, v in sorted(unknown.items()))
+        raise ManifestError(
+            f"{where}: {listed} — not a parameter of engine {engine!r}. "
+            f"{PARAMS_FOR[engine]} ignores unknown fields, so this would be "
+            "dropped in silence and every cell would train identically while "
+            "the leaderboard ranked them. Fix the spelling, or move the key out "
+            "of the parameters.")
+
+
+def _swept_parameters(axes_raw: Mapping) -> set[str]:
+    """The parameter names the axes move — a coupled axis contributes its keys."""
+    out: set[str] = set()
+    for name, values in axes_raw.items():
+        listed = values if isinstance(values, (list, tuple)) else [values]
+        if listed and all(isinstance(v, Mapping) for v in listed):
+            for value in listed:
+                out |= {str(k) for k in value}
+        else:
+            out.add(str(name))
+    return out
 
 
 def _require(raw: Mapping, key: str, where: str) -> Any:
@@ -560,11 +642,15 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
     axes_raw = raw.get("axes") or {}
     if not isinstance(axes_raw, Mapping):
         raise ManifestError(f"{where}: `axes` must be a mapping of name to values")
-    undeclared = sorted(set(axes_raw) - set(base) - {BASE_AXIS})
+    # Every swept PARAMETER needs a declared default. For a coupled axis the
+    # swept parameters are the keys of its values, not the axis name — the name
+    # is a label ("effective_batch"), and demanding a `base.effective_batch`
+    # would ask for a default for something no engine has.
+    undeclared = sorted(_swept_parameters(axes_raw) - set(base) - {BASE_AXIS})
     if undeclared:
         raise ManifestError(
             f"{where}: {', '.join(undeclared)} "
-            f"{'are axes' if len(undeclared) > 1 else 'is an axis'} with no entry "
+            f"{'are swept' if len(undeclared) > 1 else 'is swept'} with no entry "
             "in `base`. Every swept parameter needs a declared default: without "
             "one there is nothing to compare an extension against, and a "
             "configuration that simply did not pin the parameter cannot be told "
@@ -578,6 +664,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
             "would carry a column of heights that half the rows never used. "
             "Sweep the geometry from scratch, or sweep the base; not both.")
     axes = {str(k): _axis_values(str(k), v) for k, v in axes_raw.items()}
+    _check_param_names(str(raw.get("engine") or "kraken"), base, axes, where)
 
     n_configs = 1
     for values in axes.values():
