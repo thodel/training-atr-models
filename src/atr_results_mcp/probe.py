@@ -615,6 +615,10 @@ REASONS = {
     "QOSGrpGRES": "the QoS caps GPUs of this type over ALL its users' running jobs (job_gratis "
                   "shares a few rtx4090 and h100); this job starts when any job of the QoS "
                   "releases one — seen 12.10.2026 on two rescore jobs",
+    "DependencyNeverSatisfied": "the job this one depends on (--dependency=afterok) ended "
+                                "without success; Slurm will never start it — scancel it "
+                                "and resubmit after the dependency is fixed (seen 12.10.2026 "
+                                "on a prep/train chain after a 1 h prep TIMEOUT)",
     "None": "running",
 }
 
@@ -1008,7 +1012,15 @@ def resubmit_for(run: Runner, paths: Paths, record: Dict[str, Any]) -> Dict[str,
         behind = None
     answer["checkout_behind"] = behind
     why = []
-    if last is None:
+    if last is None and checkpoint:
+        # Seen 12.10.2026 on throughput-qwen35-4b: checkpoint-400 on disk, no Slurm
+        # log since created_at names the record (purged, renamed, or the train
+        # stage ran off Slurm). The checkpoint is the fact; the log is missing.
+        why.append("no Slurm log since %s names this record, but %s exists under %s: the "
+                   "resubmission resumes from it"
+                   % (utc_to_cest(record.get("created_at")), checkpoint,
+                      record.get("checkpoint_dir")))
+    elif last is None:
         why.append("never ran on Slurm: this is the first train submission, a decision rather "
                    "than a resume")
     else:
