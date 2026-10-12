@@ -291,6 +291,29 @@ share is the complete entry, and only `enabled` changes.
 2. **Test it** through the gateway with the gate's header, as in
    [Registering by hand](#registering-by-hand), step 3. The page comes from
    `$JOBS/<job_id>/data/pages_val.lst`. Go on only if `text` is not empty.
+
+   A `502` whose detail reads `kraken engine unreachable at
+   http://127.0.0.1:8201/recognize` is not about the model: the gateway on
+   idhefix is up and its kraken engine is not. The gate fails the same way
+   (`promotion_reason` holds the 502) and does not retry it, so the job ends
+   `completed` with `promoted: false`. Seen on 11.10.2026 with
+   `kraken-german-xix-v1`: `atr-kraken` had been stopped on 08.10., 14:50
+   CEST, and for three days no kraken model was servable while every job
+   record and `/health` of the gateway itself read fine. Check without a
+   key, from anywhere that reaches the gateway:
+
+   ```bash
+   curl -s http://130.92.59.240:8200/health | python3 -c 'import json,sys; print([(e["name"], e["reachable"]) for e in json.load(sys.stdin)["engines"]])'
+   ```
+
+   `("kraken", False)` means the engine. Start it on idhefix
+   (`systemctl --user reset-failed atr-kraken && systemctl --user restart
+   atr-kraken`), or through the gateway's keyed route
+   `POST /engines/kraken/restart` (serving-atr-inference#209, described in
+   the serving document's "When an engine is down"). Then repeat the test
+   and go on with step 3. Enabling before the engine is back is harmless
+   but blind: the entry appears in `/models` and every request for it is a
+   502 until the engine answers.
 3. **Enable it.** This reads the registration as it is, changes only the
    `enabled` line, and writes it back through the same validation and atomic
    write as the trainer. It prints the path:

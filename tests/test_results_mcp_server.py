@@ -127,13 +127,32 @@ def test_the_next_host_is_tried_when_ssh_itself_fails():
     assert attempts == ["ubelix", "ubelix-direct"]
 
 
-def test_no_host_names_the_vpn_and_every_failure():
+def test_no_host_after_timeouts_names_the_network_and_every_failure():
+    """A timeout on every host is the network: the VPN from the laptop, the campus
+    network from asteraix. The message names both, since the server does not
+    know where it runs (#214 A6), and lists every host's failure."""
     def runner(argv, **kw):
         raise subprocess.TimeoutExpired(argv, 1)
 
     link = SshTransport(hosts=["a", "b"], probe_source="P", runner=runner, call_timeout=1)
-    with pytest.raises(TransportError, match="VPN missing.*a: no answer.*b: no answer"):
+    with pytest.raises(TransportError, match="no route.*VPN.*asteraix.*a: no answer.*b: no answer"):
         link.call("queue", {})
+
+
+def test_a_refused_key_is_named_as_a_key_problem_not_the_vpn():
+    """On asteraix the key's authorized_keys line forces the probe wrapper; a
+    `Host key verification failed`, `Permission denied` or the wrapper's own
+    `refused` is that line or the wrapper, whatever the VPN does."""
+    def runner(argv, **kw):
+        return SimpleNamespace(returncode=255, stdout="",
+                               stderr="** post-quantum …\nHost key verification failed.")
+
+    link = SshTransport(hosts=["ubelix-direct"], probe_source="P", runner=runner)
+    with pytest.raises(TransportError) as err:
+        link.call("storage", {})
+    assert "key was refused" in str(err.value)
+    assert "not the VPN" in str(err.value)
+    assert "Host key verification failed" in str(err.value)
 
 
 def test_a_probe_error_passes_through_with_its_stderr():
