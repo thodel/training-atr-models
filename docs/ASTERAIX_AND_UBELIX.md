@@ -41,8 +41,10 @@ place is on its own is elsewhere, and this page does not repeat it:
 flowchart LR
   laptop["laptop"]
   gw["gateway on idhefix :8200<br/>130.92.59.240"]
+  tei["tei.dh.unibe.ch<br/>nginx · auth_basic key"]
   subgraph ast["asteraix · 130.92.59.242"]
     svc["atr-train service :8204<br/>queue, claim, reconcile"]
+    rmcp["atr-results MCP :8013<br/>read-only, user unit"]
     cards["2x A40 · 44.42 GiB usable each<br/>no queue, no wall limit"]
     acache["~/atr-cache<br/>checkpoints · artefacts · arrows · hand-named results"]
   end
@@ -57,8 +59,11 @@ flowchart LR
   hf["Hugging Face Hub<br/>dh-unibe datasets and models"]
   laptop -- "POST /train/jobs" --> gw
   gw -- "/train/* · X-API-Key" --> svc
-  laptop -- "ssh ubelix, via idhefix<br/>submit.sh · status.sh · results MCP" --> slurm
+  laptop -- "ssh ubelix, via idhefix<br/>submit.sh · status.sh" --> slurm
   laptop -- "ssh asteraix" --> svc
+  laptop -- "results MCP · https + key<br/>no VPN" --> tei
+  tei -- "ssh tunnel :8013" --> rmcp
+  rmcp -- "ssh ubelix-direct<br/>forced command: the probe only" --> slurm
   svc --> cards
   cards --> acache
   slurm --> cpu
@@ -75,12 +80,25 @@ flowchart LR
 
 Three things to read off it:
 
-- **Nothing of ours talks from asteraix to UBELIX or back.** The laptop
-  talks to both. asteraix reaches `submit02:22` (measured 05.10.2026) but has
-  no key for the campus account, so the trainer cannot submit, watch or cancel
-  a Slurm job ([#17](https://github.com/thodel/training-atr-models/issues/17)).
-  Everything that crosses between the two places crosses **as files on the
-  share**, moved by a person.
+- **One thing of ours talks from asteraix to UBELIX, and it can only read.**
+  Since 11.10.2026 asteraix holds `~/.ssh/id_ed25519_ubelix`, whose line in
+  the campus account's `authorized_keys` forces
+  `~/ubelix/atr_results_probe_only.sh` (versioned under `ubelix/`): the key
+  may run `python3 - <cmd> <json>` with the results probe on stdin and
+  nothing else — `sbatch`, `scancel`, a shell, a second command after `;`
+  are refused and logged. So the trainer still cannot submit, watch or cancel
+  a Slurm job ([#17](https://github.com/thodel/training-atr-models/issues/17));
+  that would be a second key with other rights, not this one. Everything that
+  crosses between the two places for *training* still crosses **as files on
+  the share**, moved by a person.
+- **The laptop reaches the results MCP through tei, without VPN.** The MCP
+  runs on asteraix as a user unit on `127.0.0.1:8013`; tei forwards that port
+  through `mcp-tunnel-asteraix@8013` and serves it as
+  `https://tei.dh.unibe.ch/mcp/atr-results/mcp` behind an `auth_basic` key
+  ([#214](https://github.com/thodel/training-atr-models/issues/214),
+  [RESULTS_MCP.md](RESULTS_MCP.md)). `tei:443` is the only door open from
+  outside the campus network (measured 06.10.2026); everything else on this
+  page needs VPN.
 - **The share is the common ground, with a different path on each side.**
   `/mnt/wbkolleg_dh_1/…` on asteraix and idhefix, `/storage/research/wbkolleg_dh_1/…`
   on UBELIX, one filesystem. A path written into a record on one side does not
@@ -328,7 +346,7 @@ Two CERs are comparable only on the same draw, and the draw is a per-job file.
 | `ssh ubelix` | `srv-train`, which is the SSH alias of **idhefix** (not of asteraix, despite the name; do not rename it) | no VPN; dies when idhefix is down |
 | `ssh ubelix-direct` | direct to `submit02` | VPN |
 | `GET /train/gpu`, `/train/jobs` on the gateway, the Discord `/atr_gpu` and `/atr_jobs` commands | idhefix, proxied to asteraix | the gateway's key |
-| the results MCP (`atr-results`) | `ubelix`, then `ubelix-direct`, over SSH with the probe on stdin; reads both job stores from there | the campus SSH key; runs on the laptop today |
+| the results MCP (`atr-results`) | `https://tei.dh.unibe.ch/mcp/atr-results/mcp` → tunnel `127.0.0.1:8013` → the unit on asteraix → `ssh ubelix-direct` with the probe on stdin; reads both job stores from there | the `auth_basic` key in the client's header; **no VPN** (since 11.10.2026, [#214](https://github.com/thodel/training-atr-models/issues/214)) |
 
 Two commands answer "where should the next run go" in a minute, both from
 [WHERE_A_RUN_RUNS.md](WHERE_A_RUN_RUNS.md) §6:
@@ -355,7 +373,8 @@ In the order in which closing them changes this page:
 | Issue | What it would change here |
 |---|---|
 | [#17](https://github.com/thodel/training-atr-models/issues/17) | the trainer on asteraix submits to Slurm, watches the job, cancels with `scancel`, and **registers the result itself**. "A model's way from UBELIX to /models" becomes automatic, and a dead UBELIX job no longer stays live |
-| [#156](https://github.com/thodel/training-atr-models/issues/156) | the probe reads both stores since 10.10.2026; what is left is a record for a hand-run measurement on asteraix, and the MCP's move from the laptop to asteraix behind tei |
+| [#156](https://github.com/thodel/training-atr-models/issues/156) | the probe reads both stores since 10.10.2026 and the MCP runs on asteraix behind tei since 11.10.2026 ([#214](https://github.com/thodel/training-atr-models/issues/214)); what is left is a record for a hand-run measurement on asteraix |
+| [#214](https://github.com/thodel/training-atr-models/issues/214) | the first unattended report without VPN; then the "VPN missing" wording in the task files and in `remote.py`, which is wrong on asteraix |
 | [#171](https://github.com/thodel/training-atr-models/issues/171) | a `kraken-train.def` and arrows on UBELIX; kraken stops being asteraix-only, and the batch sweep that says where its headroom is can run |
 | [#162](https://github.com/thodel/training-atr-models/issues/162), [#163](https://github.com/thodel/training-atr-models/issues/163) | the A40-to-H100 ratio and the peak-memory table turn the placement rule from a judgement into arithmetic |
 | [#206](https://github.com/thodel/training-atr-models/issues/206) | the record says which container measured a CER, so a number from each place carries its provenance |
