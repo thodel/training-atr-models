@@ -29,15 +29,17 @@ spec.loader.exec_module(mvnf)
 class FakeTrainer:
     """Finishes every job at once, with the scores we choose per seed."""
 
-    def __init__(self, scores: dict[int, tuple[float | None, float | None]]):
+    def __init__(self, scores: dict[int, tuple[float | None, float | None]], *,
+                 valid: bool = True):
         self.scores = scores
+        self.valid = valid
         self.submitted: list[dict] = []
         self.verified: list[dict] = []
         self.records: dict[str, dict] = {}
 
     def verify(self, request):
         self.verified.append(request)
-        return {"valid": True}
+        return {"valid": self.valid, "errors": [] if self.valid else ["no such base"]}
 
     def submit(self, request):
         self.submitted.append(request)
@@ -170,6 +172,17 @@ def test_the_state_refuses_another_cell_or_corpus(manifest, cell, tmp_path):
         {"cell": "other", "data_digest": manifest.data_digest, "jobs": {"42": "job-1"}}))
     with pytest.raises(SystemExit, match="belongs to one configuration"):
         mvnf.NoiseState(tmp_path / "n.json").check_against(cell, manifest.data_digest)
+
+
+def test_a_refusal_inside_a_200_stops_the_measurement(manifest, cell, tmp_path):
+    """`/jobs/verify` answers 200 with `valid: false`; a client that only looks
+    at the status code would submit four refused jobs."""
+    trainer = FakeTrainer({}, valid=False)
+    requests = mvnf.requests_for(manifest, cell, [42, 43], "cer")
+    with pytest.raises(SystemExit, match="no such base"):
+        mvnf.submit_missing(trainer, requests, mvnf.NoiseState(tmp_path / "n.json"),
+                            cell, manifest.data_digest)
+    assert trainer.submitted == []
 
 
 def test_a_dry_run_verifies_and_submits_nothing(manifest, cell, tmp_path):

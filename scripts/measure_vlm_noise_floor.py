@@ -152,7 +152,12 @@ def submit_missing(client: TrainerClient, requests: Mapping[int, dict],
         if seed in state.jobs:
             print(f"seed {seed}: re-attaching to {state.jobs[seed]}", flush=True)
             continue
-        client.verify(request)
+        answer = client.verify(request)
+        if answer.get("valid") is False:
+            # `/jobs/verify` answers 200 with the refusal inside; only the HTTP
+            # errors raise. The driver reads it the same way (`verify_all`).
+            raise SystemExit(f"seed {seed}: the trainer refuses the request: "
+                             f"{answer.get('errors')}")
         if dry_run:
             print(f"seed {seed}: verified, would submit {request['model_id']}", flush=True)
             continue
