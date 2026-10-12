@@ -465,6 +465,196 @@ def test_a_missing_job_is_an_error_not_an_exception(cluster):
     assert "error" in probe.job(cluster, "nope")
 
 
+# ── the wall's consequence and the fallback resubmission (#226) ─────────────
+TRAIN_SBATCH = """\
+#!/bin/bash
+#SBATCH --job-name=train
+#SBATCH --partition=gpu-invest
+#SBATCH --time=24:00:00
+#SBATCH --requeue
+#SBATCH --signal=B:TERM@120
+# the trap below runs `scontrol requeue` — this comment must not count
+trap '
+  echo "== SIGTERM at $(date -Is) — requeueing $SLURM_JOB_ID"
+  scontrol requeue "$SLURM_JOB_ID" 2>/dev/null || echo "   (requeue refused)"
+' TERM
+"""
+
+RESCORE_SBATCH = """\
+#!/bin/bash
+#SBATCH --job-name=rescore-shared-draw
+#SBATCH --partition=gpu
+#SBATCH --time=04:00:00
+"""
+
+
+def write_checkout(cluster: Paths) -> None:
+    ubelix = cluster.checkout / "ubelix"
+    ubelix.mkdir(parents=True)
+    (ubelix / "train.sbatch").write_text(TRAIN_SBATCH)
+    (ubelix / "rescore_on_shared_draw.sbatch").write_text(RESCORE_SBATCH)
+
+
+def test_on_timeout_is_read_from_the_batch_file_not_assumed(cluster):
+    """train.sbatch asks for SIGTERM before the wall and its trap requeues; the
+    rescore file has neither, and for it TIMEOUT is the end. --requeue alone
+    would cover a preemption and not a wall."""
+    write_checkout(cluster)
+    train = probe.on_timeout(cluster, "train")
+    assert train["file"] == "ubelix/train.sbatch"
+    assert train["signal"] == "B:TERM@120" and train["signal_before_wall_s"] == 120
+    assert train["requeue"] is True and train["trap_requeues"] is True
+    assert train["meaning"].startswith("TERM 120 s before the wall; the trap requeues")
+    rescore = probe.on_timeout(cluster, "rescore-shared-draw")
+    assert rescore["file"] == "ubelix/rescore_on_shared_draw.sbatch"
+    assert rescore["requeue"] is False and rescore["trap_requeues"] is False
+    assert rescore["meaning"] == "none: TIMEOUT ends the job"
+    assert probe.on_timeout(cluster, "fedmin1")["file"] is None
+    (cluster.checkout / "ubelix" / "preempt_only.sbatch").write_text(
+        "#SBATCH --job-name=preempt-only\n#SBATCH --requeue\n")
+    assert probe.on_timeout(cluster, "preempt-only")["meaning"].startswith(
+        "requeue on preemption only")
+
+
+def test_queue_names_the_attempt_and_what_the_wall_does(cluster):
+    """Measured 12.10.2026 13:16 CEST on 17890142: SIGTERM 120 s before the wall,
+    the trap requeued, attempt 2 started on the same Slurm id four minutes later.
+    The report had to be able to read "attempt 2" instead of guessing it."""
+    write_checkout(cluster)
+    (cluster.logs / "fedmin1-17488077.out").write_text(
+        "== attempt 1 — job x (training) on gnode34\n"
+        "[2026-10-12T13:16:10.004] error: *** JOB 17488077 ON gnode26 CANCELLED AT "
+        "2026-10-12T13:16:10 DUE to SIGNAL Terminated ***\n"
+        "== SIGTERM at 2026-10-12T13:16:10+02:00 — requeueing 17488077\n"
+        "== attempt 2 — job x (training) on gnode34\n25/2751\n2350/2751\n")
+    squeue = SQUEUE + ("17961545|rescore-shared-draw|gpu|job_gratis|PENDING|0:00|4:00:00|N/A|"
+                       "QOSGrpGRES||4|cpu=4,gres/gpu:rtx4090=1|\n")
+    run = canned({"squeue": squeue, "sinfo": SINFO})
+    by_id = {j["slurm_job_id"]: j for j in probe.queue(run, cluster)["jobs"]}
+    fedmin = by_id["17488077"]
+    assert fedmin["attempt"] == 2
+    assert fedmin["wall"]["on_timeout"]["file"] is None  # no fedmin1 file in this checkout
+    # A running job without a log still says what its wall does.
+    assert "on_timeout" in by_id["17545199"]["wall"]
+    assert "ALL its users" in by_id["17961545"]["reason_meaning"]
+
+
+def resubmit_cluster(cluster: Paths, *, status: str = "training", with_log: bool = True,
+                     state: str = "TIMEOUT", checkpoint: bool = True) -> dict:
+    write_checkout(cluster)
+    job_id = "20261009T174425Z-olmocr2-7b-medieval-page-px4m"
+    ckpt = cluster.scratch / "runs" / "checkpoints" / job_id
+    if checkpoint:
+        (ckpt / "checkpoint-1200").mkdir(parents=True)
+        (ckpt / "checkpoint-975").mkdir(parents=True)
+    write_job(cluster.scratch, job_id, status=status, stage="train", cer=None, draw=None,
+              finished=None, created="4de946820d03",
+              stage_commit="fa02f2d4db00" if with_log else None,
+              extra={"checkpoint_dir": str(ckpt), "registration": None,
+                     "created_at": "2026-10-09T17:44:25Z"})
+    if with_log:
+        (cluster.logs / "train-17890142.out").write_text(
+            "== code: pinned to fa02f2d 2026-10-10 eval_material (#55)\n"
+            "== SIF: /storage/homefs/th19c587/ubelix/vlm-train-tf5.sif (transformers 5.17.0)\n"
+            "== attempt 1 — job %s (training) on gnode26 2026-10-11T13:18:29+02:00\n"
+            "stage train: running fa02f2d4db00, but the job was created with 4de946820d03\n"
+            "[2026-10-12T13:18:00.000] error: *** JOB 17890142 ON gnode26 CANCELLED AT "
+            "2026-10-12T13:18:00 DUE TO TIME LIMIT ***\n" % job_id)
+        # An older log of another record must not be attributed to this one.
+        (cluster.logs / "train-17800000.out").write_text(
+            "== attempt 1 — job 20260925T045500Z-other (training) on gnode25\n")
+    sacct = "17890142|train|%s|1-00:00:12|2026-10-12T13:18:12\n" % state
+    squeue = "17545210|line-dataset|PENDING|\n"
+    git = "0\t15\n"
+    return {"job_id": job_id, "sacct": sacct, "squeue": squeue, "git": git}
+
+
+def test_resubmit_writes_the_pinned_command_after_the_wall(cluster):
+    """After a TIMEOUT with nothing of the record left in Slurm, the command is
+    written out: pinned to the commit the train stage ran (not HEAD, which is
+    where every drift line so far came from), with the container the attempt
+    printed, resuming from the newest checkpoint."""
+    fx = resubmit_cluster(cluster)
+    run = canned({"sacct": fx["sacct"], "squeue": fx["squeue"], "git": fx["git"]})
+    answer = probe.job(cluster, fx["job_id"], run=run)["resubmit"]
+    assert answer["command"] == (
+        "cd %s && ATR_CODE_COMMIT=fa02f2d4db00%s JOB_ID=%s ubelix/submit.sh ubelix/train.sbatch "
+        "-- --export=ALL,SIF=/storage/homefs/th19c587/ubelix/vlm-train-tf5.sif"
+        % (cluster.checkout, "0" * 28, fx["job_id"]))
+    assert answer["kind"] == "resume" and answer["resume_from"] == "checkpoint-1200"
+    assert answer["pin_source"] == "stage train of this record"
+    assert answer["sif_source"] == "log of Slurm job 17890142"
+    assert answer["attempts"] == [{"slurm_job_id": "17890142", "attempt": 1, "state": "TIMEOUT",
+                                   "end": "2026-10-12T13:18:12",
+                                   "cause": answer["attempts"][0]["cause"]}]
+    assert "DUE TO TIME LIMIT" in answer["attempts"][0]["cause"]
+    assert answer["checkout_behind"] == 15
+    assert "15 behind origin/main" in answer["why"]
+    assert "pinned to fa02f2d4db00" in answer["why"]
+    # One sacct over the attributed ids, one squeue for unattributed pending jobs.
+    assert [c[0] for c in run.calls] == ["sacct", "squeue", "git"]
+    assert run.calls[0][:3] == ["sacct", "-j", "17890142"]
+
+
+def test_resubmit_is_null_while_an_attempt_lives_or_after_a_failure(cluster):
+    fx = resubmit_cluster(cluster, state="RUNNING")
+    run = canned({"sacct": fx["sacct"], "squeue": fx["squeue"], "git": fx["git"]})
+    answer = probe.job(cluster, fx["job_id"], run=run)["resubmit"]
+    assert answer["command"] is None and "17890142 is RUNNING" in answer["why"]
+    assert "command" in answer and "kind" not in answer
+    pending = canned({"sacct": fx["sacct"].replace("RUNNING", "PENDING")})
+    assert probe.job(cluster, fx["job_id"], run=pending)["resubmit"]["command"] is None
+    failed = canned({"sacct": fx["sacct"].replace("RUNNING", "FAILED")})
+    answer = probe.job(cluster, fx["job_id"], run=failed)["resubmit"]
+    assert answer["command"] is None
+    assert answer["why"].startswith("the last attempt 17890142 ended FAILED (")
+    assert "needs a person" in answer["why"]
+    # A record in another status, or on another host, has nothing to resubmit.
+    done = canned({})
+    write_job(cluster.scratch, "20260930T170315Z-ladder-xix-gemma4-12b")
+    assert probe.job(cluster, "20260930T170315Z-ladder-xix-gemma4-12b", run=done)["resubmit"] == {
+        "command": None, "why": "status completed: nothing to resubmit"}
+    write_job(cluster.share, "20261007T131819Z-kraken-german-xix-v1", store="share",
+              host="asteraix", status="training", cer=None, draw=None, finished=None)
+    assert probe.job(cluster, "20261007T131819Z-kraken-german-xix-v1", run=done)["resubmit"][
+        "why"].startswith("host asteraix")
+    assert done.calls == []
+
+
+def test_resubmit_of_a_never_run_record_is_called_a_first_submission(cluster):
+    """A corpus built by prepare.sbatch and never trained has no attempt, no
+    checkpoint and no container line: the command still stands, pinned to the
+    commit the job was created with, and `kind` says it is a decision."""
+    fx = resubmit_cluster(cluster, with_log=False, checkpoint=False)
+    run = canned({"squeue": "17807894|train|PENDING|\n", "git": "0\t0\n"})
+    answer = probe.job(cluster, fx["job_id"], run=run)["resubmit"]
+    assert answer["kind"] == "first train submission" and answer["resume_from"] is None
+    assert answer["attempts"] == []
+    assert answer["command"] == (
+        "cd %s && ATR_CODE_COMMIT=4de946820d03%s JOB_ID=%s ubelix/submit.sh ubelix/train.sbatch"
+        % (cluster.checkout, "0" * 28, fx["job_id"]))
+    assert answer["pin_source"] == "the commit the job was created with"
+    assert answer["sif"] is None and "default applies" in answer["sif_source"]
+    assert answer["unattributed_pending"] == ["17807894 (train)"]
+    assert "not attributable: 17807894 (train)" in answer["why"]
+    assert answer["checkout_behind"] == 0 and "behind" not in answer["why"]
+    assert "sacct" not in [c[0] for c in run.calls]  # no attempts, nothing to ask
+
+
+def test_a_restart_without_a_checkpoint_is_said(cluster):
+    fx = resubmit_cluster(cluster, checkpoint=False, state="CANCELLED by 33813")
+    run = canned({"sacct": fx["sacct"], "squeue": "", "git": fx["git"]})
+    answer = probe.job(cluster, fx["job_id"], run=run)["resubmit"]
+    assert answer["kind"] == "restart without checkpoint"
+    assert "starts the stage over" in answer["why"]
+    assert answer["attempts"][0]["state"] == "CANCELLED by 33813"
+
+
+def test_job_without_a_runner_has_no_resubmit_field(cluster):
+    fx = resubmit_cluster(cluster)
+    assert "resubmit" not in probe.job(cluster, fx["job_id"])
+
+
 def test_results_filters_and_fingerprints(cluster):
     write_job(cluster.scratch, "20260930T170315Z-ladder-xix-gemma4-12b")
     write_job(cluster.scratch, "20260926T080902Z-ladder-xix-gemma4-e4b",

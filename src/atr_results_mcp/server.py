@@ -89,7 +89,12 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
         at risk means within 15 % of the limit). `wall.why` writes the sum out:
         the rest of the running stage from tqdm's estimate or the ratio, plus
         the stages still ahead (test after train) measured on a completed
-        sibling named in `following`; without one, `uncounted_stages` says so."""
+        sibling named in `following`; without one, `uncounted_stages` says so.
+        `wall.on_timeout` says, from the batch file's own header, what the wall
+        does to the job (train.sbatch: SIGTERM 120 s before, the trap requeues,
+        the trainer resumes; a scoring job: TIMEOUT ends it), and `attempt` is
+        the attempt number from the log, so "attempt 2 running" is read, not
+        guessed."""
         return ask("queue")
 
     @server.tool()
@@ -119,7 +124,14 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
         UBELIX scratch store or the shared store asteraix writes: host, status,
         base model, granularity, 4-bit flag, metrics, stages with their commits,
         code drift, artefact, registration note, Slurm job ids, and the draw
-        fingerprint."""
+        fingerprint. For a UBELIX record in `training` or `queued`, `resubmit`
+        holds the one command that puts it back in the queue, written out and
+        never run from here: pinned to the commit its last attempt ran (so the
+        resume carries no drift), with the container that attempt printed, the
+        checkpoint it resumes from, every Slurm attempt with its end state, and
+        `command: null` with `why` while an attempt is still RUNNING or PENDING
+        or the last one FAILED with a cause. `checkout_behind` warns that
+        submit.sh will refuse until someone pulls."""
         return ask("job", job_id=job_id)
 
     @server.tool()
