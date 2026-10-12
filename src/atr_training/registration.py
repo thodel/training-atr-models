@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import math
 import os
 import re
 import shlex
@@ -56,12 +57,13 @@ from typing import Any, Literal
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from atr_training.contracts import MODEL_ID_RE
 
 __all__ = [
     "TRAINED_DIRNAME",
+    "WEIGHT_SUFFIXES",
     "Registration",
     "RegistrationError",
     "is_registration_name",
@@ -70,8 +72,43 @@ __all__ = [
     "registration_path",
     "set_enabled",
     "trained_dir",
+    "weights_mib",
     "write_registration",
 ]
+
+#: What counts as weights when :func:`weights_mib` sizes a directory. Everything
+#: else beside them (``metadata.json``, a README, tokenizer files, the kraken
+#: training log) is not what a card has to hold.
+WEIGHT_SUFFIXES = frozenset({".mlmodel", ".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".gguf"})
+
+
+def weights_mib(path: str | Path) -> int | None:
+    """The size of the weights at ``path`` in MiB, rounded up — or None.
+
+    This is what ``vram_mb`` means on the gateway (``atr_serving/manager.py``):
+    the weights, on top of which vLLM adds its KV cache and scratch. It is not
+    the training peak from ``StageRecord.peak_gpu_mib``, which measures a
+    different thing (#163) and must not be written here.
+
+    A file is sized as it is; a directory as the sum of its weight files
+    (:data:`WEIGHT_SUFFIXES`). None when there is nothing to size — a missing
+    path, or a directory without weight files — because "could not measure" is
+    not "needs nothing" (#165, #225).
+    """
+    target = Path(path)
+    try:
+        if target.is_file():
+            size = target.stat().st_size
+        elif target.is_dir():
+            size = sum(f.stat().st_size for f in target.rglob("*")
+                       if f.is_file() and f.suffix.lower() in WEIGHT_SUFFIXES)
+        else:
+            return None
+    except OSError:
+        return None
+    if size <= 0:
+        return None
+    return max(1, math.ceil(size / 2 ** 20))
 
 #: ``<registry_root>/trained`` — the gateway's ``TRAINED_DIRNAME``.
 TRAINED_DIRNAME = "trained"
@@ -127,7 +164,15 @@ class Registration(BaseModel):
     languages: list[str] = Field(default_factory=list)
     scripts: list[str] = Field(default_factory=list)
     centuries: list[int] = Field(default_factory=list)
-    vram_mb: int = 0
+    #: The weights in MiB (:func:`weights_mib`), or absent. Never 0: until #225
+    #: the default was ``0`` and no register stage set the field, so every
+    #: trained registration carried a number where there was no measurement,
+    #: and each reader had to guess whether it meant "small" or "unknown" (the
+    #: gateway reads ``<= 0`` as missing, the MCP's headroom says "unrecorded,
+    #: not zero", ``/models`` shows the 0). A 0 read from an existing file is
+    #: that legacy and becomes None; the writer omits None (``exclude_none``),
+    #: and the gateway's own default takes over, as it did for the 0.
+    vram_mb: int | None = Field(default=None, gt=0)
     max_new_tokens: int | None = None
     #: Pixels one image may carry into the model; None = the level's default on
     #: the gateway. The VLM runner writes the budget the job trained at, because
@@ -144,6 +189,17 @@ class Registration(BaseModel):
     #: ``--max-num-seqs`` for that launch: how many sequences the server batches.
     max_num_seqs: int | None = Field(default=None, ge=1)
     training_datasets: list[str] = Field(default_factory=list)
+
+    @field_validator("vram_mb", mode="before")
+    @classmethod
+    def _zero_is_unrecorded(cls, value: Any) -> Any:
+        # The thirteen registrations written before #225 carry ``vram_mb: 0``
+        # from the old default. Read as "unrecorded", so a promotion by hand
+        # (``set_enabled`` rewrites the file as it is) drops the 0 rather than
+        # refusing a file the gateway has been serving for weeks.
+        if value == 0:
+            return None
+        return value
 
     @model_validator(mode="after")
     def _check(self) -> "Registration":

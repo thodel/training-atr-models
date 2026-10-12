@@ -601,3 +601,70 @@ def test_the_pinned_field_list_is_the_one_the_gateway_has_today():
     assert len(fields) == 22
     assert fields[fields.index("prompt") + 1:fields.index("training_datasets")] == [
         "vllm_venv", "max_num_seqs"]
+
+
+# ── vram_mb: a number or nothing, never 0 (#225) ────────────────────────────
+def test_a_zero_vram_mb_is_read_as_unrecorded_and_never_written(tmp_path):
+    """Thirteen registrations carry ``vram_mb: 0`` from the old default. A 0 is
+    not a measurement; it is read as none and dropped on the next rewrite, so a
+    promotion by hand neither refuses the file nor keeps the 0."""
+    spec = {"id": "kraken-legacy-v1", "engine": "kraken",
+            "local_path": str(tmp_path / "w.mlmodel"), "vram_mb": 0}
+    assert Registration.model_validate(spec).vram_mb is None
+    written = write_registration(tmp_path, spec)
+    # Parsed, not grepped: tmp_path itself carries this test's name, "vram_mb" included.
+    assert "vram_mb" not in yaml.safe_load(written.read_text(encoding="utf-8"))
+
+    legacy = registration_path(tmp_path, "kraken-old-v1")
+    legacy.parent.mkdir(exist_ok=True)
+    legacy.write_text("id: kraken-old-v1\nengine: kraken\nlocal_path: /x/w.mlmodel\n"
+                      "enabled: false\nvram_mb: 0\n", encoding="utf-8")
+    assert set_enabled(tmp_path, "kraken-old-v1") is True
+    assert "vram_mb" not in yaml.safe_load(legacy.read_text(encoding="utf-8"))
+    assert read_registration(tmp_path, "kraken-old-v1").enabled is True
+
+
+def test_a_measured_vram_mb_is_kept_and_a_negative_one_refused(tmp_path):
+    spec = {"id": "kraken-sized-v1", "engine": "kraken",
+            "local_path": str(tmp_path / "w.mlmodel"), "vram_mb": 16}
+    written = write_registration(tmp_path, spec)
+    assert yaml.safe_load(written.read_text(encoding="utf-8"))["vram_mb"] == 16
+    with pytest.raises(RegistrationError, match="vram_mb"):
+        write_registration(tmp_path, dict(spec, id="kraken-negative-v1", vram_mb=-1))
+
+
+def test_weights_mib_sizes_a_file_or_the_weight_files_of_a_directory(tmp_path):
+    """What vram_mb means on the gateway: the weights, rounded up to a MiB, and
+    nothing else that sits beside them. No weights is None, not 0 (#165)."""
+    model = tmp_path / "m.mlmodel"
+    model.write_bytes(b"x" * (3 * 2 ** 20 + 1))
+    assert registration.weights_mib(model) == 4
+
+    checkpoint = tmp_path / "ckpt"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"x" * 2 ** 20)
+    (checkpoint / "optimizer.pt").write_bytes(b"x" * 2 ** 20)
+    (checkpoint / "README.md").write_text("x" * 2 ** 20, encoding="utf-8")  # not weights
+    assert registration.weights_mib(checkpoint) == 2
+
+    tiny = tmp_path / "tiny.pt"
+    tiny.write_bytes(b"x")
+    assert registration.weights_mib(tiny) == 1
+
+    assert registration.weights_mib(tmp_path / "missing") is None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "notes.txt").write_text("x", encoding="utf-8")
+    assert registration.weights_mib(empty) is None
+
+
+@pytest.mark.parametrize("engine, expected", [("kraken", 1), ("trocr", 1), ("vllm", None)])
+def test_a_runner_registers_the_size_of_its_weights_or_nothing(engine, expected, tmp_path):
+    """kraken and trocr register what they copied; a VLM adapter registers no
+    size, because what is served is base plus adapter, merged on idhefix."""
+    path, _ = _register_through(engine, tmp_path)
+    written = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if expected is None:
+        assert "vram_mb" not in written
+    else:
+        assert written["vram_mb"] == expected
