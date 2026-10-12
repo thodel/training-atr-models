@@ -177,16 +177,38 @@ olmOCR-2 at 74.65 % is not a surprise to be explained away: it is a
 page-conditioned model asked to read single lines, which is the same finding as
 serving#165 from the other side.
 
+**Und der Qwen3.8-27B steht nicht in dieser Tabelle, obwohl er fertig ist.**
+`ladder-med-qwen38-27b-v2` lief am 11.10.2026 durch (21:25:39) und misst **12.15 %**
+— aber auf Ziehung `9fe26816`, die er mit keinem anderen Lauf teilt (`draw`
+meldet `shared_with: []`). Damit ist die Frage, für die der Arm eingereiht wurde
+— zahlt die Generation 3.5 → 3.8 bei gleicher Grösse? — **nicht beantwortet**:
+12.15 % und die 9.55 % des Qwen3.5-27B liegen auf verschiedenen Ziehungen, und
+§1d sagt, warum das trotz gepinnter Revisionen passieren konnte. Dass 12.15 %
+fast genau auf den 12.13 % des 9 B liegt, ist keine Aussage, sondern ein
+Zusammentreffen zweier Zahlen aus verschiedenen Töpfen.
+
+Ein Re-Score auf `8686f6ad` würde es entscheiden und nach der Messung von
+`17838796` **3:45** kosten. Bis dahin bleibt der Arm gemessen und unvergleichbar.
+
 ### 1c. The olmOCR page arms: a raised cap broke stopping, not reading
 
 Four page arms over the same artefact `2ad500ee8414`, differing only in the
 geometry and prompt knobs. The first to finish was `cap3072` (job `17653686`,
 14:49:24, 10.10.2026), against the `page-v1` baseline on draw `cb4d1c88`:
 
-| Arm | CER | `truncated_cer` | `length_ratio` | surplus characters |
-|---|---:|---:|---:|---:|
-| `olmocr2-7b-medieval-german-page-v1` | **34.92 %** | 30.89 % | 1.006 | +1 134 |
-| `olmocr2-7b-medieval-page-cap3072` | 46.74 % | **29.29 %** | 1.202 | **+40 728** |
+| Arm | CER | `truncated_cer` | `length_ratio` |
+|---|---:|---:|---:|
+| `olmocr2-7b-medieval-page-nativeprompt` | **34.38 %** | 28.31 % | 1.083 |
+| `olmocr2-7b-medieval-german-page-v1` (Grundlinie) | 34.92 % | 30.89 % | 1.006 |
+| `olmocr2-7b-medieval-page-px1288` | 41.14 % | 36.46 % | 1.053 |
+| `olmocr2-7b-medieval-page-cap3072` | 46.74 % | **29.29 %** | 1.202 |
+
+Alle drei Arme liefen bis 11.10.2026 durch; der vierte (`px4m`) wurde abgebrochen
+(`17807894`, 0 s) und fehlt. **Keiner der drei Regler kauft mehr als ein halbes
+Punkt**: olmOCRs eigener Prompt liegt 0.54 Punkte vor der Grundlinie, beide
+Geometrie-Regler dahinter. Der Pixelbudget-Regler `px1288` verliert gleichmässig
+(`truncated_cer` 36.46 %, also auch beschnitten schlechter — das ist echt
+schlechteres Lesen). Der Token-Regler verliert anders:
 
 The two metrics point opposite ways, and together they are precise. Clipped to
 the reference length the cap arm reads **better** than the baseline (29.29 %
@@ -195,7 +217,19 @@ too much. The edit decomposition says the same thing: 54 346 deletions against
 13 618 insertions, and 54 346 − 13 618 = 40 728 = 241 887 − 201 159 exactly.
 **Raising the token cap to 3 072 did not cost reading ability, it cost stopping
 ability** — so the next iteration belongs in the stop-token and EOS handling, not
-in the recognition path.
+in the recognition path. Die beiden Regler scheitern also auf verschiedene Weise,
+und nur `truncated_cer` trennt das: `px1288` liest schlechter, `cap3072` hört
+schlechter auf.
+
+### 1e. Das Kurrent-und-Druck-Modell ist gemessen
+
+`qwen3.5-4b-german-kurrent-xvi-xix-v1` lief am 11.10.2026 um 22:36 durch und
+misst **8.82 %** CER (WER 24.90 %, `length_ratio` 0.997, `truncated_cer` 9.10 %)
+auf 198 Zeilen der Ziehung `1c7eb9b3`. Das ist das Modell über die 20
+Datensätze aus #187 — 17 eigene und 6 fremde, abzüglich der drei flachen (#201).
+Zwei Einschränkungen gehören dazu: `code_drift: true`, und die Ziehung teilt es
+mit keinem anderen Lauf, es ist also mit keiner Zahl dieser Seite vergleichbar.
+Der Korpusbau dafür kostete 11:15:04 (`17795292`).
 
 ### 1d. Which container produced a number is only knowable from 10.10.2026
 
@@ -227,9 +261,19 @@ snapshot per dataset whose sha equals `refs/main`:
 | `image-text_koenigsfelden-charters-post-1500` | `fac683bee395…` | 2026-04-09 |
 | `image-text_aaeb-xiv-xvii` | `2a9b66116db3…` | 2026-04-26 |
 
-That is why `ladder-med-qwen38-27b-v2` builds the same corpus as its siblings and
-did not need restarting. Had any of the four been pushed to over the summer, the
-question would have had no answer.
+Das garantiert die **Eingaben** — und nicht die Ziehung. `ladder-med-qwen38-27b-v2`
+lief auf genau diesen vier shas und landete trotzdem auf der Ziehung
+`9fe26816`, die es mit **keinem** anderen Lauf teilt. Der Grund steht in seinem
+eigenen Datensatz: `artefact: "6ccb85e621d3 built by this job"`. Die Geschwister
+hinterliessen gar keinen Cache-Eintrag (`artefact: null`), es war also nichts zu
+übernehmen, und v2 hat das Korpus neu materialisiert — unter einem anderen
+Commit als sie (`code_drift: true` bei beiden Geschwistern, `false` bei v2).
+
+**Gepinnte Revisionen machen die Daten gleich, nicht die Ziehung.** Wer
+vergleichen will, braucht beides: dieselben Eingaben *und* denselben
+`draw_md5` — oder einen Re-Score auf die fremde Ziehung, der nach `17838796`
+3:45 kostet. Hätte einer der vier Datensätze im Sommer einen Commit bekommen,
+wäre schon die erste Hälfte unbeantwortbar gewesen.
 
 ## 2. Why this costs no prepare at all
 
