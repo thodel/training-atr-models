@@ -195,13 +195,36 @@ den Code.
 
 **Der Kontrollarm dafür ist eingereiht**: `ladder-med-qwen35-27b-v2`, dieselbe
 Spezifikation wie der 3.8er mit **genau zwei** geänderten Feldern (`base_model`
-und `model_id`, von 721 verglichenen). Weil `_cache_key` in
+und `model_id`, von 721 verglichenen). Dass `_cache_key` in
 `engines/vlm_train_svc/runner.py` nur Auswahl, Split, `granularity`,
 `max_sample_chars` und `min_train_chars` umfasst und **nicht das Basismodell**,
-übernimmt er das Artefakt `6ccb85e621d3` des 3.8ers — und damit dessen Korpus
-*und* dessen Ziehung `9fe26816`. Dann unterscheiden die beiden Arme sich in
-nichts als dem Basismodell: gleiche Daten, gleiche Ziehung, gleicher Commit.
-Erst dieser Vergleich trennt die 1.22 Punkte in Generation und Drift.
+ist nachgerechnet: beide Spezifikationen schlüsseln auf dasselbe
+`f7188cd0b798`.
+
+**Dieser Absatz sagte zuerst, der Arm übernehme das Artefakt `6ccb85e621d3` des
+3.8ers und damit dessen Ziehung `9fe26816`. Das war falsch, und der Lauf hat es
+in 42 Minuten widerlegt** — `artefact cache: not cached — compiling
+f7188cd0b798`. Die Ursache ist nicht das Basismodell, sondern das Pinnen selbst:
+
+| Quelle | Schlüssel |
+|---|---|
+| Anfrage im Jobdatensatz des 3.8ers | `6ccb85e621d3` **(unpinned)** |
+| gepinnte Spezifikationsdatei | `f7188cd0b798` |
+
+Der 3.8-Arm wurde am 10.10. aus einer Anfrage mit `revision: null` erzeugt — sie
+war wörtlich aus dem gescheiterten Vorgänger übernommen. Die vier shas kamen
+**danach** in die Datei (§1d). Ein Schlüssel ist aber nur „pinned", wenn *jede*
+Spezifikation eine Revision nennt, und ein gepinntes Korpus ist eine andere, und
+stärkere, Behauptung als ein ungepinntes. **Das Pinnen verschiebt den
+Artefakt-Schlüssel** — richtig so, aber mit der Folge, dass kein künftiger Lauf
+das Artefakt eines ungepinnten Laufs übernehmen kann.
+
+Deshalb braucht der Kontrollvergleich **beide** Arme neu: `…qwen35-27b-v2` baut
+`f7188cd0b798` (läuft), und `…qwen38-27b-v3` — dieselbe Datei wie v2 mit nur
+geänderter `model_id` — übernimmt es dann in Sekunden. Danach unterscheiden sich
+die beiden Arme in nichts als dem Basismodell: gleiche Daten, gleiche Ziehung,
+gleicher Commit. Erst dieser Vergleich trennt die 1.22 Punkte in Generation und
+Drift; bis dahin bleibt sie ungetrennt.
 
 Damit relativiert sich §1 oben: „Generation is worth as much as size" stimmt als
 Aussage über die *Grösse* des Effekts, nicht über sein Vorzeichen. Beim Sprung
