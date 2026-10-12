@@ -155,6 +155,7 @@ in the table rather than beside it:
 | Arm | Base | CER on `8686f6ad` | 4-bit |
 |---|---|---:|---|
 | `ladder-med-qwen35-27b` | `Qwen/Qwen3.5-27B` | **9.55 %** | yes |
+| `ladder-med-qwen38-27b-v2` | `Qwen/Qwen3.8-27B` | 10.77 % | yes |
 | `ladder-med-qwen35-9b` | `Qwen/Qwen3.5-9B` | 12.13 % | yes |
 | `qwen3vl-medieval-german-v3` | `Qwen/Qwen3-VL-4B-Instruct` | 12.59 % | no |
 | `ladder-med-olmocr2-7b` | `allenai/olmOCR-2-7B-1025` | 74.65 % | yes |
@@ -177,18 +178,26 @@ olmOCR-2 at 74.65 % is not a surprise to be explained away: it is a
 page-conditioned model asked to read single lines, which is the same finding as
 serving#165 from the other side.
 
-**Und der Qwen3.8-27B steht nicht in dieser Tabelle, obwohl er fertig ist.**
-`ladder-med-qwen38-27b-v2` lief am 11.10.2026 durch (21:25:39) und misst **12.15 %**
-— aber auf Ziehung `9fe26816`, die er mit keinem anderen Lauf teilt (`draw`
-meldet `shared_with: []`). Damit ist die Frage, für die der Arm eingereiht wurde
-— zahlt die Generation 3.5 → 3.8 bei gleicher Grösse? — **nicht beantwortet**:
-12.15 % und die 9.55 % des Qwen3.5-27B liegen auf verschiedenen Ziehungen, und
-§1d sagt, warum das trotz gepinnter Revisionen passieren konnte. Dass 12.15 %
-fast genau auf den 12.13 % des 9 B liegt, ist keine Aussage, sondern ein
-Zusammentreffen zweier Zahlen aus verschiedenen Töpfen.
+**Die neuere Generation zahlt hier nicht — sie kostet.** `ladder-med-qwen38-27b-v2`
+lief am 11.10.2026 durch (21:25:39) und misst auf seiner eigenen Ziehung
+`9fe26816` **12.15 %**, die er mit keinem anderen Lauf teilt. Der Re-Score auf
+`8686f6ad` (`17963410`, 8:53 auf einer RTX 4090) macht ihn vergleichbar:
+**10.77 %** (WER 28.37 %, 200 Zeilen) — also **1.22 Punkte schlechter als der
+Qwen3.5-27B bei gleicher Grösse und gleicher Quantisierung**.
 
-Ein Re-Score auf `8686f6ad` würde es entscheiden und nach der Messung von
-`17838796` **3:45** kosten. Bis dahin bleibt der Arm gemessen und unvergleichbar.
+Zwei Zahlen daneben, die man mitlesen muss. Die Ziehung allein war 1.38 Punkte
+wert (12.15 % eigene gegen 10.77 % geteilte) — fast genau so viel wie die 1.4
+Punkte beim 4-B-Arm, und mehr als der Generationsunterschied, den sie zu messen
+hatte. Und **der Vergleich hat einen Konfundierer**: der Qwen3.5-27B trägt
+`code_drift: true`, der 3.8er `code_drift: false`, sie liefen also auf
+verschiedenen Commits. Die geteilte Ziehung schliesst die Daten gleich, nicht
+den Code.
+
+Damit relativiert sich §1 oben: „Generation is worth as much as size" stimmt als
+Aussage über die *Grösse* des Effekts, nicht über sein Vorzeichen. Beim Sprung
+Qwen3-VL-4B → Qwen3.5-4B auf dem 19.-Jahrhundert-Korpus zahlte die neuere
+Generation 0.85 Punkte; hier, bei 27 B auf mittelalterlichen Zeilen, kostet sie
+1.22. Eine neuere Basis ist kein Fortschritt, den man einkaufen kann.
 
 ### 1c. The olmOCR page arms: a raised cap broke stopping, not reading
 
@@ -271,8 +280,10 @@ Commit als sie (`code_drift: true` bei beiden Geschwistern, `false` bei v2).
 
 **Gepinnte Revisionen machen die Daten gleich, nicht die Ziehung.** Wer
 vergleichen will, braucht beides: dieselben Eingaben *und* denselben
-`draw_md5` — oder einen Re-Score auf die fremde Ziehung, der nach `17838796`
-3:45 kostet. Hätte einer der vier Datensätze im Sommer einen Commit bekommen,
+`draw_md5` — oder einen Re-Score auf die fremde Ziehung, der gemessen 3:45
+(4 B, `17838796`) bis 8:53 (27 B in 4-bit auf einer RTX 4090, `17963410`)
+kostet. Das ist der billigste Weg aus einer verlorenen Vergleichbarkeit, und er
+braucht kein erneutes Training. Hätte einer der vier Datensätze im Sommer einen Commit bekommen,
 wäre schon die erste Hälfte unbeantwortbar gewesen.
 
 ## 2. Why this costs no prepare at all
