@@ -121,10 +121,24 @@ esac
 
 echo "== attempt $((${SLURM_RESTART_COUNT:-0} + 1)) — job $JOB_ID ($STATUS) on $(hostname) $(date -Is)"
 
+# The trap requeues ONCE. Measured 12.10.2026 (17890142, the 24 h wall): two TERMs
+# in the same second, the handler ran twice, and the second `scontrol requeue`
+# of a job that was already requeued printed "(requeue refused)" into a log that
+# had requeued — the line a reader looks for to decide whether the wall requeues
+# (#232). Where the second TERM comes from is read, not measured: most likely the
+# requeue itself, since Slurm tears the step down to put the job back. A flag
+# rather than `trap - TERM`: with the trap reset, a TERM between the echo and
+# `scontrol requeue` would end this shell before the requeue.
+REQUEUED=
 trap '
-  echo "== SIGTERM at $(date -Is) — requeueing $SLURM_JOB_ID"
-  kill -TERM "$PID" 2>/dev/null
-  scontrol requeue "$SLURM_JOB_ID" 2>/dev/null || echo "   (requeue refused)"
+  if [ -n "$REQUEUED" ]; then
+    echo "== SIGTERM at $(date -Is) — again; $SLURM_JOB_ID is already requeueing, the step is being torn down"
+  else
+    REQUEUED=1
+    echo "== SIGTERM at $(date -Is) — requeueing $SLURM_JOB_ID"
+    kill -TERM "$PID" 2>/dev/null
+    scontrol requeue "$SLURM_JOB_ID" 2>/dev/null || echo "   (requeue refused)"
+  fi
 ' TERM
 
 run python -m vlm_train_svc.runner --root "$ATR_TRAIN_JOBS_ROOT" --job-id "$JOB_ID" &

@@ -66,6 +66,36 @@ def test_every_script_parses(path):
     assert subprocess.run(["bash", "-n", str(path)], capture_output=True).returncode == 0
 
 
+REQUEUEING = ["train.sbatch", "train_resumable.sbatch"]
+_TERM_TRAP = re.compile(r"trap '(.*?)' TERM", re.S)
+
+
+@pytest.mark.parametrize("name", REQUEUEING)
+def test_the_term_trap_requeues_once(name):
+    """17890142 at its wall, 12.10.2026: two TERMs in one second, the trap ran
+    twice, and the second `scontrol requeue` wrote "(requeue refused)" into a log
+    that had requeued (#232). The requeue sits behind a flag, so the second
+    signal only says so. A flag and not `trap - TERM`, which would let a TERM
+    between the echo and the requeue end the shell first."""
+    text = (UBELIX / name).read_text(encoding="utf-8")
+    traps = _TERM_TRAP.findall(text)
+    assert len(traps) == 1, f"{name}: expected one TERM trap, found {len(traps)}"
+    body = traps[0]
+    assert body.count("scontrol requeue") == 1
+    guard = body.index('if [ -n "$REQUEUED" ]')
+    assert guard < body.index("REQUEUED=1") < body.index("scontrol requeue")
+    assert "trap - TERM" not in body
+    assert re.search(r"^REQUEUED=\s*$", text, re.M), f"{name}: the flag is not cleared before the trap"
+
+
+def test_the_requeue_guard_would_catch_the_old_trap():
+    """Counter-test: the trap as it stood before #232 fails the check above."""
+    old = ("trap '\n  echo \"== SIGTERM\"\n  kill -TERM \"$PID\"\n"
+           "  scontrol requeue \"$SLURM_JOB_ID\" || echo refused\n' TERM")
+    body = _TERM_TRAP.findall(old)[0]
+    assert 'if [ -n "$REQUEUED" ]' not in body
+
+
 def test_the_repo_default_is_this_repository_and_overridable():
     for path in SCRIPTS:
         for line in path.read_text(encoding="utf-8").splitlines():

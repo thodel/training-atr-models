@@ -121,10 +121,18 @@ echo "== node $(hostname) $(date -Is)"
 # stop cleanly, but nothing depends on it. What makes the job resumable is that a
 # killed runner writes no terminal status, and `JobStore.save` is
 # tmp-file-then-os.replace, so even a kill mid-write cannot corrupt the record.
+# Once only: the second TERM of the same second (train.sbatch, 17890142, #232)
+# must not requeue again and print "(requeue refused)" into a log that requeued.
+REQUEUED=
 trap '
-  echo "== SIGTERM at $(date -Is) — requeueing $SLURM_JOB_ID"
-  kill -TERM "$PID" 2>/dev/null
-  scontrol requeue "$SLURM_JOB_ID" 2>/dev/null || echo "   (requeue refused; job will end)"
+  if [ -n "$REQUEUED" ]; then
+    echo "== SIGTERM at $(date -Is) — again; $SLURM_JOB_ID is already requeueing, the step is being torn down"
+  else
+    REQUEUED=1
+    echo "== SIGTERM at $(date -Is) — requeueing $SLURM_JOB_ID"
+    kill -TERM "$PID" 2>/dev/null
+    scontrol requeue "$SLURM_JOB_ID" 2>/dev/null || echo "   (requeue refused; job will end)"
+  fi
 ' TERM
 
 run python -m vlm_train_svc.runner --root "$ATR_TRAIN_JOBS_ROOT" --job-id "$JOB_ID" &
