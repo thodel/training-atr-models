@@ -554,6 +554,10 @@ class Pipeline(BasePipeline):
             "engine": "vllm",
             # vLLM never serves from here (the gateway looks in vllm_merged_dir);
             # this is where scripts/merge_loras.py on idhefix finds the adapter.
+            # No vram_mb either (#225): what is served is base plus adapter,
+            # merged on idhefix, and the adapter alone would understate it by
+            # the size of the base. The merge is where that number is measured
+            # (serving#130); an absent field says so, a 0 said "small".
             "local_path": str(dest_dir),
             "base_model": job.request.base_model,
             "enabled": False,  # not servable until merged, then promoted

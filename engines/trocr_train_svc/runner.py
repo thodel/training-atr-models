@@ -41,6 +41,7 @@ from loguru import logger
 from atr_training.contracts import Metrics, StageRecord, TrainJob, utcnow
 from atr_training.cropping import write_crops
 from atr_training.manifests import read_manifest
+from atr_training.registration import weights_mib
 from atr_training.runner_base import BasePipeline, StageFailed, run_job
 from atr_training.trocr_cmd import (
     evaluate_cmd,
@@ -205,6 +206,9 @@ class Pipeline(BasePipeline):
             "enabled": False,  # promotion gate: #36
             "task": "htr",
             "level": "line",
+            # The weight files in dest_dir, in MiB; None if the checkpoint
+            # holds none the sizer knows, never 0 (#225).
+            "vram_mb": weights_mib(dest_dir),
         }, dest_dir) is not None:
             logger.info(
                 "registered {} -> {} (disabled until promoted)", model_id, dest_dir)

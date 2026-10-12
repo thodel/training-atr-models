@@ -41,7 +41,7 @@ from atr_training.chunking import chunks, is_plan, read_plan
 from atr_training.manifests import binary_manifest, write_manifest
 from atr_training.prepare import materialize
 from atr_training.promote import PromotionResult, held_out_page, http_recognizer, promote
-from atr_training.registration import RegistrationError, set_enabled
+from atr_training.registration import RegistrationError, set_enabled, weights_mib
 from atr_training.runner_base import (
     BasePipeline,
     Cancelled,
@@ -582,6 +582,9 @@ class Pipeline(BasePipeline):
             "enabled": False,  # promotion gate: #36
             "task": "htr",
             "level": "page",
+            # The weights as the gateway understands vram_mb — the .mlmodel
+            # file, ~16 MiB — never the training peak, and never 0 (#225).
+            "vram_mb": weights_mib(dest),
         }, dest_dir) is not None:
             logger.info(
                 "registered {} -> {} (disabled until promoted)", model_id, dest)

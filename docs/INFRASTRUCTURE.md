@@ -360,7 +360,12 @@ the serving document.
    because copying mode and times is EPERM on the share. `metadata.json` is
    written next, and `registry/trained/MODEL_ID.yaml` last, with
    `enabled: false`. The YAML is written as a tmp file in the same directory
-   and then `os.replace`d, and the file name equals the id.
+   and then `os.replace`d, and the file name equals the id. `vram_mb` in it
+   is the size of the weights in MiB where the stage can measure it (kraken:
+   the `.mlmodel`, trocr: the checkpoint's weight files) and absent for a
+   VLM adapter, whose served size is only known after the merge on idhefix.
+   It is never 0: a 0 in an older file is read as "unrecorded" and dropped
+   on the next rewrite (#225).
 2. Before any byte is copied, the runner refuses two cases. A `model_id` that
    is a curated id: the gateway skips such a file and would answer the gate
    with the curated model's weights. And an existing registration of the same
