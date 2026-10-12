@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -729,9 +730,22 @@ def _default_paths_size(hf_repo: str, paths: list[str], revision: str | None,
     return total
 
 
+def free_disk_gb(path) -> float | None:
+    """Free space where the pages would land, or None when it cannot be read.
+
+    None rather than 0: an unreadable destination is not a full one, and the
+    guard keeps refusing on principle when it has no measurement.
+    """
+    try:
+        return shutil.disk_usage(path).free / 1024 ** 3
+    except (OSError, TypeError):
+        return None
+
+
 def _oversize_error(needed_gb: float, shard_count: int, settings,
                     *, has_eval_projects: bool,
-                    chunk_capable: bool = True) -> str | None:
+                    chunk_capable: bool = True,
+                    free_gb: float | None = None) -> str | None:
     """Refuse an oversized selection — or allow it, when the pipeline streams it (#85).
 
     This guard used to size the parquet selection and refuse on it unconditionally.
@@ -750,6 +764,16 @@ def _oversize_error(needed_gb: float, shard_count: int, settings,
       23 h before that run died in ``compile``.
     * **streaming, chunked** — peak page-disk is one chunk, whatever the selection
       weighs. This is the path #39 built, and the one this guard made unreachable.
+
+    **The unchunked cases are decided by a measurement when one exists** (#138,
+    12.10.2026). ``materialize`` writes the stored bytes (``write_bytes(page.image)``),
+    so the selection's parquet size is a *ceiling* on the pages it can put on
+    disk — and the same four-corpus selection this guard refused at ~308 GB for
+    the VLM engine had materialized 29 GB for the kraken job that ran it
+    (20261007T131819Z-kraken-german-xix-v1, 15,527 pages). When the destination
+    has room for the whole ceiling plus the reserve, the run is allowed, and
+    ``materialize`` still stops itself at the reserve as it writes. Without a
+    measurement (``free_gb`` None) the refusals below stand: unknown is not small.
     """
     head = (f"the selection is ~{needed_gb:.1f} GB across {shard_count} parquet "
             f"shards, over the {settings.min_free_disk_gb} GB the trainer keeps free")
@@ -767,22 +791,33 @@ def _oversize_error(needed_gb: float, shard_count: int, settings,
     # supports_chunked_prepare; the VLM and TrOCR backends compile by cropping and
     # ignore the setting. Judging the size by ATR_TRAIN_CHUNK_PAGES alone therefore
     # cleared a 293 GB vllm corpus that would have materialized every page at once.
+    chunked = getattr(settings, "chunk_pages", 0) > 0 and chunk_capable and has_eval_projects
+    if chunked:
+        return None
+
+    # Everything below materializes the whole selection. Measured, that is at
+    # most its parquet size; when the destination holds that and the reserve,
+    # the refusal would be about a number that never lands.
+    if free_gb is not None and free_gb - needed_gb >= settings.min_free_disk_gb:
+        return None
+    room = (f" The pages would land on a volume with {free_gb:.0f} GB free, which "
+            f"does not hold them and the reserve." if free_gb is not None
+            else " Free space at the jobs root could not be measured.")
+
     if getattr(settings, "chunk_pages", 0) > 0 and not chunk_capable:
         return (f"{head}. ATR_TRAIN_CHUNK_PAGES is set, but this engine does not "
                 "chunk — only the kraken backend implements it, so every page "
-                "would be materialized before compile runs. Lower max_pages, "
+                f"would be materialized before compile runs.{room} Lower max_pages, "
                 "select fewer projects, or train this corpus with kraken.")
 
     if getattr(settings, "chunk_pages", 0) > 0:
-        if has_eval_projects:
-            return None
         return (f"{head}. ATR_TRAIN_CHUNK_PAGES is set, but chunking needs explicit "
                 "eval_projects — the validation set cannot come from splitting a "
-                "stream that is discarded as it is read. Add eval_projects, or "
-                "lower max_pages.")
+                f"stream that is discarded as it is read.{room} Add eval_projects, "
+                "or lower max_pages.")
 
     return (f"{head}. Streaming keeps the shards off disk, but the pages they "
-            "materialize are unbounded while ATR_TRAIN_CHUNK_PAGES=0. Set it "
+            f"materialize are unbounded while ATR_TRAIN_CHUNK_PAGES=0.{room} Set it "
             "(e.g. 5000) so each chunk is compiled and discarded as it goes, or "
             "lower max_pages.")
 
@@ -794,6 +829,7 @@ def verify_dataset_spec(
     chunk_capable: bool = True,
     list_repo_files_fn=None,
     paths_size_fn=None,
+    free_disk_gb_fn=free_disk_gb,
 ) -> list[str]:
     """Check a DatasetSpec against the hub before it is queued.
 
@@ -906,10 +942,15 @@ def verify_dataset_spec(
             needed_gb = paths_size_fn(spec.hf_repo, selected, spec.revision,
                                       "dataset") / 1024 ** 3
             if needed_gb > settings.min_free_disk_gb:
+                # Where the pages would land: the job directory lives under the
+                # jobs root. A settings object without one (the tests' stub)
+                # yields no measurement, and no measurement keeps the refusal.
+                jobs_root = getattr(settings, "jobs_root", None)
                 oversize = _oversize_error(
                     needed_gb, len(selected), settings,
                     has_eval_projects=bool(spec.eval_projects),
                     chunk_capable=chunk_capable,
+                    free_gb=free_disk_gb_fn(jobs_root) if jobs_root else None,
                 )
                 if oversize:
                     errors.append(oversize)

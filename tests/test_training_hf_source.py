@@ -400,6 +400,77 @@ class TestVerifyDatasetSpec:
         assert len(errors) == 1
         assert "does not chunk" in errors[0] and "kraken" in errors[0]
 
+    # ── a measurement beats the principle (#138) ────────────────────────────
+    #
+    # The run behind these: the four-corpus XIX selection, ~308 GB of parquet,
+    # refused for the VLM engine on 12.10.2026 — while the kraken job that ran
+    # the same selection had materialized 29 GB of pages on a share with 2.3 TB
+    # free. `materialize` writes the stored bytes, so the parquet size is a
+    # ceiling on the pages, and a destination that holds the ceiling plus the
+    # reserve has nothing to refuse.
+
+    @staticmethod
+    def _unchunkable(settings, free_gb):
+        """The 100 GB selection, for an engine that cannot chunk, with a
+        measured destination."""
+        return verify_dataset_spec(
+            DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN],
+                        eval_projects=[THUN_TEST]),
+            settings, chunk_capable=False,
+            list_repo_files_fn=lambda repo, **kw: (
+                [f"data/train/{THUN_TRAIN}/s{i}.parquet" for i in range(5)]
+                + [f"data/train/{THUN_TEST}/s.parquet"]),
+            paths_size_fn=lambda repo, paths, revision=None, repo_type="dataset":
+                20 * 1024**3 * len(paths),
+            free_disk_gb_fn=lambda root: free_gb,
+        )
+
+    def test_a_destination_that_holds_the_ceiling_and_the_reserve_is_allowed(self):
+        settings = FakeSettings(chunk_pages=5000)
+        settings.jobs_root = "/jobs"
+        assert self._unchunkable(settings, free_gb=2300.0) == []
+
+    def test_a_destination_that_does_not_hold_it_is_refused_with_the_number(self):
+        settings = FakeSettings(chunk_pages=5000)
+        settings.jobs_root = "/jobs"
+        errors = self._unchunkable(settings, free_gb=120.0)      # 120 - 100 < 50
+        assert len(errors) == 1
+        assert "120 GB free" in errors[0] and "does not chunk" in errors[0]
+
+    def test_exactly_the_ceiling_plus_the_reserve_is_enough(self):
+        """Six shards are selected (the eval project's too): 120 GB + 50 reserve."""
+        settings = FakeSettings(chunk_pages=5000)
+        settings.jobs_root = "/jobs"
+        assert self._unchunkable(settings, free_gb=170.0) == []
+        assert len(self._unchunkable(settings, free_gb=169.0)) == 1
+
+    def test_no_measurement_keeps_the_refusal(self):
+        """Unknown is not small — the same rule as for the size lookup (#85)."""
+        settings = FakeSettings(chunk_pages=5000)
+        settings.jobs_root = "/jobs"
+        errors = self._unchunkable(settings, free_gb=None)
+        assert len(errors) == 1 and "could not be measured" in errors[0]
+
+    def test_a_settings_object_without_a_jobs_root_is_never_measured(self):
+        """The stub has none; the service's TrainerSettings does."""
+        errors = verify_dataset_spec(
+            DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN],
+                        eval_projects=[THUN_TEST]),
+            FakeSettings(chunk_pages=5000), chunk_capable=False,
+            list_repo_files_fn=lambda repo, **kw: (
+                [f"data/train/{THUN_TRAIN}/s{i}.parquet" for i in range(5)]
+                + [f"data/train/{THUN_TEST}/s.parquet"]),
+            paths_size_fn=lambda repo, paths, revision=None, repo_type="dataset":
+                20 * 1024**3 * len(paths),
+            free_disk_gb_fn=lambda root: (_ for _ in ()).throw(AssertionError("measured")),
+        )
+        assert len(errors) == 1
+
+    def test_the_real_measurement_returns_none_for_a_missing_path(self, tmp_path):
+        from atr_training.hf_source import free_disk_gb
+        assert free_disk_gb(tmp_path / "nowhere") is None
+        assert free_disk_gb(tmp_path) > 0
+
     def test_chunking_without_eval_projects_says_why_it_cannot_apply(self):
         """_should_chunk needs eval_projects; without them the setting is inert.
 
