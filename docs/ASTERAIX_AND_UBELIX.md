@@ -108,7 +108,7 @@ rule plus the constraints that are not about waiting:
 | anything a client submits through the gateway (`POST /train/jobs`) | asteraix | the gateway proxies to the service there; nothing of ours submits to Slurm |
 | registering a model, the promotion gate, serving | asteraix and idhefix | the registry has one writer, and a Slurm job never writes it |
 | the daily training report | reads both | the results MCP probes both job stores from the UBELIX login node: the scratch store and the shared store asteraix writes ([RESULTS_MCP.md](RESULTS_MCP.md)); only hand-run measurements on asteraix stay invisible |
-| research-share inventory and the free-space check | UBELIX | `ubelix/storage_inventory.sbatch` weekly on a CPU node, `research_storage.py --check` daily |
+| research-share inventory and the free-space check | UBELIX | `ubelix/storage_inventory.sbatch` weekly on a CPU node (`--ours-only`, 12 h), `research_storage.py --check` daily at 07:05 CEST through the MCP's `storage` tool — it never deletes |
 
 Both A40s on asteraix are usable for training since 05.10.2026; nothing is
 held free for urgent work any more. Something urgent displaces a run by hand.

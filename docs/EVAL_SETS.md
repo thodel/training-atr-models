@@ -146,6 +146,32 @@ this project's convention — where an insertion is a reference character the
 hypothesis did *not* produce. So the model omits rather than over-generates, and
 had not finished converging when it was stopped.
 
+### Checking the direction instead of trusting it
+
+That convention is the inverse of the usual ASR one, so it is the kind of thing a
+reasonable reader "corrects" and thereby breaks. It never has to be taken on
+trust, because it implies an identity:
+
+    hypothesis_chars == chars - insertions + deletions
+
+`ketos_cmd` derives kraken's `length_ratio` from it, and
+`tests/test_edit_convention.py` pins it at both the pair and the corpus level
+(#55). **Recompute it before building on any statement about the direction** —
+three such statements in this repository were backwards, and the identity caught
+all three on numbers already published in them:
+
+- `Score`'s own docstring said a model that fails to stop produces insertions
+  (it produces deletions) — `8126cb9`.
+- `docs/BASE_MODEL_LADDER.md` said the Gemma 12B arm "invents 15 % of the text",
+  while 114 960 − 17 027 + 4 783 = 102 716 reproduces the `length_ratio` of
+  0.894 printed two tables above it: the arm omits 10.7 %.
+- `atr_training.eval_material` was built on serving-atr-inference#52's reading
+  that every model "outputs substantially more characters than the reference".
+  The same issue's numbers give 11 566 − 11 191 + 2 = **377** characters of
+  hypothesis against a reference of 11 566 — a blank collapse, the opposite
+  direction — so the module attributed the symptom to the wrong tail of its own
+  distribution and did not count the right one at all (`fa02f2d`).
+
 ### Measuring a model on it
 
 A kraken run can score it itself, as a benchmark beside its own validation split
