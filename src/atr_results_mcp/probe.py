@@ -209,7 +209,10 @@ _NOT_PROGRESS = re.compile(r"Updating files:|Preparing worktree|Checking out fil
                            r"|Loading checkpoint shards:")
 #: The attempt line every ``*.sbatch`` prints: names the record a Slurm job runs,
 #: which is how the Slurm log leads to ``<jobs_root>/<job_id>/logs/<stage>.log``.
-_ATTEMPT = re.compile(r"== attempt \d+ — job (\S+) \((\w+)\)")
+_ATTEMPT = re.compile(r"== attempt (\d+) — job (\S+) \((\w+)\)")
+#: The image line ``train.sbatch`` prints: the container the attempt ran in,
+#: which a resubmission has to repeat (#206, #226).
+_SIF = re.compile(r"^== SIF: (\S+)")
 #: tqdm's suffix ``[elapsed<remaining, rate]``; the remaining time is computed
 #: from the rate of the running attempt and is the number to trust after a resume.
 _TQDM = re.compile(r"\[(\d+(?::\d+){1,2})<(\d+(?::\d+){1,2}),\s*([\d.]+)\s*(s/it|it/s)\]")
@@ -368,12 +371,21 @@ def reference_for(paths: "Paths", record: Dict[str, Any], stages: List[str]
             "seconds": best[2]}
 
 
-def _attempt_in(lines: List[str]) -> Optional[Tuple[str, str]]:
-    """``(job_id, status)`` of the LAST attempt line: a requeued job appends."""
+def _attempt_in(lines: List[str]) -> Optional[Tuple[str, str, int]]:
+    """``(job_id, status, attempt)`` of the LAST attempt line: a requeued job appends."""
     for line in reversed(lines):
         match = _ATTEMPT.search(line)
         if match:
-            return match.group(1), match.group(2)
+            return match.group(2), match.group(3), int(match.group(1))
+    return None
+
+
+def _sif_in(lines: List[str]) -> Optional[str]:
+    """The container of the LAST attempt in the lines, from ``== SIF: <path> (…)``."""
+    for line in reversed(lines):
+        match = _SIF.match(line)
+        if match:
+            return match.group(1)
     return None
 
 
@@ -394,6 +406,9 @@ def slurm_progress(paths: "Paths", edges: Dict[str, Any]) -> Dict[str, Any]:
         return answer
     job_id = attempt[0]
     answer["job_id"] = job_id
+    # ``SLURM_RESTART_COUNT + 1``: a requeue appends a new attempt line to the
+    # same log, so "attempt 2 running" is readable instead of guessed (#226).
+    answer["attempt"] = attempt[2]
     job_dir, record = find_job(paths, job_id)
     if job_dir is None or record is None:
         return answer
@@ -597,6 +612,9 @@ REASONS = {
     "ReqNodeNotAvail": "a node Slurm names is unavailable; check unavailable_nodes before "
                        "reading this as missing capacity",
     "QOSMaxGRESPerUser": "the QoS caps GPUs per user; this job starts when another releases one",
+    "QOSGrpGRES": "the QoS caps GPUs of this type over ALL its users' running jobs (job_gratis "
+                  "shares a few rtx4090 and h100); this job starts when any job of the QoS "
+                  "releases one — seen 12.10.2026 on two rescore jobs",
     "None": "running",
 }
 
@@ -675,6 +693,77 @@ def judge_wall(elapsed: Optional[int], limit: Optional[int],
             "uncounted_stages": uncounted, "why": why}
 
 
+_SBATCH_OPTION = re.compile(r"^#SBATCH\s+--([\w-]+)(?:=(\S+))?")
+
+
+def batch_file_for(paths: Paths, job_name: str) -> Optional[Path]:
+    """The ``ubelix/*.sbatch`` whose ``#SBATCH --job-name`` is ``job_name``.
+
+    Slurm names a job after that header, and the log is ``<name>-<id>.out``,
+    so the name is the one thing a running job and its batch file share
+    without asking Slurm. Read from the checkout, which may be behind the
+    commit the job pinned: the requeue settings do not move between commits
+    the way the code does, and the answer names the file so it can be checked.
+    """
+    root = paths.checkout / "ubelix"
+    if not root.is_dir():
+        return None
+    for path in sorted(root.glob("*.sbatch")):
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                match = _SBATCH_OPTION.match(line)
+                if match and match.group(1) == "job-name" and match.group(2) == job_name:
+                    return path
+        except OSError:
+            continue
+    return None
+
+
+def on_timeout(paths: Paths, job_name: str) -> Dict[str, Any]:
+    """What happens to a job of this name when it runs into its wall (#226).
+
+    Read from the batch file's ``#SBATCH`` header and body, never assumed:
+    ``--requeue`` alone covers a preemption, which Slurm requeues on its own,
+    and NOT a wall — a wall ends the job unless the script asks for a signal
+    before it (``--signal=B:TERM@N``) and its trap runs ``scontrol requeue``.
+    ``train.sbatch`` does both; the scoring and rescoring files do neither, and
+    for them TIMEOUT is the end. ``meaning`` is the sentence a report can print.
+    """
+    path = batch_file_for(paths, job_name)
+    if path is None:
+        return {"file": None, "meaning": "unknown: no ubelix/*.sbatch in the checkout is "
+                                         "named %r" % job_name}
+    options: Dict[str, Optional[str]] = {}
+    trap_requeues = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = _SBATCH_OPTION.match(line)
+        if match:
+            options[match.group(1)] = match.group(2)
+        elif "scontrol requeue" in line and not line.lstrip().startswith("#"):
+            trap_requeues = True
+    signal = options.get("signal")
+    requeue = "requeue" in options
+    seconds = None
+    if signal and "@" in signal:
+        try:
+            seconds = int(signal.rsplit("@", 1)[1])
+        except ValueError:
+            seconds = None
+    answer = {"file": "ubelix/" + path.name, "signal": signal, "requeue": requeue,
+              "trap_requeues": trap_requeues, "signal_before_wall_s": seconds}
+    if signal and trap_requeues and requeue:
+        answer["meaning"] = ("%s %s before the wall; the trap requeues the same Slurm job and "
+                             "the trainer resumes from its newest checkpoint"
+                             % (signal.split("@")[0].split(":")[-1],
+                                "%d s" % seconds if seconds is not None else "shortly"))
+    elif requeue:
+        answer["meaning"] = ("requeue on preemption only: a wall ends the job (no --signal "
+                             "with a requeueing trap)")
+    else:
+        answer["meaning"] = "none: TIMEOUT ends the job"
+    return answer
+
+
 def queue(run: Runner, paths: Paths) -> Dict[str, Any]:
     fmt = ",".join("%s:|" % f for f in SQUEUE_FIELDS)
     out = run(["squeue", "-u", paths.user, "-h", "-O", fmt])
@@ -707,6 +796,7 @@ def queue(run: Runner, paths: Paths) -> Dict[str, Any]:
             entry["wall"] = judge_wall(slurm_seconds(row.get("TimeUsed", "")),
                                        slurm_seconds(row.get("TimeLimit", "")), progress,
                                        entry.get("following"))
+            entry["wall"]["on_timeout"] = on_timeout(paths, row.get("Name", ""))
         match = re.search(r"UnavailableNodes:([\w,\-\[\]]+)", row.get("Reason", ""))
         if match:
             entry["unavailable_nodes"] = match.group(1).split(",")
@@ -762,11 +852,192 @@ def finished(run: Runner, paths: Paths, days: int = 2) -> Dict[str, Any]:
     return {"since_days": days, "jobs": rows}
 
 
-def job(paths: Paths, job_id: str) -> Dict[str, Any]:
+#: Slurm states of an attempt that still holds, or waits for, an allocation.
+LIVE_SLURM_STATES = ("RUNNING", "PENDING", "REQUEUED", "SUSPENDED", "COMPLETING",
+                     "CONFIGURING", "RESIZING")
+#: End states after which a resubmission is a resume and not a decision: the
+#: wall, a preemption that did not requeue, a node, a hand. FAILED and
+#: OUT_OF_MEMORY carry a cause and need a human first.
+RESUMABLE_END_STATES = ("TIMEOUT", "CANCELLED", "NODE_FAIL", "PREEMPTED", "DEADLINE")
+
+
+def slurm_attempts(run: Runner, paths: Paths, record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Every Slurm job that ran this record, from the attempt line in the Slurm
+    logs, with its accounting state.
+
+    A record names its Slurm jobs only once registered (#17), so a live or
+    broken one has to be found the other way round: each ``~/ubelix/logs/*.out``
+    written since the record was created whose attempt line names it. The
+    accounting state comes from one ``sacct -j`` over those ids.
+    """
+    created = (record.get("created_at") or "").replace("Z", "+00:00")
+    try:
+        since = datetime.fromisoformat(created).timestamp() if created else 0.0
+    except ValueError:
+        since = 0.0
+    found: Dict[str, Dict[str, Any]] = {}
+    for path in sorted(paths.logs.glob("*.out")):
+        match = re.search(r"-(\d+)\.out$", path.name)
+        if match is None:
+            continue
+        try:
+            if path.stat().st_mtime < since:
+                continue
+            edges = read_log_edges(path)
+        except OSError:
+            continue
+        attempt = _attempt_in(edges["tail"]) or _attempt_in(edges["head"])
+        if attempt is None or attempt[0] != record.get("id"):
+            continue
+        notes = log_notes(edges["head"], edges["tail"])
+        found[match.group(1)] = {"slurm_job_id": match.group(1), "log": str(path),
+                                 "attempt": attempt[2],
+                                 "sif": _sif_in(edges["tail"]) or _sif_in(edges["head"]),
+                                 "cause": notes["cause"], "state": None, "end": None}
+    if not found:
+        return []
+    out = run(["sacct", "-j", ",".join(sorted(found)), "-X", "-P", "-n",
+               "-o", "JobID,JobName,State,Elapsed,End"])
+    for line in out.splitlines():
+        parts = line.split("|")
+        if len(parts) >= 5 and parts[0] in found:
+            found[parts[0]].update({"name": parts[1], "state": parts[2], "elapsed": parts[3],
+                                    "end": parts[4]})
+    return sorted(found.values(), key=lambda a: (a.get("end") or "", a["slurm_job_id"]))
+
+
+def _newest_checkpoint(checkpoint_dir: Optional[str]) -> Optional[str]:
+    if not checkpoint_dir:
+        return None
+    best = None
+    try:
+        for entry in Path(checkpoint_dir).iterdir():
+            match = re.match(r"checkpoint-(\d+)$", entry.name)
+            if match and entry.is_dir() and (best is None or int(match.group(1)) > best[0]):
+                best = (int(match.group(1)), entry.name)
+    except OSError:
+        return None
+    return best[1] if best else None
+
+
+def resubmit_for(run: Runner, paths: Paths, record: Dict[str, Any]) -> Dict[str, Any]:
+    """The one command that puts a stopped UBELIX training back in the queue —
+    written out, pinned, never run from here (#226).
+
+    ``command`` is set only when nothing of this record is still in Slurm and
+    its last attempt ended in a way a resume answers (the wall, a preemption,
+    a node, a hand); a FAILED attempt carries its cause instead. The pin is the
+    commit the last attempt ran, not HEAD: every drift line in the records so
+    far came from a resubmission by hand that let ``submit.sh`` pin whatever
+    HEAD had become. The container is the one the last attempt printed. A
+    checkout behind ``origin/main`` is named, because ``submit.sh`` refuses it
+    and pulling is a write that stays with a person.
+    """
+    status = record.get("status")
+    job_id = record.get("id")
+    if record.get("host") != SCRATCH_HOST:
+        return {"command": None,
+                "why": "host %s: only a UBELIX record is resubmitted with train.sbatch"
+                       % record.get("host")}
+    if status not in ("training", "queued"):
+        return {"command": None, "why": "status %s: nothing to resubmit" % status}
+    attempts = slurm_attempts(run, paths, record)
+    live = [a for a in attempts if (a.get("state") or "").split(" ")[0] in LIVE_SLURM_STATES]
+    answer: Dict[str, Any] = {"attempts": [{k: a.get(k) for k in
+                                            ("slurm_job_id", "attempt", "state", "end", "cause")}
+                                           for a in attempts]}
+    if live:
+        answer["command"] = None
+        answer["why"] = "Slurm job %s is %s for this record: a second submission would run " \
+                        "two attempts on one checkpoint directory" \
+                        % (live[-1]["slurm_job_id"], live[-1]["state"])
+        return answer
+    last = attempts[-1] if attempts else None
+    last_state = (last.get("state") or "").split(" ")[0] if last else None
+    if last and last_state not in RESUMABLE_END_STATES:
+        answer["command"] = None
+        if last_state in ("FAILED", "OUT_OF_MEMORY"):
+            answer["why"] = "the last attempt %s ended %s%s: a failure needs a person, not a " \
+                            "requeue" % (last["slurm_job_id"], last_state,
+                                         " (%s)" % last["cause"] if last.get("cause") else "")
+        else:
+            answer["why"] = "the last attempt %s ended %s while the record is still %s: read " \
+                            "its log before resubmitting" % (last["slurm_job_id"],
+                                                             last_state or "unknown", status)
+        return answer
+    # The pin: the commit the last GPU stage ran, else the one the job was created with.
+    pinned = None
+    pin_source = None
+    for stage in record.get("stages") or []:
+        commit = (stage.get("code") or {}).get("commit")
+        if stage.get("name") in ("train", "test") and commit:
+            pinned, pin_source = commit, "stage %s of this record" % stage.get("name")
+    if pinned is None:
+        pinned = (record.get("code") or {}).get("commit")
+        pin_source = "the commit the job was created with" if pinned else None
+    sif = last.get("sif") if last else None
+    checkpoint = _newest_checkpoint(record.get("checkpoint_dir"))
+    parts = ["cd %s &&" % paths.checkout]
+    if pinned:
+        parts.append("ATR_CODE_COMMIT=%s" % pinned)
+    parts.append("JOB_ID=%s ubelix/submit.sh ubelix/train.sbatch" % job_id)
+    if sif:
+        parts.append("-- --export=ALL,SIF=%s" % sif)
+    answer["command"] = " ".join(parts)
+    answer["kind"] = ("resume" if checkpoint else
+                      "first train submission" if last is None else "restart without checkpoint")
+    answer["resume_from"] = checkpoint
+    answer["pinned_to"] = pinned
+    answer["pin_source"] = pin_source
+    answer["sif"] = sif
+    answer["sif_source"] = ("log of Slurm job %s" % last["slurm_job_id"] if sif else
+                            "no attempt printed one: train.sbatch's default applies")
+    # Unattributed pending jobs: a fresh submission has no log and no attempt
+    # line yet, so it cannot be tied to a record — said, not assumed away (#165).
+    pending_without_log = []
+    for line in run(["squeue", "-u", paths.user, "-h", "-O", "JobID:|,Name:|,State:|"]).splitlines():
+        cols = [c.strip() for c in line.split("|")]
+        if len(cols) >= 3 and cols[2] == "PENDING" and find_log(paths, cols[0]) is None:
+            pending_without_log.append("%s (%s)" % (cols[0], cols[1]))
+    answer["unattributed_pending"] = pending_without_log
+    try:
+        counts = run(["git", "-C", str(paths.checkout), "rev-list", "--left-right", "--count",
+                      "HEAD...origin/main"]).split()
+        behind = int(counts[1]) if len(counts) == 2 else None
+    except (ProbeError, ValueError):
+        behind = None
+    answer["checkout_behind"] = behind
+    why = []
+    if last is None:
+        why.append("never ran on Slurm: this is the first train submission, a decision rather "
+                   "than a resume")
+    else:
+        why.append("the last attempt %s ended %s%s" % (
+            last["slurm_job_id"], last_state, " at %s" % last["end"] if last.get("end") else ""))
+        why.append("resumes from %s" % checkpoint if checkpoint else
+                   "no checkpoint-N under %s: a resubmission starts the stage over"
+                   % record.get("checkpoint_dir"))
+    if pinned:
+        why.append("pinned to %s (%s) so the resume runs the code it started with; drop "
+                   "ATR_CODE_COMMIT on purpose to pick up a fix" % (pinned[:12], pin_source))
+    if pending_without_log:
+        why.append("pending without a log yet, so not attributable: %s"
+                   % ", ".join(pending_without_log))
+    if behind:
+        why.append("the checkout is %d behind origin/main and submit.sh will refuse: pull first"
+                   % behind)
+    answer["why"] = "; ".join(why)
+    return answer
+
+
+def job(paths: Paths, job_id: str, run: Optional[Runner] = None) -> Dict[str, Any]:
     job_dir, record = find_job(paths, job_id)
     if job_dir is None or record is None:
         return {"error": "no %s/job.json in any store" % job_id, "stores": store_states(paths)}
-    return summarise_job(job_dir, record)
+    summary = summarise_job(job_dir, record)
+    if run is not None:
+        summary["resubmit"] = resubmit_for(run, paths, record)
+    return summary
 
 
 def results(paths: Paths, status: Optional[str] = None, granularity: Optional[str] = None,
@@ -1119,7 +1390,7 @@ def dispatch(cmd: str, args: Dict[str, Any], run: Runner, paths: Paths) -> Dict[
     if cmd == "finished":
         return finished(run, paths, days=int(args.get("days", 2)))
     if cmd == "job":
-        return job(paths, str(args["job_id"]))
+        return job(paths, str(args["job_id"]), run=run)
     if cmd == "results":
         return results(paths, status=args.get("status"), granularity=args.get("granularity"),
                        base_model=args.get("base_model"))

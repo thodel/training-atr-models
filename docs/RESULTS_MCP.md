@@ -50,10 +50,10 @@ was found, and how many records it holds. A share that is not mounted reads as
 
 | tool | answers |
 |---|---|
-| `queue()` | **UBELIX:** running and pending Slurm jobs, every reason explained (`MaxCpuRunMinsPerUser`, `ReqNodeNotAvail` with the named node's state and GRES), and for a running job its last `k/n` counter — from the Slurm stdout, else from the record's stage log (`stage_log`, see *Progress* below) — and a verdict: `fits`, `at risk` (within 15 % of the wall), `will hit the wall`, `unknown` — with the sum written out in `why`, the stages still ahead added from a measured sibling (`following`, see *The wall* below) |
+| `queue()` | **UBELIX:** running and pending Slurm jobs, every reason explained (`MaxCpuRunMinsPerUser`, `ReqNodeNotAvail` with the named node's state and GRES), and for a running job its last `k/n` counter — from the Slurm stdout, else from the record's stage log (`stage_log`, see *Progress* below) — and a verdict: `fits`, `at risk` (within 15 % of the wall), `will hit the wall`, `unknown` — with the sum written out in `why`, the stages still ahead added from a measured sibling (`following`, see *The wall* below), `wall.on_timeout` read from the batch file (what the wall does to this job), and `attempt` from the log's attempt line |
 | `live(host)` | **both stores:** records with a runner or waiting for one (`queued` … `registering`), from the record and the stage log: status, stage, pid, cards, epoch and steps, `val_accuracy`, peak GPU memory, the last `k/n` counter in `logs/<stage>.log` (else `runner.log`), when the log last moved. asteraix's `queue`, since it has no Slurm; `host="asteraix"` filters. A dead runner leaves its record live until the service (asteraix) or `close_job` (UBELIX) closes it: read `updated_cest` and `log_modified_cest` |
 | `finished(days)` | **UBELIX:** `sacct` since `now-<days>days`; a failed job carries the cause line from the END of its log, a job under 10 s is `short_run` (a requeue that found the record finished, #153), `code_drift` lists stages that ran on another commit than the job was created with |
-| `job(job_id)` | one `job.json` from whichever store holds it, summarised, with `host`, times in Europe/Zurich, the draw fingerprint and the Slurm ids from the registration note |
+| `job(job_id)` | one `job.json` from whichever store holds it, summarised, with `host`, times in Europe/Zurich, the draw fingerprint and the Slurm ids from the registration note; for a UBELIX record in `training`/`queued`, `resubmit` — the pinned command that puts it back in the queue, or `command: null` with `why` (see *The resubmission* below) |
 | `results(status, granularity, base_model)` | the metrics table over every record of both stores, with `host` and `engine` per row: CER, WER, `length_ratio`, `truncated_cer`, samples, `draw_md5` |
 | `draw(job_id)` | md5 and size of `data/val_eval.jsonl`, and every job in either store sharing it, with its host — the answer to "comparable?" (#108) |
 | `prepared()` | corpora built, GPU stage never finished, in either store; the scratch purge date of their data (null on the share); `superseded_by` when a completed job of the same `model_id` exists |
@@ -116,6 +116,55 @@ train: 56577 s + rest 18052 s (tqdm 10321/13704) + test ≈ 420 s + register ≈
   stages the sum is short of, and a sum above 70 % of the wall is `at risk`,
   not `fits`. The TIMEOUT of 05.10.2026 fell in a page job's test stage, which
   takes about an hour; a `fits` from the `train` counter alone was wrong.
+- **What the wall does** is `wall.on_timeout`, read from the batch file that
+  carries the job's name (`#SBATCH --job-name`), never assumed (#226):
+  `train.sbatch` asks for `--signal=B:TERM@120` and its trap runs `scontrol
+  requeue`, so the same Slurm job goes back in the queue and the trainer
+  resumes from its newest checkpoint; `--requeue` alone covers a preemption
+  and not a wall; the scoring and rescoring files have neither, and for them
+  `TIMEOUT ends the job`. `attempt` (from `== attempt N — job …`) says which
+  attempt is running, so a requeue is read, not inferred. Measured on
+  12.10.2026, `17890142`: SIGTERM at 13:16:10 CEST (120 s before the wall),
+  `== SIGTERM … — requeueing`, attempt 2 on the same Slurm id at 13:20:07 —
+  the wall requeues; the trap's second firing printed `(requeue refused)`,
+  which is the already-requeued job, not a failure. At 14:42 the same record
+  was submitted again by hand, and two attempts ran on one checkpoint
+  directory: the case `resubmit` answers with `command: null`.
+
+## The resubmission
+
+The one command the daily report could not run on 12.10.2026 (#226): a
+training that the wall, a preemption that did not requeue, a node or a hand
+stopped, and that nothing in Slurm is still carrying. `job(job_id).resubmit`
+writes it out for a UBELIX record in `training` or `queued`:
+
+```
+cd /storage/homefs/th19c587/training-atr-models && ATR_CODE_COMMIT=<commit of the last train stage> JOB_ID=<id> ubelix/submit.sh ubelix/train.sbatch -- --export=ALL,SIF=<the container the last attempt printed>
+```
+
+- **Pinned to the commit the last attempt ran**, not to HEAD. `submit.sh` pins
+  to HEAD at submission time, and every drift line in the records so far
+  (`stage train: running X, but the job was created with Y`) came from a
+  resubmission by hand that let it. Dropping `ATR_CODE_COMMIT` to pick up a fix
+  is a decision, and `why` says so.
+- **The attempts** are found the other way round from the registration note,
+  which exists only once a job completed (#17): every `~/ubelix/logs/*.out`
+  written since the record was created whose attempt line names it, with the
+  state from one `sacct -j`. `command` is `null` while one is RUNNING or
+  PENDING (two attempts on one checkpoint directory), and after a FAILED or
+  OUT_OF_MEMORY attempt, which carries its cause and needs a person.
+- **`kind`** is `resume` when `checkpoint-N` exists under the record's
+  `checkpoint_dir` (`resume_from` names it), `first train submission` for a
+  corpus that never ran on Slurm, `restart without checkpoint` otherwise.
+- **`unattributed_pending`** lists PENDING jobs without a log yet: a fresh
+  submission has no attempt line, so it cannot be tied to a record, and it is
+  said rather than assumed away (#165).
+- **`checkout_behind`** is the count against `origin/main` as of the last
+  fetch (`checkout()` fetches); `submit.sh` refuses a checkout that is behind,
+  and pulling is a write that stays with a person.
+
+Nothing here submits. The field is the command, checked, for the person or
+the chat session with VPN who runs it; the daily report prints it.
 
 ## Running it
 
