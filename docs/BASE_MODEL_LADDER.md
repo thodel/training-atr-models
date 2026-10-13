@@ -240,17 +240,32 @@ geometry and prompt knobs. The first to finish was `cap3072` (job `17653686`,
 
 | Arm | CER | `truncated_cer` | `length_ratio` |
 |---|---:|---:|---:|
-| `olmocr2-7b-medieval-page-nativeprompt` | **34.38 %** | 28.31 % | 1.083 |
+| `olmocr2-7b-medieval-page-px4m` (4 194 304 px) | **27.75 %** | **24.16 %** | 1.057 |
+| `olmocr2-7b-medieval-page-nativeprompt` | 34.38 % | 28.31 % | 1.083 |
 | `olmocr2-7b-medieval-german-page-v1` (Grundlinie) | 34.92 % | 30.89 % | 1.006 |
 | `olmocr2-7b-medieval-page-px1288` | 41.14 % | 36.46 % | 1.053 |
-| `olmocr2-7b-medieval-page-cap3072` | 46.74 % | **29.29 %** | 1.202 |
+| `olmocr2-7b-medieval-page-cap3072` | 46.74 % | 29.29 % | 1.202 |
 
-Alle drei Arme liefen bis 11.10.2026 durch. Der vierte (`px4m`) wurde am 11.10.
-abgebrochen (`17807894`, 0 s) und steht seit 12.10. wieder im Lauf — `deadlines`
-zeigt ihn als Anspruch auf `2ad500ee8414` mit `last_used` 14:42 —, fehlt in der
-Tabelle also nur noch vorläufig. **Keiner der drei Regler kauft mehr als ein halbes
-Punkt**: olmOCRs eigener Prompt liegt 0.54 Punkte vor der Grundlinie, beide
-Geometrie-Regler dahinter. Der Pixelbudget-Regler `px1288` verliert gleichmässig
+Alle vier Arme sind durch. `px4m` lief am 12.10.2026 um 21:57 durch (Slurm
+`17961661`; die Zahl stammt aus einem Doppelversuch — der Requeue `17890142` und
+eine Einreichung von Hand rechneten die letzten ~545 Schritte parallel auf
+einem Checkpoint-Verzeichnis, #231 —, der andere Versuch mass 28.05 %, der
+Befund steht). **Das Pixelbudget ist der Regler, der zählt, und er wirkt in beide
+Richtungen**: verdoppelt (`px4m`) 7.17 Punkte vor der Grundlinie, halbiert
+(`px1288`) 6.22 dahinter — und `px4m` liest auch beschnitten am besten
+(`truncated_cer` 24.16 %), es ist also echt besseres Lesen, nicht besseres
+Aufhören. Der Preis: 69 s je Schritt statt 29, Faktor 2.4, und die 24-h-Wand
+reicht nicht mehr ohne Requeue. Der nächste Arm legt die beiden Regler, die
+etwas gebracht haben, übereinander: `olmocr2-7b-medieval-page-px4m-native`
+(`ubelix/specs/`), die `px4m`-Spezifikation mit olmOCRs eigenem Prompt — ein
+flacher Vergleich der drei Dateien zeigt genau `model_id` und `params.prompt`
+gegen `px4m`, genau `model_id` und `params.max_pixels` gegen `nativeprompt`
+als Abweichung. Er übernimmt dasselbe Artefakt `2ad500ee8414` und damit die
+Ziehung `cb4d1c88`; die Frage ist, ob die beiden Effekte addieren.
+
+Die drei übrigen Regler sind klein: olmOCRs eigener Prompt liegt 0.54 Punkte
+vor der Grundlinie, der Token-Deckel und die halbierte Kante dahinter. `px1288`
+verliert gleichmässig
 (`truncated_cer` 36.46 %, also auch beschnitten schlechter — das ist echt
 schlechteres Lesen). Der Token-Regler verliert anders:
 
