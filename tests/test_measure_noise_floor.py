@@ -106,3 +106,54 @@ def test_accumulation_keeps_the_effective_batch_and_so_the_step_count():
     assert big.effective_batch_size == small.effective_batch_size == 256
     assert mnf.epochs_for(500, 236908, big.effective_batch_size) == \
            mnf.epochs_for(500, 236908, small.effective_batch_size)
+
+
+# ── the floor is measured on the cell's configuration, not on a default ──────
+def _ns(**over):
+    import argparse
+
+    base = dict(device="cuda:0", workers=8, batch_size=None, accumulate=None,
+                resize=None, base_model=None, augment=False)
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_augmentation_is_what_was_asked_not_the_contract_default():
+    """`KrakenTrainParams.augment` defaults to True; both sweep manifests pin
+    `augment: false`. Found on 09.10.2026 one argument before the first run on
+    the cut corpus: the floor would have been measured on a configuration no
+    cell runs."""
+    from atr_training.contracts import KrakenTrainParams
+
+    assert KrakenTrainParams().augment is True, "the default this guards against"
+    assert mnf.params_for(_ns(augment=False)).augment is False
+    assert mnf.params_for(_ns(augment=True)).augment is True
+
+
+def test_augmentation_must_be_stated(tmp_path):
+    """Neither spelling is a default: the flag is required so that a mismatch
+    with the manifest is a visible choice, never a silent one."""
+    import pytest
+
+    argv = ["--train", str(tmp_path / "t.arrow"), "--benchmark", str(tmp_path / "b.arrow"),
+            "--train-lines", "1000", "--data-digest", "sha256:ab"]
+    with pytest.raises(SystemExit) as exc:
+        mnf.main(argv)
+    assert exc.value.code == 2
+
+
+def test_the_written_block_names_base_and_augmentation(tmp_path):
+    """A reader of the manifest must see that the floor is a fine-tune floor and
+    an unaugmented one — the two settings that move it more than the height."""
+    import yaml
+
+    manifest = tmp_path / "s.yaml"
+    manifest.write_text("name: s\ndata:\n  digest: sha256:ab\nbudget:\n  steps: 10\n")
+    summary = {"noise_floor": {"spread": 0.01, "n": 4}, "data_digest": "sha256:ab",
+               "seeds": [1, 2], "commit": "c", "steps": 10, "measured_at": "t",
+               "spec": "[1,120,0,1 …]", "input_height": 120,
+               "base_model": "catmus.mlmodel", "augment": False}
+    mnf.write_into_manifest(manifest, summary)
+    block = yaml.safe_load(manifest.read_text())["noise_floor"]
+    assert block["base_model"] == "catmus.mlmodel"
+    assert block["augment"] is False
