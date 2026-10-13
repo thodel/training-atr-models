@@ -20,8 +20,12 @@ UUID_A = "GPU-aaaa"
 UUID_B = "GPU-bbbb"
 
 
-def fake_smi(apps, used, uuids=(UUID_A,)):
-    """Stand in for `_smi`, which is the only thing that shells out."""
+def fake_smi(apps, used, uuids=(UUID_A,), watts=None):
+    """Stand in for `_smi`, which is the only thing that shells out.
+
+    `watts` defaults to zero per card: most tests are about memory, and 0 W is
+    also the honest stand-in for a card that answers `[N/A]`.
+    """
     def _smi(query, *, per_app):
         if per_app:
             return [list(row) for row in apps]
@@ -29,6 +33,9 @@ def fake_smi(apps, used, uuids=(UUID_A,)):
             return [[u] for u in uuids]
         if query == "memory.used":
             return [[str(v)] for v in used]
+        if query == "power.draw":
+            return [[str(w)] for w in (watts if watts is not None
+                                       else [0] * len(used))]
         raise AssertionError(f"unexpected query {query!r}")
     return _smi
 

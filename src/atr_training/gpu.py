@@ -46,6 +46,7 @@ import pwd
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 
 #: Give up rather than hang a request on a wedged driver.
@@ -117,6 +118,19 @@ def _int(value: str) -> int:
         return int(float(value))
     except ValueError:
         return 0
+
+
+def _float(value: str) -> float:
+    """Same, for `power.draw` — which is one of the fields that answers '[N/A]'.
+
+    A card or driver that does not report wattage yields 0.0, and an energy total
+    of 0 Wh is then the honest reading: nothing was measured. The caller must not
+    read it as "drew no power" — `Footprint` refuses to publish a zero.
+    """
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
 
 
 def _age_seconds(pid: int) -> float | None:
@@ -328,6 +342,15 @@ class Peak:
 
     own_mib: dict[int, int] = field(default_factory=dict)
     card_mib: dict[int, int] = field(default_factory=dict)
+    #: Energy drawn by each card over the sampled interval, in watt-hours. The
+    #: integral of `power.draw` against the real time between samples, not
+    #: against the nominal interval — a sampler that falls behind must not
+    #: under-report. This is the CARD's energy, which is the job's only when the
+    #: job has the card to itself; `cards_shared` says when it did not.
+    energy_wh: dict[int, float] = field(default_factory=dict)
+    #: Another process was seen holding memory on a card we were using, so part
+    #: of `energy_wh` is somebody else's.
+    cards_shared: bool = False
     readings: int = 0
     failures: int = 0
     #: One of our own processes was found holding memory.
@@ -351,7 +374,15 @@ class Peak:
                  f"{self.card_mib.get(i, 0)} MiB on the card" for i in cards]
         tail = (" — the card was busy but nothing traced back to our pid, so 'own' "
                 "is unknown rather than zero") if self.own_is_unknown else ""
+        if self.total_energy_wh:
+            shared = ", shared with another process" if self.cards_shared else ""
+            tail += (f"; {self.total_energy_wh:.1f} Wh drawn by the card(s)"
+                     f"{shared}")
         return f"peak over {self.readings} reading(s): " + "; ".join(parts) + tail
+
+    @property
+    def total_energy_wh(self) -> float:
+        return sum(self.energy_wh.values())
 
 
 class PeakSampler:
@@ -377,6 +408,8 @@ class PeakSampler:
         self.pid = pid
         self.interval_s = interval_s
         self.peak = Peak()
+        self._last_watts: dict[int, float] = {}
+        self._last_at: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -415,9 +448,29 @@ class PeakSampler:
             apps = _smi(APP_QUERY, per_app=True)
             uuids = [r[0] for r in _smi("uuid", per_app=False)]
             used = [_int(r[0]) for r in _smi("memory.used", per_app=False)]
+            watts = [_float(r[0]) for r in _smi("power.draw", per_app=False)]
         except Exception:  # noqa: BLE001 — a reading that failed is not a stage that failed
             self.peak.failures += 1
+            # The clock is NOT carried across a failed reading: integrating the
+            # last known wattage over a gap we did not observe would invent
+            # energy. The interval is dropped instead, which under-reports by
+            # the length of the outage and says so in `failures`.
+            self._last_at = None
             return
+
+        # Trapezoid against the REAL elapsed time: a sampler that falls behind
+        # (a loaded box, a slow nvidia-smi) must not under-report by assuming its
+        # nominal interval. The first reading only arms the integral.
+        now = time.monotonic()
+        if self._last_at is not None:
+            hours = (now - self._last_at) / 3600.0
+            for index, w in enumerate(watts):
+                previous = self._last_watts.get(index, w)
+                mean_w = (previous + w) / 2.0
+                self.peak.energy_wh[index] = (
+                    self.peak.energy_wh.get(index, 0.0) + mean_w * hours)
+        self._last_at = now
+        self._last_watts = dict(enumerate(watts))
 
         index_of = {uuid: i for i, uuid in enumerate(uuids)}
         own: dict[int, int] = {}
@@ -434,6 +487,13 @@ class PeakSampler:
             self.peak.apps_seen = True
         if own:
             self.peak.own_seen = True
+            # Somebody else on a card we are using means part of that card's
+            # wattage is theirs, and the energy cannot be attributed to this job.
+            for row in apps:
+                pid_s, _used, uuid = (row + [""] * 3)[:3]
+                index = index_of.get(uuid)
+                if index in own and self.pid not in _ancestors(_int(pid_s)):
+                    self.peak.cards_shared = True
         for index, mib in own.items():
             self.peak.own_mib[index] = max(self.peak.own_mib.get(index, 0), mib)
         for index, mib in enumerate(used):
