@@ -641,6 +641,28 @@ def test_resubmit_of_a_never_run_record_is_called_a_first_submission(cluster):
     assert "sacct" not in [c[0] for c in run.calls]  # no attempts, nothing to ask
 
 
+def test_a_checkpoint_without_a_slurm_log_is_a_resume_not_a_first_submission(cluster):
+    """Seen 12.10.2026 on throughput-qwen35-4b over the HTTPS route: checkpoint-400
+    on disk, no Slurm log naming the record — the answer said `kind: resume` and
+    `why: never ran on Slurm` in one breath. The checkpoint is the fact."""
+    fx = resubmit_cluster(cluster, with_log=False, checkpoint=True)
+    run = canned({"squeue": "", "git": "0\t0\n"})
+    answer = probe.job(cluster, fx["job_id"], run=run)["resubmit"]
+    assert answer["kind"] == "resume" and answer["resume_from"] == "checkpoint-1200"
+    assert answer["attempts"] == []
+    assert "never ran" not in answer["why"]
+    assert answer["why"].startswith("no Slurm log since 2026-10-09 19:44 CEST names this record, "
+                                    "but checkpoint-1200 exists under ")
+    assert "resumes from it" in answer["why"]
+
+
+def test_a_dependency_that_can_never_be_met_is_explained(cluster):
+    squeue = ("18005151|prep|epyc2|job_gratis|PENDING|0:00|1:00:00|N/A|DependencyNeverSatisfied||8|"
+              "cpu=8,mem=16G|\n")
+    row = probe.queue(canned({"squeue": squeue}), cluster)["jobs"][0]
+    assert "will never start" in row["reason_meaning"] and "scancel" in row["reason_meaning"]
+
+
 def test_a_restart_without_a_checkpoint_is_said(cluster):
     fx = resubmit_cluster(cluster, checkpoint=False, state="CANCELLED by 33813")
     run = canned({"sacct": fx["sacct"], "squeue": "", "git": fx["git"]})
