@@ -138,11 +138,22 @@ def test_the_baseline_names_its_metric_and_its_set():
     assert baseline["draw_md5"] == "e04ca483", "the draw v2's 0.0533 came from"
 
 
-def test_there_is_no_noise_floor_and_the_notes_say_so():
-    """It is measured on a corpus and a budget and cannot exist before them."""
-    assert "noise_floor" not in RAW
-    assert "NO NOISE FLOOR YET" in RAW["notes"]
-    assert "measure_noise_floor.py" in RAW["notes"]
+def test_the_noise_floor_is_measured_and_says_on_what():
+    """0.117 over four seeds of cell one at 3,000 steps, on ONE draw — the one
+    every cell of this sweep is scored on (#138, 14.10.2026). The first
+    measurement scored four seeds on four draws; the block has to name the draw
+    or the number could be read as a floor it is not."""
+    block = RAW["noise_floor"]
+    assert block["measured_on"] == RAW["data"]["digest"]
+    assert block["value"] == pytest.approx(max(block["values"]) - min(block["values"]))
+    assert block["n"] == len(block["seeds"]) == 4
+    assert block["steps"] == RAW["budget"]["steps"]
+    assert block["eval_seed"] == RAW["base"]["seed"] == 42
+    assert "md5" in block["draw"]
+    m = parse_manifest(RAW, source=str(MANIFEST))
+    assert m.noise_floor == pytest.approx(0.117)
+    assert block["cell"] == m.configs()[0].config_id
+    assert "NOISE FLOOR: 0.1170" in RAW["notes"]
 
 
 def test_the_budget_has_a_ceiling():

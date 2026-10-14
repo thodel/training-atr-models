@@ -251,6 +251,33 @@ baseline:
   measured_on: its own 10 % validation partition, 200-sample stratified draw
   draw_md5: e04ca483
 
+noise_floor:
+  value: 0.117
+  measured_on: sha256:2186b1ddf722c29dc7db9f18f4240820ab429f3c1e38282f6d6705d911345d1b
+  seeds:
+  - 42
+  - 43
+  - 44
+  - 45
+  commit: d214057
+  steps: 3000
+  n: 4
+  measured_at: '2026-10-14T04:56:00+00:00'
+  metric: cer
+  eval_seed: 42
+  cell: 0632d5e0fa27
+  base_model: Qwen/Qwen3-VL-4B-Instruct
+  draw: val_eval.jsonl of 20261012T135706Z-vlm-xix-effective-batch-01-noise-s42, md5
+    3cf68c4727
+  values:
+  - 0.301
+  - 0.2164
+  - 0.184
+  - 0.2087
+  rescored_with: ubelix/rescore_on_shared_draw.py at 900e75c
+  second_draw: 'seed 43''s (md5 c8c303ccc7): 0.2372 / 0.1837 / 0.1759 / 0.2002, spread
+    0.0613'
+
 notes: |
   METRIC. Run this with --metric cer. `benchmark_cer` cannot be filled by the
   sweep: BenchmarkSpec names one hf_repo plus one project, and this sweep's own
@@ -259,20 +286,29 @@ notes: |
   the way kraken-german-xix-v1 was (11.18 %) — that is the number comparable with
   v2's 7.65 % and qwen3.5-4b-v2's 6.80 %.
 
-  NO NOISE FLOOR YET, and this sweep must not be read as a ranking until there
-  is one. `noise_floor` is measured on a corpus and a budget and cannot exist
-  before them (#115). Three learning rates an octave apart should separate well
-  beyond any plausible floor — but "should" is the state, not the result, and
-  the kraken side of this project has twice produced a confident ordering that
-  the floor then swallowed. Measure it with
+  NOISE FLOOR: 0.1170, measured 12.–14.10.2026 on asteraix (#138). Cell one,
+  four seeds, 3,000 optimizer steps each, scored on ONE draw — the 200-line
+  val_eval.jsonl of seed 42 (md5 3cf68c4727), which is the draw every cell of
+  this sweep gets (seed 42, same artefact, same dataset_counts):
 
-    scripts/measure_vlm_noise_floor.py config/sweeps/vlm-xix-effective-batch-01.yaml \
-        --seeds 42 43 44 45 --write-to config/sweeps/vlm-xix-effective-batch-01.yaml
+    seed 42  0.3010      seed 43  0.2164      seed 44  0.1840      seed 45  0.2087
 
-  — cell one, four seeds, at this budget, through the trainer — before trusting
-  a gap, and BEFORE starting the sweep: the driver yields the card to any job it
-  did not submit. (scripts/measure_noise_floor.py is the kraken measurement; it
-  drives ketos itself and cannot run a VLM.)
+  spread 0.1170, mean 0.2275. On seed 43's draw the same four adapters give
+  0.2372 / 0.1837 / 0.1759 / 0.2002, spread 0.0613 — the draw moves every
+  number by 2–6 points, and seed 42 is the worse model on both. So at this
+  budget the seed alone moves the CER by 6–12 points, and no gap between two
+  cells narrower than 0.117 was decided by the learning rate. Three rates an
+  octave apart have to beat that to mean anything at rung 0; rung 1 is where a
+  real difference would narrow.
+
+  How it was measured, and why not as the first paragraph of these notes said:
+  the four runs were submitted by scripts/measure_vlm_noise_floor.py, but each
+  was scored on its own draw (the draw followed the training seed), so the four
+  adapters were re-scored with ubelix/rescore_on_shared_draw.py on one draw and
+  the floor computed from those reports (data/eval_report.<draw-job>.json in
+  each job directory). `eval_seed` now pins the draw for every later
+  measurement; the kraken script (scripts/measure_noise_floor.py) cannot run a
+  VLM. The first run also cost 14.5 h copying the artefact (#238).
 
   WHAT CELL ONE IS FOR. It reproduces v2's hyperparameters at this sweep's
   budget. If it lands far from v2's 0.0533 the sweep has a data or budget
