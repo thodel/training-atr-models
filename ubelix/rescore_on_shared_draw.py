@@ -31,6 +31,26 @@ from atr_training.settings import get_settings
 from atr_training.vlm_cmd import evaluate_cmd, find_adapter, parse_eval_report
 
 
+def corpus_root_of(store: JobStore, settings, job_id: str) -> Path | None:
+    """Where a draw's ``data/…`` image paths resolve.
+
+    The job's own directory when it compiled the corpus — and the cache entry it
+    adopted otherwise. A run that adopted an artefact materializes nothing of
+    its own (`_adopt_cached`), so ``draw.parent.parent`` holds the draw and not
+    one of its images: three of six rescorings on 14.10.2026 died on the first
+    ``Image.open`` for exactly that. The record carries the entry's key prefix
+    in ``progress.artefact`` ("<12 hex> reused, built by …"); it is resolved
+    against the cache root the way the runner's own test stage was.
+    """
+    data = store.paths(job_id).data
+    if (data / "train.jsonl").is_file():
+        return data.parent
+    note = store.load(job_id).progress.artefact or ""
+    prefix = note.split(" ", 1)[0]
+    hits = sorted(Path(settings.artefact_cache_root).glob(f"{prefix}*")) if prefix else []
+    return hits[0] if len(hits) == 1 and (hits[0] / "data").is_dir() else None
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--job", required=True, help="the run whose adapter is scored")
@@ -49,6 +69,11 @@ def main(argv: list[str] | None = None) -> int:
     if not draw.is_file():
         print(f"no draw at {draw}", file=sys.stderr)
         return 2
+    data_root = corpus_root_of(store, settings, args.draw_from)
+    if data_root is None:
+        print(f"the draw of {args.draw_from} names images under data/ and neither its "
+              "job directory nor a cache entry it adopted holds them", file=sys.stderr)
+        return 2
     # The record carries an absolute `checkpoint_dir`; prefer it. Deriving the path
     # from `settings.checkpoint_root` needs ATR_TRAIN_CHECKPOINT_ROOT to be exported
     # too, and when it is not the default is `$HOME/atr-cache/checkpoints`, which
@@ -65,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     report = store.paths(args.job).data / f"eval_report.{args.draw_from}.json"
     cmd = evaluate_cmd(sys.executable, params=params,
                        base_model=job.request.base_model, adapter_dir=adapter,
-                       val_jsonl=draw, data_root=draw.parent.parent, report=report)
+                       val_jsonl=draw, data_root=data_root, report=report)
     print("== scoring", args.job, "on the draw of", args.draw_from, flush=True)
     print("==", " ".join(str(c) for c in cmd), flush=True)
     code = subprocess.run(cmd).returncode
