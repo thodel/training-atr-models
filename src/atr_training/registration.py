@@ -196,12 +196,13 @@ class Registration(BaseModel):
     @field_validator("vram_mb", mode="before")
     @classmethod
     def _zero_is_unrecorded(cls, value: Any) -> Any:
-        # Every registration written before #225 carries ``vram_mb: 0`` from
-        # the old default (thirteen when #225 was filed). Read as "unrecorded",
-        # so a promotion by hand (``set_enabled`` rewrites the file as it is)
-        # drops the 0 rather than refusing a file the gateway has been serving
-        # for weeks. :func:`size_weights` (#242) is the one pass that replaces
-        # the 0 with the size of the weights where they can be sized.
+        # Every registration written before #225 carried ``vram_mb: 0`` from
+        # the old default: five of the six files under trained/ when
+        # :func:`size_weights` (#242) first ran on asteraix on 14.10.2026 (#225
+        # had guessed thirteen). Read as "unrecorded", so a promotion by hand
+        # (``set_enabled`` rewrites the file as it is) drops the 0 rather than
+        # refusing a file the gateway has been serving for weeks. A 0 can still
+        # arrive from an old copy or a hand-written entry; this keeps reading it.
         if value == 0:
             return None
         return value

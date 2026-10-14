@@ -605,9 +605,10 @@ def test_the_pinned_field_list_is_the_one_the_gateway_has_today():
 
 # ── vram_mb: a number or nothing, never 0 (#225) ────────────────────────────
 def test_a_zero_vram_mb_is_read_as_unrecorded_and_never_written(tmp_path):
-    """Thirteen registrations carry ``vram_mb: 0`` from the old default. A 0 is
-    not a measurement; it is read as none and dropped on the next rewrite, so a
-    promotion by hand neither refuses the file nor keeps the 0."""
+    """Every registration from before #225 carried ``vram_mb: 0`` from the old
+    default (five of six on the share when #242 ran). A 0 is not a measurement;
+    it is read as none and dropped on the next rewrite, so a promotion by hand
+    neither refuses the file nor keeps the 0."""
     spec = {"id": "kraken-legacy-v1", "engine": "kraken",
             "local_path": str(tmp_path / "w.mlmodel"), "vram_mb": 0}
     assert Registration.model_validate(spec).vram_mb is None
