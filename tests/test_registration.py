@@ -668,3 +668,232 @@ def test_a_runner_registers_the_size_of_its_weights_or_nothing(engine, expected,
         assert "vram_mb" not in written
     else:
         assert written["vram_mb"] == expected
+
+
+# ── sizing what was registered before #225 (#242) ────────────────────────────
+#
+# Every registration from before #236 carries ``vram_mb: 0``. Both readers take
+# the 0 as "unrecorded" by now, but the files are unchanged, and for a kraken or
+# trocr model there is a number that could stand there: the size of its weights.
+
+def _legacy(root: Path, model_id: str, **fields) -> Path:
+    """A registration as the trainer wrote it before #225: ``vram_mb: 0`` included."""
+    raw = {"id": model_id, "engine": "kraken", "local_path": f"/x/{model_id}.mlmodel",
+           "enabled": True, "task": "htr", "languages": ["de"], "vram_mb": 0, **fields}
+    path = registration_path(root, model_id)
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("# written by the trainer\n" + yaml.safe_dump(raw, sort_keys=False),
+                    encoding="utf-8")
+    return path
+
+
+def _weights(tmp_path: Path, name: str, mib: int, suffix: str = ".mlmodel") -> Path:
+    path = tmp_path / "weights" / f"{name}{suffix}"
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(b"\0" * (mib * 2**20 - 7))   # just under: rounded up, never down
+    return path
+
+
+def _raw(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def test_sizing_replaces_the_legacy_zero_with_the_size_of_the_weights(root, tmp_path):
+    weights = _weights(tmp_path, "kraken-old-v1", 3)
+    path = _legacy(root, "kraken-old-v1", local_path=str(weights))
+
+    (result,) = registration.size_weights(root, write=True)
+
+    assert (result.action, result.before, result.after, result.written) == ("sized", 0, 3, True)
+    assert result.reason.endswith(str(weights))
+    after = _raw(path)
+    assert after["vram_mb"] == 3
+    assert {k: v for k, v in after.items() if k != "vram_mb"} == {
+        "id": "kraken-old-v1", "engine": "kraken", "local_path": str(weights),
+        "enabled": True, "task": "htr", "languages": ["de"],
+        # the writer's own defaults, as every rewrite adds them
+        "level": "page", "scripts": [], "centuries": [], "residency": "lazy",
+        "training_datasets": [],
+    }, "only vram_mb changed"
+    assert read_registration(root, "kraken-old-v1").vram_mb == 3
+    assert listing(trained_dir(root)) == ["kraken-old-v1.yaml"], "no tmp file left behind"
+
+
+def test_sizing_sizes_a_directory_of_weights_too(root, tmp_path):
+    weights = _weights(tmp_path, "model", 2, suffix=".safetensors").parent
+    (weights / "config.json").write_text("{" + " " * 2**20 + "}", encoding="utf-8")
+    _legacy(root, "trocr-old-v1", engine="trocr", local_path=str(weights))
+
+    (result,) = registration.size_weights(root, write=True)
+
+    assert (result.action, result.after) == ("sized", 2), "the config is not weights"
+
+
+def test_sizing_sizes_an_absent_vram_mb_as_well_as_a_zero(root, tmp_path):
+    """A hand-made registration without the field is the same case for the gateway."""
+    weights = _weights(tmp_path, "kraken-hand-v1", 1)
+    path = _legacy(root, "kraken-hand-v1", local_path=str(weights))
+    raw = _raw(path)
+    del raw["vram_mb"]
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    (result,) = registration.size_weights(root, write=True)
+
+    assert (result.action, result.before, result.after) == ("sized", None, 1)
+    assert _raw(path)["vram_mb"] == 1
+
+
+def test_a_vllm_adapter_loses_its_zero_and_gets_no_number(root, tmp_path):
+    """What is served is base plus adapter, merged on idhefix; the adapter alone
+    would understate it by the base. The merge writes the size (serving#216)."""
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_model.safetensors").write_bytes(b"\0" * 2**20)
+    path = _legacy(root, "qwen3vl-old-v1", engine="vllm", local_path=str(adapter),
+                   base_model="Qwen/Qwen3-VL-8B-Instruct", enabled=False)
+
+    (result,) = registration.size_weights(root, write=True)
+
+    assert (result.action, result.before, result.after) == ("dropped", 0, None)
+    assert "serving#216" in result.reason
+    assert "vram_mb" not in _raw(path)
+    assert read_registration(root, "qwen3vl-old-v1").enabled is False
+
+
+def test_weights_that_cannot_be_sized_here_lose_the_zero_and_are_named(root, tmp_path):
+    """"Could not size" is not "needs nothing" (#225): the 0 goes, no number comes."""
+    missing = tmp_path / "gone" / "kraken-gone-v1.mlmodel"
+    path = _legacy(root, "kraken-gone-v1", local_path=str(missing))
+
+    (result,) = registration.size_weights(root, write=True)
+
+    assert (result.action, result.before, result.after) == ("dropped", 0, None)
+    assert str(missing) in result.reason
+    assert "vram_mb" not in _raw(path)
+
+
+def test_a_declared_or_measured_value_is_kept_byte_for_byte(root, tmp_path):
+    weights = _weights(tmp_path, "w", 9)
+    declared = _legacy(root, "kraken-sized-v1", local_path=str(weights), vram_mb=16)
+    measured = _legacy(root, "kraken-meas-v1", local_path=str(weights), vram_mb=0,
+                       vram_measured={"total_mib": 900, "host": "idhefix",
+                                      "measured_at": "2026-10-01T10:00:00Z"})
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (declared, measured)}
+
+    results = {r.model_id: r for r in registration.size_weights(root, write=True)}
+
+    assert results["kraken-sized-v1"].action == "kept"
+    assert (results["kraken-sized-v1"].before, results["kraken-sized-v1"].after) == (16, 16)
+    assert results["kraken-meas-v1"].action == "kept"
+    assert "measure_vram" in results["kraken-meas-v1"].reason
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (declared, measured)} == before
+
+
+def test_a_registration_with_nothing_to_size_and_no_zero_is_unchanged(root, tmp_path):
+    path = _legacy(root, "kraken-clean-v1", local_path=str(tmp_path / "absent.mlmodel"))
+    raw = _raw(path)
+    del raw["vram_mb"]
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    before = path.read_bytes()
+
+    (result,) = registration.size_weights(root, write=True)
+
+    assert (result.action, result.written) == ("unchanged", False)
+    assert path.read_bytes() == before
+
+
+def test_a_dry_run_says_what_would_happen_and_touches_nothing(root, tmp_path):
+    weights = _weights(tmp_path, "kraken-old-v1", 3)
+    sized = _legacy(root, "kraken-old-v1", local_path=str(weights))
+    dropped = _legacy(root, "qwen3vl-old-v1", engine="vllm", local_path=str(tmp_path),
+                      base_model="b")
+    before = {p: p.read_bytes() for p in (sized, dropped)}
+
+    results = registration.size_weights(root)
+
+    assert [(r.model_id, r.action, r.after, r.written) for r in results] == [
+        ("kraken-old-v1", "sized", 3, False), ("qwen3vl-old-v1", "dropped", None, False)]
+    assert all(r.line().endswith("(dry run)") for r in results)
+    assert {p: p.read_bytes() for p in (sized, dropped)} == before
+
+
+def test_sizing_rewrites_only_the_files_that_change_and_atomically(root, tmp_path, monkeypatch):
+    weights = _weights(tmp_path, "kraken-old-v1", 3)
+    _legacy(root, "kraken-old-v1", local_path=str(weights))
+    kept = _legacy(root, "kraken-sized-v1", local_path=str(weights), vram_mb=5)
+    os.utime(kept, ns=(1_000_000_000, 1_000_000_000))
+    kept_before = (kept.read_bytes(), kept.stat().st_mtime_ns, kept.stat().st_ino)
+    real_replace = os.replace
+    renames = []
+
+    def watching_replace(src, dst):
+        src, dst = Path(src), Path(dst)
+        renames.append((src.parent == dst.parent, src.name.startswith("."),
+                        src.name.endswith(".tmp"), dst.name))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", watching_replace)
+    registration.size_weights(root, write=True)
+
+    assert renames == [(True, True, True, "kraken-old-v1.yaml")]
+    assert (kept.read_bytes(), kept.stat().st_mtime_ns, kept.stat().st_ino) == kept_before
+
+
+def test_a_file_this_module_cannot_read_is_skipped_with_its_reason(root, tmp_path):
+    weights = _weights(tmp_path, "kraken-old-v1", 3)
+    _legacy(root, "kraken-old-v1", local_path=str(weights))
+    odd = registration_path(root, "kraken-odd-v1")
+    odd.write_text(yaml.safe_dump(dict(spec("kraken-other-v1"), vram_mb=0)), encoding="utf-8")
+    odd_before = odd.read_bytes()
+
+    results = {r.model_id: r for r in registration.size_weights(root, write=True)}
+
+    assert results["kraken-old-v1"].action == "sized"
+    assert results["kraken-odd-v1"].action == "skipped"
+    assert "declares id" in results["kraken-odd-v1"].reason
+    assert odd.read_bytes() == odd_before
+
+
+def test_sizing_an_empty_or_missing_trained_is_nothing(root):
+    assert registration.size_weights(root, write=True) == []
+    trained_dir(root).mkdir()
+    assert registration.size_weights(root, write=True) == []
+    assert listing(root) == ["trained"]
+
+
+def test_the_size_weights_command_is_a_dry_run_unless_told_to_write(root, tmp_path,
+                                                                     monkeypatch, capsys):
+    weights = _weights(tmp_path, "kraken-old-v1", 3)
+    path = _legacy(root, "kraken-old-v1", local_path=str(weights))
+    before = path.read_bytes()
+    monkeypatch.setattr("sys.stdin", io.StringIO("id: never-read\n"))
+
+    assert registration.main(["--root", str(root), "--size-weights"]) == 0
+    out = capsys.readouterr().out
+    assert "kraken-old-v1" in out and "0 -> 3" in out and "sized" in out
+    assert "1 would change" in out and "--write" in out
+    assert path.read_bytes() == before, "nothing is written without --write"
+
+    assert registration.main(["--root", str(root), "--size-weights", "--write"]) == 0
+    out = capsys.readouterr().out
+    assert "1 rewritten" in out
+    assert _raw(path)["vram_mb"] == 3
+
+    assert registration.main(["--root", str(root), "--size-weights", "--write"]) == 0
+    assert "0 rewritten" in capsys.readouterr().out, "a second run has nothing left to do"
+
+
+def test_the_size_weights_command_reports_a_skipped_file_in_its_exit_code(root, tmp_path,
+                                                                          capsys):
+    odd = registration_path(root, "kraken-odd-v1")
+    odd.parent.mkdir()
+    odd.write_text("- not\n- a mapping\n", encoding="utf-8")
+
+    assert registration.main(["--root", str(root), "--size-weights", "--write"]) == 1
+    out = capsys.readouterr().out
+    assert "skipped" in out and "1 skipped" in out
+
+
+def test_write_without_size_weights_is_refused(root):
+    with pytest.raises(SystemExit):
+        registration.main(["--root", str(root), "--write"])

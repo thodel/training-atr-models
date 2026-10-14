@@ -51,6 +51,7 @@ import shlex
 import socket
 import sys
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -66,11 +67,13 @@ __all__ = [
     "WEIGHT_SUFFIXES",
     "Registration",
     "RegistrationError",
+    "Sizing",
     "is_registration_name",
     "manual_registration",
     "read_registration",
     "registration_path",
     "set_enabled",
+    "size_weights",
     "trained_dir",
     "weights_mib",
     "write_registration",
@@ -193,10 +196,12 @@ class Registration(BaseModel):
     @field_validator("vram_mb", mode="before")
     @classmethod
     def _zero_is_unrecorded(cls, value: Any) -> Any:
-        # The thirteen registrations written before #225 carry ``vram_mb: 0``
-        # from the old default. Read as "unrecorded", so a promotion by hand
-        # (``set_enabled`` rewrites the file as it is) drops the 0 rather than
-        # refusing a file the gateway has been serving for weeks.
+        # Every registration written before #225 carries ``vram_mb: 0`` from
+        # the old default (thirteen when #225 was filed). Read as "unrecorded",
+        # so a promotion by hand (``set_enabled`` rewrites the file as it is)
+        # drops the 0 rather than refusing a file the gateway has been serving
+        # for weeks. :func:`size_weights` (#242) is the one pass that replaces
+        # the 0 with the size of the weights where they can be sized.
         if value == 0:
             return None
         return value
@@ -380,6 +385,130 @@ def set_enabled(root: str | Path, model_id: str, enabled: bool = True) -> bool:
     return True
 
 
+# ── sizing what was registered before #225 ─────────────────────────────────
+#
+# Every registration the trainer wrote before #236 carries ``vram_mb: 0`` from
+# the old default. Both readers understand the 0 as "unrecorded" by now, but the
+# files are unchanged, and for a kraken or trocr model among them there is a
+# number that could stand there since #236: :func:`weights_mib` of its
+# ``local_path``, the rule every new registration is written with. Until #242 an
+# old model got its number only when somebody rewrote the file for another
+# reason, and even then only the 0 went away.
+
+@dataclass(frozen=True)
+class Sizing:
+    """What :func:`size_weights` did, or would do, to one registration."""
+
+    model_id: str
+    engine: str
+    #: ``vram_mb`` as the file carries it (None = absent) and as it ends up.
+    before: int | None
+    after: int | None
+    #: ``sized`` (a number written), ``dropped`` (the 0 removed, no number),
+    #: ``kept`` (a positive or measured value, untouched), ``unchanged`` (nothing
+    #: to size and nothing to drop), ``skipped`` (a file this module cannot
+    #: read or write; the reason says why).
+    action: str
+    reason: str
+    #: False on a dry run, and for every action that writes nothing.
+    written: bool = False
+
+    def line(self) -> str:
+        before = "-" if self.before is None else str(self.before)
+        after = "-" if self.after is None else str(self.after)
+        mark = "" if self.written or self.action not in {"sized", "dropped"} else " (dry run)"
+        return (f"{self.model_id:40s} {self.engine:7s} {before:>6} -> {after:<6} "
+                f"{self.action:9s} {self.reason}{mark}")
+
+
+def size_weights(root: str | Path, *, write: bool = False) -> list[Sizing]:
+    """One pass over ``trained/``: replace ``vram_mb: 0`` with the weights' size.
+
+    Per file, with ``vram_mb`` read as the file carries it:
+
+    * a positive value, or a ``vram_measured`` block beside it, is **kept** — a
+      number somebody measured on a card beats one weighed on disk, and the
+      gateway's ``scripts/measure_vram.py`` owns the measured ones;
+    * otherwise (0, or absent) a kraken, trocr or party model whose
+      ``local_path`` has weight files here is **sized** to :func:`weights_mib`;
+    * otherwise a 0 is **dropped**: for a vLLM adapter because the merge on
+      idhefix writes the merged size (serving-atr-inference#216), for the rest
+      because "could not size" is not "needs nothing" (#225);
+    * a file absent of ``vram_mb`` with nothing to size is **unchanged**.
+
+    Only the one field changes, through the same read, validation and atomic
+    write as :func:`set_enabled`; a file this module cannot read or write is
+    **skipped** and the reason says why. With ``write`` False nothing is
+    touched and each entry says what would happen. Sorted by file name, so two
+    runs read the same.
+    """
+    directory = trained_dir(root)
+    try:
+        names = sorted(n for n in os.listdir(directory) if is_registration_name(n))
+    except FileNotFoundError:
+        return []
+    results = []
+    for name in names:
+        path = directory / name
+        try:
+            raw = _load(path)
+        except RegistrationError as exc:
+            results.append(Sizing(name.removesuffix(SUFFIX), "?", None, None, "skipped",
+                                  exc.reason))
+            continue
+        if raw is None:  # withdrawn between the listing and the read
+            continue
+        results.append(_size_one(path, raw, write=write))
+    return results
+
+
+def _size_one(path: Path, raw: dict[str, Any], *, write: bool) -> Sizing:
+    model_id = str(raw.get("id"))
+    engine = str(raw.get("engine"))
+    before = raw.get("vram_mb")
+    present = "vram_mb" in raw
+    if isinstance(before, int) and before > 0:
+        return Sizing(model_id, engine, before, before, "kept", "declared or measured")
+    if "vram_measured" in raw:
+        return Sizing(model_id, engine, before, before, "kept",
+                      "measured (vram_measured); scripts/measure_vram.py owns it")
+    before = before if isinstance(before, int) else None
+
+    local_path = raw.get("local_path")
+    size = None
+    if engine != "vllm" and isinstance(local_path, str):
+        size = weights_mib(local_path)
+
+    if size is not None:
+        action, after = "sized", size
+        reason = f"weights at {local_path}"
+    elif engine == "vllm":
+        if not present:
+            return Sizing(model_id, engine, None, None, "unchanged",
+                          "a merge on idhefix writes the merged size (serving#216)")
+        action, after = "dropped", None
+        reason = "an adapter is not what is served; the merge writes the merged size (serving#216)"
+    else:
+        where = local_path if isinstance(local_path, str) else "no local_path"
+        reason = f"no weight files to size at {where} on {socket.gethostname()}"
+        if not present:
+            return Sizing(model_id, engine, None, None, "unchanged", reason)
+        action, after = "dropped", None
+
+    if not write:
+        return Sizing(model_id, engine, before, after, action, reason)
+    if after is None:
+        raw.pop("vram_mb", None)
+    else:
+        raw["vram_mb"] = after
+    try:
+        _replace_atomically(path, _document(_validate(raw, path)))
+    except RegistrationError as exc:
+        return Sizing(model_id, engine, before, before, "skipped", exc.reason)
+    logger.info("{}: vram_mb {} -> {} ({})", path, before, after, reason)
+    return Sizing(model_id, engine, before, after, action, reason, written=True)
+
+
 # ── by hand ─────────────────────────────────────────────────────────────────
 def manual_registration(root: str | Path, spec: dict[str, Any]) -> str:
     """A shell command that registers ``spec`` — for the message of a failed register.
@@ -407,10 +536,34 @@ def main(argv: list[str] | None = None) -> int:
     with an editor is a half-written file for as long as the editor takes.
     """
     parser = argparse.ArgumentParser(
-        description="Write <root>/trained/<id>.yaml from one model spec (YAML) on stdin.")
+        description="Write <root>/trained/<id>.yaml from one model spec (YAML) on stdin, "
+                    "or, with --size-weights, replace every vram_mb: 0 under trained/ "
+                    "with the size of the weights (#242).")
     parser.add_argument("--root", required=True, type=Path,
                         help="the registry root (ATR_TRAIN_REGISTRY_ROOT)")
+    parser.add_argument("--size-weights", action="store_true",
+                        help="list every registration with what sizing would do to its "
+                             "vram_mb; nothing is written without --write")
+    parser.add_argument("--write", action="store_true",
+                        help="with --size-weights: rewrite the registrations that change")
     args = parser.parse_args(argv)
+    if args.write and not args.size_weights:
+        parser.error("--write goes with --size-weights")
+    if args.size_weights:
+        results = size_weights(args.root, write=args.write)
+        if not results:
+            print(f"nothing registered under {trained_dir(args.root)}")
+            return 0
+        for result in results:
+            print(result.line())
+        changed = sum(1 for r in results if r.action in {"sized", "dropped"})
+        skipped = sum(1 for r in results if r.action == "skipped")
+        if args.write:
+            print(f"{changed} rewritten, {skipped} skipped, {len(results)} read")
+        else:
+            print(f"{changed} would change, {skipped} skipped, {len(results)} read "
+                  "— nothing written; re-run with --write")
+        return 1 if skipped else 0
     try:
         spec = yaml.safe_load(sys.stdin.read())
     except yaml.YAMLError as exc:

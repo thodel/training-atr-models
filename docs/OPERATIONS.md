@@ -330,6 +330,41 @@ share is the complete entry, and only `enabled` changes.
    of the file are written anew. Do not edit the file in place with an editor:
    the gateway may read it half-written.
 
+## Sizing the registrations from before #225
+
+Every registration the trainer wrote before #236 carries `vram_mb: 0` from the
+old default. The gateway and this repo both read that 0 as "unrecorded" (#225,
+serving-atr-inference#215), so nothing is served wrongly — but the files are
+unchanged, and for a kraken or trocr model there is a number that could stand
+there: the size of its weights, the rule every new registration is written with.
+The gateway sizes a vLLM launch from `vram_mb`; without it, the launch takes the
+configured fallback (0.70 of the card).
+
+One pass replaces the 0 (#242). Run it on asteraix, where the weights are
+readable at their `local_path`; without `--write` it only says what it would do:
+
+```bash
+REG=/mnt/wbkolleg_dh_1/Textrecognition_Training/registry
+PYTHONPATH=src .venvs/kraken-train/bin/python -m atr_training.registration --root "$REG" --size-weights
+PYTHONPATH=src .venvs/kraken-train/bin/python -m atr_training.registration --root "$REG" --size-weights --write
+```
+
+One line per file, sorted by name: id, engine, `vram_mb` before and after, what
+happened and why. Per file:
+
+| the file carries | result |
+|---|---|
+| a positive `vram_mb`, or `vram_measured` | **kept**, byte for byte: a number measured on a card beats one weighed on disk (`scripts/measure_vram.py` in the serving repo owns the measured ones) |
+| 0 or nothing; kraken, trocr or party with readable weights | **sized** to the weights in MiB, rounded up |
+| 0; vllm | **dropped**: an adapter is not what is served, and the merge on idhefix writes the merged size (serving-atr-inference#216) |
+| 0; weights not readable here | **dropped**, and the line names the path. "Could not size" is not "needs nothing" |
+| a file this repo cannot read | **skipped**, with the reason; the exit code is 1 |
+
+Only the one field changes, through the same read, validation and atomic write
+as [Promoting by hand](#promoting-by-hand), and only the files that change are
+rewritten. The gateway picks each up at its next look at `trained/`. A second
+run finds nothing left to do, so it is safe to repeat after new weights land.
+
 ## Closing another host's stuck record
 
 This host never starts, judges or signals another host's job (#15). For a
