@@ -275,6 +275,21 @@ September-Arme sind also auf Material trainiert, das heute für die Messung
 reserviert ist** — die Oktober-Zahlen sind die ehrlichen, die September-Zahlen
 die optimistischen.
 
+**Und es steht im Datensatz, nicht nur in der Arithmetik.**
+`progress.reserved_pages` trug die Zahl die ganze Zeit; gelesen hat sie niemand,
+weil kein Werkzeug sie zeigte:
+
+| Lauf | `reserved_pages` | Quelle |
+|---|---:|---|
+| September 3.5-27B | **0** | Registry befragt, sie hielt nichts zurück |
+| September 9B | **None** | nicht einmal befragt |
+| 3.8-v2 (10.10.), 3.5-v2, 3.8-v3 | **3173** | `prepare` bzw. aus dem Artefakt |
+
+`None` und `0` sind dabei verschiedene Zustände — „niemand sah nach" gegen
+„befragt, hielt nichts zurück" —, und der September-9B stand auf `None`. Seit
+#246 nennt `draw` beide Zahlen und weigert sich, zwei Läufe mit verschiedenem
+Korpus als vergleichbar auszugeben, auch wenn sie die Ziehung teilen.
+
 Was sich daraus **nicht** folgern lässt: dass die September-Arme auf ihrer
 eigenen Testziehung trainiert wurden. Die Ziehung ist ein Val-Split desselben
 Korpus; nachweisbar ist, dass das Korpus Material enthielt, das inzwischen
