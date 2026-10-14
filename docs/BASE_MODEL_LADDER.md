@@ -130,7 +130,8 @@ the model:
   0.87 B. Those are not in conflict — different corpus, different arm, different
   draw — but they are a warning against reading either as "the family question".
 
-**Medieval** (four corpora, 1300–1600, 306 582 lines): `qwen3vl-medieval-german-v3`
+**Medieval** (four corpora, 1300–1600, 306 582 lines **before the held-out
+reservation took effect — 219 261 since, see §1f**): `qwen3vl-medieval-german-v3`
 reads held-out pages at **11.1 %**. The smaller Qwen3.5 arms of that generation
 were trained before the PageXML fix and are deliberately unmeasured.
 
@@ -177,6 +178,12 @@ these numbers.
 olmOCR-2 at 74.65 % is not a surprise to be explained away: it is a
 page-conditioned model asked to read single lines, which is the same finding as
 serving#165 from the other side.
+
+> **Alles in diesem Abschnitt steht auf der falschen Seite einer Grenze, die
+> am 14.10.2026 gefunden wurde. Lesen Sie zuerst §1f.** Die vier Zahlen oben
+> stammen von Läufen, deren Korpus **28 % mehr Trainingszeilen** hatte, weil der
+> Messsatz `german-medieval-v1` damals nicht zurückgehalten war. Sie sind
+> untereinander vergleichbar und mit keiner Zahl von nach der Grenze.
 
 **Die neuere Generation zahlt hier nicht — sie kostet.** `ladder-med-qwen38-27b-v2`
 lief am 11.10.2026 durch (21:25:39) und misst auf seiner eigenen Ziehung
@@ -231,6 +238,79 @@ Aussage über die *Grösse* des Effekts, nicht über sein Vorzeichen. Beim Sprun
 Qwen3-VL-4B → Qwen3.5-4B auf dem 19.-Jahrhundert-Korpus zahlte die neuere
 Generation 0.85 Punkte; hier, bei 27 B auf mittelalterlichen Zeilen, kostet sie
 1.22. Eine neuere Basis ist kein Fortschritt, den man einkaufen kann.
+
+### 1f. Die Held-out-Grenze: zwei Korpora, die wie eines aussahen
+
+Am 14.10.2026 liefen beide 27-B-Arme neu, als Kontrollpaar auf **einem** Artefakt
+(`f7188cd0b798`), einer Ziehung (`9fe26816`) und ohne `code_drift`. Das Ergebnis
+beantwortet die Generationsfrage — und widerlegt dabei die Zahl, mit der §1b
+eröffnet.
+
+| Arm | Basis | CER auf `9fe26816` | `code_drift` |
+|---|---|---:|---|
+| `ladder-med-qwen38-27b-v3` | Qwen3.8-27B | **12.152 %** | nein |
+| `ladder-med-qwen35-27b-v2` | Qwen3.5-27B | 12.238 % | nein |
+
+**0,086 Punkte auseinander — die Generation 3.5 → 3.8 zahlt bei 27 B nicht und
+kostet nicht.** Die 1,22 Punkte aus §1b sind kein Generationseffekt.
+
+**Woran sie lagen.** Derselbe Qwen3.5-27B misst im September **9.55 %** und im
+Oktober **12.24 %**. Gemessen an den Korpora:
+
+| Lauf | `train_samples` | `val_samples` | Ziehung |
+|---|---:|---:|---|
+| September (3.5-27B, 9B) | **306 582** | 19 069 | `8686f6ad` |
+| Oktober (3.5-v2, 3.8-v3) | **219 261** | 21 349 | `9fe26816` |
+
+87 321 Trainingszeilen weniger, 28 %. Die Ursache steht wörtlich im prepare-Log
+des Oktoberlaufs:
+
+    held-out documents: dropped 3173 of 11277 training pages,
+    reserved for evaluation by german-medieval-v1 (#98)
+
+28,1 % der Seiten, passend zu den 28,5 % der Zeilen. Das September-Korpus wurde
+am **25.09.** gebaut, vier Tage bevor die Identität dieses Messsatzes gepinnt
+wurde (#112, `9048ab6` am 29.09. und `fc8e112` am 30.09.). **Die
+September-Arme sind also auf Material trainiert, das heute für die Messung
+reserviert ist** — die Oktober-Zahlen sind die ehrlichen, die September-Zahlen
+die optimistischen.
+
+Was sich daraus **nicht** folgern lässt: dass die September-Arme auf ihrer
+eigenen Testziehung trainiert wurden. Die Ziehung ist ein Val-Split desselben
+Korpus; nachweisbar ist, dass das Korpus Material enthielt, das inzwischen
+reserviert ist, nicht dass Trainings- und Testmenge sich überschnitten. Das
+prepare-Log des Septemberlaufs trägt die Reservierungszeile nicht mehr, also
+bleibt die Arithmetik das Argument und nicht ein Protokolleintrag.
+
+**Und die Spezifikation war identisch.** Ein Feldvergleich der September-Anfrage
+mit der Oktober-Spezifikation ergibt **nur** die vier nachgepinnten Revisionen
+als Unterschied — gleiche Parameter, gleiche Projekte, gleiche Deckel, und die
+shas zeigen auf dieselben April-Commits. Zwei Korpora von 306 582 und 219 261
+Zeilen aus derselben Spezifikation: **der Unterschied steckt im Code und in der
+Registry, nicht in der Datei.**
+
+### 1g. Das Training ist bitgenau reproduzierbar
+
+Beiläufig, und nützlicher als die Rangfolge: `ladder-med-qwen38-27b-v3` hat
+**byte-identische Gewichte** mit dem drei Tage älteren `…-v2` erzeugt —
+`adapter_model.safetensors` mit md5 `fc7611112021` und 1 275 145 144 Bytes in
+beiden, und `eval_report.raw.jsonl` mit md5 `4531b729`, also dieselben
+Vorhersagen Zeichen für Zeichen. Die beiden Läufe waren drei Tage auseinander, auf
+verschiedenen Knoten (gnode34, gnode25) und auf **verschiedenen Commits**
+(`26bd5b14` und `42a9cb5d`) gepinnt.
+
+Zwei Folgerungen. **Ein Wiederholungslauf ist hier ein echter Test** und nicht
+ein neuer Würfelwurf. Und **die Code-Drift zwischen diesen Commits berührt den
+Trainingspfad nachweislich nicht** — das Kontrollpaar ist also gültig, obwohl
+seine beiden Arme auf verschiedenen Commits liefen (`8672a82` und `42a9cb5d`).
+Diese Gültigkeit ist gemessen, nicht angenommen.
+
+**Dazu ein Umbau, der nichts gebracht hat.** Das gepinnte Artefakt
+`f7188cd0b798` und das ungepinnte `6ccb85e621d3` haben **dasselbe** Korpus:
+219 261 Trainingszeilen, 21 349 Val-Zeilen, dieselbe Ziehung `9fe26816`. Das
+Nachpinnen hat den Schlüssel verschoben, ohne die Daten zu ändern, und so einen
+Neubau von 5:22:22 erzwungen, der ein identisches Ergebnis lieferte. Eine
+Spezifikation gehört **vor** ihrem ersten Lauf gepinnt.
 
 ### 1c. The olmOCR page arms: a raised cap broke stopping, not reading
 
@@ -289,6 +369,28 @@ Datensätze aus #187 — 17 eigene und 6 fremde, abzüglich der drei flachen (#2
 Zwei Einschränkungen gehören dazu: `code_drift: true`, und die Ziehung teilt es
 mit keinem anderen Lauf, es ist also mit keiner Zahl dieser Seite vergleichbar.
 Der Korpusbau dafür kostete 11:15:04 (`17795292`).
+
+**Und derselbe Korpus liest jetzt auch Seiten.**
+`qwen3.5-4b-german-kurrent-xvi-xix-page-v1` lief am 14.10.2026 um 03:48 durch
+und misst **27.04 %** CER (`truncated_cer` 19.95 %, `length_ratio` 1.059) auf
+171 Seiten der Ziehung `ecef5cb8`. Die Spezifikation ist die des Zeilenarms mit
+vier Änderungen — `granularity` auf `page` global und je Datensatz,
+`batch_size` 16 → 2 und `max_seq_len` 1024 → None, beide aus
+`medieval-german-page-qwen35-v1.json` derselben Basis —, während die 20
+Datensätze, alle 20 gepinnten Revisionen und das Seitenbudget von 19 300
+unverändert bleiben. Beide Arme urteilen also über dieselbe Seitenauswahl.
+
+**Die 27.04 % stehen nicht gegen die 8.82 % des Zeilenarms.** Eine Seiten-CER und
+eine Zeilen-CER messen verschiedene Einheiten — die Seite trägt Layout,
+Lesefolge und Zeilenumbrüche, die Zeile nicht —, und die Ziehungen sind
+ohnehin verschieden. Was die Zahl ist: die **erste** Seitenzahl für dieses
+Korpus. Was sie nicht ist: ein Urteil über Granularität.
+
+Gemessene Kosten, als Richtwert für den nächsten Seitenarm: Korpusbau
+**2:26:44** (Vorhersage aus der Skalierung war ~3:20), Training **7:03:29**.
+Ein Seitenbau ist damit rund viermal schneller als der Zeilenbau desselben
+Budgets (11:15:04), weil Zeilen-Granularität jede Zeile aus jeder Seite
+schneiden muss und Seiten-Granularität nur das Bild schreibt.
 
 ### 1d. Which container produced a number is only knowable from 10.10.2026
 
