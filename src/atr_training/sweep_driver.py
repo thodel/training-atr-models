@@ -126,7 +126,10 @@ class Metric:
     """
 
     name: str
-    #: Dotted path inside the job record.
+    #: Dotted path inside the job record. The record has no ``result``: the
+    #: evaluation lives under ``metrics`` (``contracts.TrainJob.metrics``), and
+    #: the four noise-floor runs of #138 came back scored as None before anyone
+    #: noticed the driver had only ever been read against its own fakes.
     path: str
     higher_is_better: bool
 
@@ -148,10 +151,10 @@ class Metric:
 METRICS: dict[str, Metric] = {
     # The primary quality claim: measured on held-out material (#112), which is
     # what #111's table compares.
-    "benchmark_cer": Metric("benchmark_cer", "result.benchmark_cer", False),
+    "benchmark_cer": Metric("benchmark_cer", "metrics.benchmark_cer", False),
     # The validation split, which overlaps the training projects. Secondary, and
     # never mixed with the above in one ranking.
-    "cer": Metric("cer", "result.cer", False),
+    "cer": Metric("cer", "metrics.cer", False),
     # What kraken prints while training. Cheapest, and the only one available
     # before a test stage runs.
     "val_accuracy": Metric("val_accuracy", "progress.val_accuracy", True),

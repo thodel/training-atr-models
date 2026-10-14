@@ -48,7 +48,7 @@ class FakeTrainer:
         cer, ratio = self.scores[seed]
         self.records[job_id] = {
             "id": job_id, "status": "completed" if cer is not None else "failed",
-            "result": {"cer": cer, "length_ratio": ratio},
+            "metrics": {"cer": cer, "length_ratio": ratio},
             "started_at": "2026-10-12T10:00:00Z", "finished_at": "2026-10-12T12:00:00Z",
             "code": {"commit": "abc1234"},
         }
@@ -77,7 +77,16 @@ def test_only_the_seed_the_name_and_the_note_differ(manifest, cell):
         assert {k for k in first if first[k] != other[k]} <= {"model_id", "notes", "params"}
         assert {k for k in first["params"] if first["params"][k] != other["params"][k]} \
             <= {"seed"}
+        assert other["params"]["eval_seed"] == first["params"]["eval_seed"]
         assert other["model_id"].endswith(f"-noise-s{seed}")
+
+
+def test_every_seed_scores_the_same_draw(manifest, cell):
+    """Four seeds, four draws was the first measurement's mistake: the draw is
+    taken with the training seed unless `eval_seed` says otherwise."""
+    requests = mvnf.requests_for(manifest, cell, [42, 43, 44, 45], "cer")
+    assert {r["params"]["eval_seed"] for r in requests.values()} == {42}
+    assert [r["params"]["seed"] for r in requests.values()] == [42, 43, 44, 45]
 
 
 def test_the_request_is_the_sweep_s_own_rung_zero(manifest, cell):
@@ -217,6 +226,7 @@ def test_the_floor_is_spliced_in_and_parses_back(manifest, cell, tmp_path):
     assert parsed.noise_floor_provenance["cell"] == cell.config_id
     assert parsed.noise_floor_provenance["steps"] == 3000
     assert parsed.noise_floor_provenance["metric"] == "cer"
+    assert parsed.noise_floor_provenance["eval_seed"] == 42
     assert parsed.noise_floor_provenance["provenance"] == "measured"
     # Every comment line survived; the reasoning is in them.
     assert [ln for ln in before.splitlines() if ln.lstrip().startswith("#")] == \

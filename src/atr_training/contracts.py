@@ -541,6 +541,13 @@ class VlmTrainParams(BaseModel):
     #: recorded in the report so a CER is never quietly measured on a subset the
     #: reader did not know about.
     eval_samples: int = Field(default=200, ge=1)
+    #: Which ``eval_samples`` of the validation set are scored. None = drawn with
+    #: ``seed``, the old behaviour — which made every noise-floor run of #138
+    #: score a *different* 200 lines: four seeds, four draws (md5 3cf6…, c8c3…,
+    #: b7ab…, 4bd3…), and a spread that mixed the model's variance with the
+    #: draw's. Runs that are to be compared set the same ``eval_seed`` and vary
+    #: ``seed`` alone. Measured 14.10.2026.
+    eval_seed: int | None = None
     #: None = the granularity's entry in VLM_MAX_NEW_TOKENS. An explicit value
     #: overrides it, the same contract ``max_pixels`` and ``max_seq_len`` follow.
     max_new_tokens: int | None = Field(default=None, ge=1)

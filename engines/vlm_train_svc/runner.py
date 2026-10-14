@@ -332,10 +332,13 @@ class Pipeline(BasePipeline):
         train_images = [source_key(json.loads(line)) for line in
                         train_jsonl.read_text(encoding="utf-8").splitlines()
                         if line.strip()] if train_jsonl.is_file() else []
+        params = job.request.params
         subset = plan_eval_subset(
             rows,
-            cap=job.request.params.eval_samples,
-            seed=job.request.params.seed,
+            cap=params.eval_samples,
+            # The draw is its own decision (#138): four noise-floor seeds scored
+            # four different draws, and no spread over those is a floor.
+            seed=params.seed if params.eval_seed is None else params.eval_seed,
             dataset_counts=[dc.model_dump() for dc in job.progress.dataset_counts],
             train_images=train_images,
         )

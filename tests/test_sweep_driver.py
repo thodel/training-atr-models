@@ -103,7 +103,7 @@ class FakeTrainer:
             "id": job_id,
             "status": "completed" if cer is not None else "failed",
             "progress": {"train_lines": self.train_lines},
-            "result": {"benchmark_cer": cer},
+            "metrics": {"benchmark_cer": cer},
             "request": request,
         }
         return {"job_id": job_id, "status": "queued"}
@@ -343,7 +343,7 @@ def test_one_metric_is_used_throughout_rather_than_falling_back():
     m = manifest()
     trainer = FakeTrainer(scores_for(m, [0.2] * 12))
     for job in trainer.records.values():                # nothing yet; set below
-        job["result"]["cer"] = 0.01
+        job["metrics"]["cer"] = 0.01
     d = driver(trainer, m, metric="benchmark_cer")
     d.run()
 
@@ -353,8 +353,8 @@ def test_one_metric_is_used_throughout_rather_than_falling_back():
 
 def test_an_error_rate_is_ranked_the_right_way_round():
     """`promote()` ranks high-first; CER is better when lower."""
-    lower = METRICS["benchmark_cer"].rank_of({"result": {"benchmark_cer": 0.1}})
-    higher = METRICS["benchmark_cer"].rank_of({"result": {"benchmark_cer": 0.3}})
+    lower = METRICS["benchmark_cer"].rank_of({"metrics": {"benchmark_cer": 0.1}})
+    higher = METRICS["benchmark_cer"].rank_of({"metrics": {"benchmark_cer": 0.3}})
 
     assert lower > higher
 
@@ -379,7 +379,7 @@ def test_an_accuracy_metric_is_ranked_as_it_stands():
 def test_a_missing_metric_reads_as_none_rather_than_zero():
     """Zero is a score, and a very bad one; it would rank a crashed run last
     instead of marking it unscored."""
-    assert METRICS["benchmark_cer"].rank_of({"result": {}}) is None
+    assert METRICS["benchmark_cer"].rank_of({"metrics": {}}) is None
     assert METRICS["benchmark_cer"].rank_of({}) is None
 
 
@@ -416,7 +416,7 @@ def test_a_restart_reattaches_to_a_job_that_was_still_running(tmp_path: Path):
     trainer = FakeTrainer(scores_for(m, [0.2 + i / 1000 for i in range(12)]))
     trainer.records["job-007"] = {"id": "job-007", "status": "completed",
                                "progress": {"train_lines": 120_000},
-                               "result": {"benchmark_cer": 0.11}}
+                               "metrics": {"benchmark_cer": 0.11}}
     reloaded = SweepState.load(state_path, m, "benchmark_cer")
     SweepDriver(m, reloaded, trainer, sleep=lambda _s: None).run()
 

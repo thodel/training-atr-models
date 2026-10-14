@@ -92,6 +92,11 @@ def requests_for(manifest: SweepManifest, config: SweepConfig, seeds: list[int],
             "measurement is for the VLM engine (scripts/measure_noise_floor.py "
             "is the kraken one)")
     base = driver.request_for(config, rung=0)
+    # One draw for every seed, or the spread is the model's variance plus the
+    # draw's: the first measurement (12.–13.10.2026) scored its four seeds on four
+    # different 200-line draws, because the draw was taken with the training
+    # seed. The cell's own seed names the draw; only `seed` varies.
+    base["params"]["eval_seed"] = int(base["params"].get("seed", 42))
     out: dict[int, dict] = {}
     for seed in seeds:
         request = deepcopy(base)
@@ -190,7 +195,7 @@ def read_runs(jobs: Mapping[int, Mapping], metric: str) -> list[dict]:
     reader = METRICS[metric]
     rows = []
     for seed, job in sorted(jobs.items()):
-        result = job.get("result") or {}
+        result = job.get("metrics") or {}
         score = reader.raw_of(job)
         ratio = result.get("length_ratio")
         rows.append({
@@ -218,6 +223,7 @@ def summarise(manifest: SweepManifest, config: SweepConfig, requests: Mapping[in
         "cell": config.config_id, "axes": config.axes,
         "base_model": config.base_model,
         "params": {k: v for k, v in first["params"].items() if k != "seed"},
+        "eval_seed": first["params"]["eval_seed"],
         "steps": first["params"]["max_steps"],
         "metric": metric,
         "seeds": [r["seed"] for r in runs], "runs": runs,
@@ -246,6 +252,7 @@ def manifest_block(summary: dict) -> dict:
         "n": summary["noise_floor"]["n"],
         "measured_at": summary["measured_at"],
         "metric": summary["metric"],
+        "eval_seed": summary["eval_seed"],
         "cell": summary["cell"],
         "base_model": summary["base_model"],
     }

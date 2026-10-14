@@ -157,3 +157,19 @@ def test_a_kraken_sweep_still_budgets_in_epochs():
     d = driver(m, train_lines=120_000)
     assert d.budgets_in_steps is False
     assert "max_steps" not in d.request_for(m.configs()[0], rung=0)["params"]
+
+
+# ── the evaluation draw is its own decision (#138) ──────────────────────────
+def test_the_draw_follows_eval_seed_when_given():
+    from vlm_train_svc.runner import Pipeline  # noqa: F401 — the field, not the class
+    assert VlmTrainParams().eval_seed is None
+    assert VlmTrainParams(seed=43, eval_seed=42).eval_seed == 42
+
+
+def test_eval_seed_is_not_part_of_the_argv():
+    """It decides which rows the runner writes to val_eval.jsonl; the engine
+    never sees it, so an unknown flag cannot kill a run after the queue."""
+    cmd = train_cmd("python", params=VlmTrainParams(eval_seed=7), base_model=VLM_BASE_MODEL,
+                    train_jsonl="/j/t.jsonl", val_jsonl="/j/v.jsonl", data_root="/j",
+                    output_dir="/o")
+    assert not any("eval" in c and "seed" in c for c in cmd)
