@@ -772,7 +772,11 @@ def test_job_and_draw_find_a_record_in_either_store(cluster):
     # The same three lines on both sides: the draw query crosses the stores.
     shared = probe.draw(cluster, "20260930T170315Z-ladder-xix-gemma4-12b")["shared_with"]
     assert shared == [{"id": "20261007T131819Z-kraken-german-xix-v1", "host": "asteraix",
-                       "status": "completed", "cer": 0.0912}]
+                       "status": "completed", "cer": 0.0912,
+                       # Neither fixture record carries a `progress`, so both read
+                       # "nobody looked" — and both the same, so no warning.
+                       "heldout": {"reserved_pages": None, "source": None,
+                                   "fingerprint": None, "consulted": False}}]
     assert "any store" in probe.draw(cluster, "nope")["error"]
 
 
@@ -1236,3 +1240,67 @@ def test_the_marker_is_set_while_measuring_and_cleared_at_the_end(tmp_path, monk
         assert json.loads(inv.read_text())["running"] is False
         assert seen and all(seen), "während der Messung muss sie stehen"
         assert record["touched"] >= record["measured"]
+
+
+def test_a_shared_draw_is_not_a_shared_corpus(cluster):
+    """Die Luecke, durch die die medieval-Leiter drei Wochen falsch gelesen wurde.
+
+    Eine geteilte Ziehung sagt, dass zwei Laeufe auf **denselben Zeilen gemessen**
+    wurden. Ueber das, worauf sie **trainiert** haben, sagt sie nichts. Am
+    14.10.2026 kam heraus: die September-Arme hatten `reserved_pages: 0`, die
+    Oktober-Arme 3173 — 28 % weniger Trainingszeilen aus identischer
+    Spezifikation (#98). `draw` nannte die beiden trotzdem vergleichbar, weil es
+    nur den md5 ansah.
+    """
+    write_job(cluster.scratch, "20260925T045500Z-september-arm", cer=0.0955,
+              extra={"progress": {"reserved_pages": 0,
+                                  "reserved_pages_source": "prepare (registry empty)"}})
+    write_job(cluster.scratch, "20261013T043436Z-oktober-arm", cer=0.1224,
+              extra={"progress": {"reserved_pages": 3173,
+                                  "reserved_pages_source": "prepare",
+                                  "heldout_fingerprint": "6a47d9b94d2ac739"}})
+
+    answer = probe.draw(cluster, "20261013T043436Z-oktober-arm")
+    assert answer["draw"]["md5"], "beide teilen die Ziehung der Vorrichtung"
+    assert answer["heldout"]["reserved_pages"] == 3173
+    assert answer["heldout"]["fingerprint"] == "6a47d9b94d2ac739"
+    assert "20260925T045500Z-september-arm" in answer["not_comparable"]
+    assert "scoring, not training" in answer["why"]
+    assert "3173" in answer["why"] or "0" in answer["why"]
+
+    # Und umgekehrt gelesen, vom September-Arm aus.
+    back = probe.draw(cluster, "20260925T045500Z-september-arm")
+    assert back["heldout"]["reserved_pages"] == 0
+    assert back["heldout"]["consulted"] is True, "0 heisst befragt, nicht ungefragt"
+    assert "20261013T043436Z-oktober-arm" in back["not_comparable"]
+
+
+def test_none_reserved_pages_is_not_zero(cluster):
+    """`None` heisst „niemand hat nachgesehen", `0` heisst „befragt, hielt nichts
+    zurueck". Der September-9B stand auf `None`, der September-27B auf `0` —
+    zwei verschiedene Zustaende, und beide sind nicht dasselbe."""
+    write_job(cluster.scratch, "20260930T211455Z-niemand-sah-nach", cer=0.1213)
+    write_job(cluster.scratch, "20260925T045500Z-befragt-leer", cer=0.0955,
+              extra={"progress": {"reserved_pages": 0}})
+
+    a = probe.draw(cluster, "20260930T211455Z-niemand-sah-nach")
+    b = probe.draw(cluster, "20260925T045500Z-befragt-leer")
+    assert a["heldout"]["reserved_pages"] is None and a["heldout"]["consulted"] is False
+    assert b["heldout"]["reserved_pages"] == 0 and b["heldout"]["consulted"] is True
+    # Verschiedene Zustaende: der eine Lauf gilt dem anderen nicht als vergleichbar.
+    assert "20260925T045500Z-befragt-leer" in a["not_comparable"]
+
+
+def test_results_carries_the_corpus_beside_the_cer(cluster):
+    """Die CER ohne `reserved_pages` daneben ist die Zahl, die drei Wochen lang
+    falsch gelesen wurde — darum steht sie jetzt in jeder Zeile, und die Notiz
+    nennt beide Bedingungen."""
+    write_job(cluster.scratch, "20261013T043436Z-oktober-arm", cer=0.1224,
+              extra={"progress": {"reserved_pages": 3173,
+                                  "heldout_fingerprint": "6a47d9b94d2ac739"}})
+    answer = probe.results(cluster)
+    row = next(r for r in answer["rows"] if r["id"].endswith("oktober-arm"))
+    assert row["reserved_pages"] == 3173
+    assert row["heldout_fp"] == "6a47d9b94d2ac739"
+    assert "reserved_pages" in answer["note"] and "#98" in answer["note"]
+    assert "nobody looked" in answer["note"], "None ist nicht 0, und das gehoert hin"

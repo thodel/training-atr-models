@@ -139,18 +139,34 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
                 base_model: str | None = None) -> dict:
         """The metrics table over all job records of both stores (UBELIX scratch
         and the shared store asteraix writes), each row with its host: CER, WER,
-        length_ratio, truncated_cer, samples, draw_md5. Filter by status
-        (completed, training, failed), granularity (line, page, block, mixed) or
-        a substring of the base model. Two rows compare only when draw_md5
-        matches. `stores` says whether each store was readable, so an absent
-        share is not mistaken for zero asteraix rows."""
+        length_ratio, truncated_cer, samples, draw_md5, reserved_pages. Filter by
+        status (completed, training, failed), granularity (line, page, block,
+        mixed) or a substring of the base model.
+
+        Two rows compare only when draw_md5 **and** reserved_pages match: the
+        draw says they were scored on the same lines, reserved_pages that they
+        were trained on the same corpus. The medieval ladder's September rows
+        carry 0 or None and its October rows 3173 — 28 % fewer training lines
+        from an identical spec (#98). None means nobody looked, which is not 0.
+
+        `stores` says whether each store was readable, so an absent share is not
+        mistaken for zero asteraix rows."""
         return ask("results", status=status, granularity=granularity, base_model=base_model)
 
     @server.tool()
     def draw(job_id: str) -> dict:
         """Fingerprint (md5, lines) of a job's evaluation draw and every other job
         in either store that shares it, with its host. The answer to "are these
-        two CER values comparable?"."""
+        two CER values comparable?" — and it needs two conditions, not one.
+
+        A shared draw says the rows were **scored** on the same lines. It says
+        nothing about what they were **trained** on, so `heldout.reserved_pages`
+        comes back for this job and for every sharer, and `not_comparable` names
+        the sharers whose corpus differs. The medieval ladder read across that
+        gap for three weeks: September rows reserved 0 pages, October rows 3173
+        — 28 % fewer training lines from an identical spec (#98). A
+        `reserved_pages` of None means nobody looked, which is not 0.
+        """
         return ask("draw", job_id=job_id)
 
     @server.tool()

@@ -583,6 +583,12 @@ def summarise_job(job_dir: Path, record: Dict[str, Any], with_draw: bool = True)
         "started_cest": utc_to_cest(record.get("started_at")),
         "finished_cest": utc_to_cest(record.get("finished_at")),
         "host": record.get("host"),
+        # Der Held-out-Zustand ist die zweite Bedingung der Vergleichbarkeit neben
+        # der Ziehung, und er lag schon im Datensatz, ohne je gelesen zu werden:
+        # das September-Korpus der medieval-Leiter hatte `reserved_pages: 0`, das
+        # Oktober-Korpus 3173 — 28 % weniger Trainingszeilen bei identischer
+        # Spezifikation, drei Wochen unbemerkt (#98, gefunden 14.10.2026).
+        "heldout": _heldout_of(record),
         "store": record.get("_store"),
         "metrics": {k: metrics.get(k) for k in
                     ("cer", "wer", "length_ratio", "truncated_cer", "samples",
@@ -1076,16 +1082,25 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
             "draw_md5": (draw.get("md5") or "")[:8] or None, "draw_lines": draw.get("lines"),
             "finished_cest": summary["finished_cest"],
             "code_drift": bool(summary["code_drift"]),
+            "reserved_pages": summary["heldout"]["reserved_pages"],
+            "heldout_fp": summary["heldout"]["fingerprint"],
         })
     rows.sort(key=lambda r: (r["finished_cest"] or "", r["id"]))
     return {"jobs_root": str(paths.jobs_root), "stores": store_states(paths), "rows": rows,
-            "note": "two CER values compare only when draw_md5 matches (#108); host says "
-                    "which machine trained the row, and a kraken CER was measured on "
-                    "asteraix's venv, a VLM CER in a UBELIX container (#206)"}
+            "note": "two CER values compare only when draw_md5 AND reserved_pages "
+                    "match: the draw says they were scored on the same lines (#108), "
+                    "reserved_pages that they were trained on the same corpus (#98). "
+                    "The medieval ladder's September rows have reserved_pages 0 or "
+                    "None and its October rows 3173 — 28 % fewer training lines from "
+                    "the same spec, so they do not compare in either direction. "
+                    "reserved_pages None means nobody looked, which is not 0. Host "
+                    "says which machine trained the row, and a kraken CER was "
+                    "measured on asteraix's venv, a VLM CER in a UBELIX container "
+                    "(#206)"}
 
 
 def draw(paths: Paths, job_id: str) -> Dict[str, Any]:
-    job_dir, _ = find_job(paths, job_id)
+    job_dir, own_record = find_job(paths, job_id)
     own = draw_of(job_dir) if job_dir is not None else None
     if own is None:
         return {"job_id": job_id, "draw": None,
@@ -1099,8 +1114,43 @@ def draw(paths: Paths, job_id: str) -> Dict[str, Any]:
         if other and other["md5"] == own["md5"]:
             metrics = record.get("metrics") or {}
             shared.append({"id": other_dir.name, "host": record["host"],
-                           "status": record.get("status"), "cer": metrics.get("cer")})
-    return {"job_id": job_id, "draw": own, "shared_with": shared}
+                           "status": record.get("status"), "cer": metrics.get("cer"),
+                           "heldout": _heldout_of(record)})
+    mine = _heldout_of(own_record or {})
+    # Eine geteilte Ziehung heisst, dass zwei Laeufe auf denselben Zeilen gemessen
+    # wurden — nicht, dass sie auf demselben Korpus trainiert haben. Genau diese
+    # Luecke hat die medieval-Leiter drei Wochen lang falsch gelesen.
+    mismatched = [o["id"] for o in shared
+                  if o["heldout"]["reserved_pages"] != mine["reserved_pages"]]
+    answer = {"job_id": job_id, "draw": own, "heldout": mine, "shared_with": shared}
+    if mismatched:
+        answer["not_comparable"] = mismatched
+        answer["why"] = (
+            "these share the draw but were trained on a different corpus: "
+            "reserved_pages %r here against %s there. A shared draw is scoring, "
+            "not training (#98)." % (
+                mine["reserved_pages"],
+                ", ".join(sorted({repr(o["heldout"]["reserved_pages"])
+                                  for o in shared if o["id"] in mismatched}))))
+    return answer
+
+
+def _heldout_of(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Wie viele Seiten dieser Lauf fuer die Messung zurueckgehalten hat.
+
+    Drei Zustaende, die verschieden zu lesen sind, und `None` ist nicht `0`:
+    `0` heisst „Registry befragt, sie hielt nichts zurueck", `None` heisst
+    „niemand hat nachgesehen" (so stand es beim September-9B), und eine Zahl
+    heisst, dass genau so viele Seiten dem Training fehlen.
+    """
+    progress = record.get("progress") or {}
+    pages = progress.get("reserved_pages")
+    return {
+        "reserved_pages": pages,
+        "source": progress.get("reserved_pages_source"),
+        "fingerprint": (progress.get("heldout_fingerprint") or "")[:16] or None,
+        "consulted": pages is not None,
+    }
 
 
 def _dir_mtime(path: Path) -> Optional[float]:
