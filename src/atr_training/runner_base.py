@@ -34,7 +34,7 @@ from typing import Any, Callable, ClassVar, Protocol
 from loguru import logger
 
 from atr_training.artefact_cache import ArtefactCache, ArtefactCacheError
-from atr_training.chunking import CHUNK_PLAN_FILENAME
+from atr_training.chunking import CHUNK_PLAN_FILENAME, is_plan
 from atr_training.codeversion import current_code, describe_drift
 from atr_training.contracts import (
     DatasetCounts,
@@ -513,26 +513,61 @@ class BasePipeline(ABC):
             job.progress.reserved_pages_source = "prepare (registry empty)"
             self.store.save(job)
             return train_manifest
-        pages = [line for line in
-                 train_manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
-        keep, reserved = reserved_set.split(pages)
+        if is_plan(train_manifest):
+            # A chunked run defers the train side to `compile`, so what arrives
+            # here is `train_plan.json` — nine lines of JSON, not a page list.
+            # Read as one, it names no document, nothing is reserved, and the
+            # record used to say `0`: "consulted, held nothing back". The pages
+            # exist only per chunk, inside the compile loop, so enforcement
+            # belongs there; until it is built this says so instead of counting.
+            job.progress.reserved_pages = None
+            job.progress.reserved_pages_source = (
+                "not checked: chunked prepare defers the train side to compile")
+            logger.warning(
+                "held-out documents: {} is a chunk plan, not a page manifest — the "
+                "train side is materialised per chunk in compile and is NOT checked "
+                "against the registry (#98)", train_manifest.name)
+            self.store.save(job)
+            return train_manifest
+
+        entries = [line for line in
+                   train_manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+        result = reserved_set.reserve(entries)
+        keep, reserved = result.keep, result.reserved
+        if not result.measurable:
+            # Nothing in this manifest named a document, so a count would be a
+            # statement about the registry that this manifest cannot support —
+            # a line-level corpus whose pages are foreign scans, for instance.
+            # `0` would read as "checked, nothing held back" (#119).
+            job.progress.reserved_pages = None
+            job.progress.reserved_pages_source = (
+                f"not checked: no document id in any of {result.total} entries of "
+                f"{train_manifest.name}")
+            logger.warning(
+                "held-out documents: none of the {} entries in {} names a document — "
+                "this selection cannot be checked against the registry, and the "
+                "record says so rather than claiming nothing is reserved (#98)",
+                result.total, train_manifest.name)
+            self.store.save(job)
+            return train_manifest
         job.progress.reserved_pages = len(reserved)
         job.progress.reserved_pages_source = "prepare"
         if not reserved:
             logger.info("held-out documents: none of {} training pages are reserved "
-                        "({} documents in the registry)", len(pages), len(reserved_set.documents))
+                        "({} of them name a document; {} documents in the registry)",
+                        result.total, result.identified, len(reserved_set.documents))
             self.store.save(job)
             return train_manifest
         if not keep:
             raise DatasetSelectionError(
-                f"every one of the {len(pages)} selected training pages belongs to a "
+                f"every one of the {result.total} selected training pages belongs to a "
                 f"document reserved for evaluation ({', '.join(reserved_set.sets)}). "
                 "This selection is the eval set, not a training corpus."
             )
         logger.warning(
             "held-out documents: dropped {} of {} training pages, reserved for "
             "evaluation by {} (#98)",
-            len(reserved), len(pages), ", ".join(sorted(reserved_set.sets)),
+            len(reserved), result.total, ", ".join(sorted(reserved_set.sets)),
         )
         train_manifest.write_text("\n".join(keep) + "\n", encoding="utf-8")
         (train_manifest.parent / "pages_reserved.lst").write_text(

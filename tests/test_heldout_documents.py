@@ -156,27 +156,129 @@ def test_a_selection_that_is_the_eval_set_is_refused(tmp_path, monkeypatch):
     assert "is the eval set" in str(exc.value)
 
 
-def test_a_line_granularity_manifest_is_left_alone(tmp_path, monkeypatch):
-    """Crop names carry no document, so nothing may be dropped from them."""
+def _line_pipeline(tmp_path, job_id: str):
     from atr_training.contracts import DatasetSpec, TrainJob, TrainRequest
     from atr_training.jobstore import JobStore
     from atr_training.settings import TrainerSettings
     from kraken_train_svc.runner import Pipeline
 
     store = JobStore(tmp_path / "jobs", host_id="asteraix")
-    job = TrainJob(id="20260915T000000Z-kraken-lines",
+    job = TrainJob(id=job_id,
                    request=TrainRequest(engine="kraken", model_id="kraken-lines",
                                         datasets=[DatasetSpec(hf_repo="dh-unibe/x")]))
     data = store.paths(job.id).data
     data.mkdir(parents=True)
+    return Pipeline(store=store, settings=TrainerSettings(root=tmp_path / "jobs")), job, data
+
+
+def test_a_line_manifest_without_a_page_is_not_checked_rather_than_clean(tmp_path):
+    """Crop names carry no document, so nothing may be dropped from them — and
+    the record must not then claim the registry was consulted.
+
+    This used to assert `reserved_pages == 0`, which is the same value a run gets
+    after a real check that found nothing. #247 has to read 54 of these
+    afterwards and cannot tell the two apart (#119).
+    """
+    pipeline, job, data = _line_pipeline(tmp_path, "20260915T000000Z-kraken-lines")
     manifest = data / "lines_train.jsonl"
     lines = ['{"image": "crops/a.jpg"}', '{"image": "crops/b.jpg"}']
     manifest.write_text("\n".join(lines) + "\n")
 
-    pipeline = Pipeline(store=store, settings=TrainerSettings(root=tmp_path / "jobs"))
     pipeline._reserve_eval_documents(job, manifest)
-    assert manifest.read_text().splitlines() == lines
-    assert job.progress.reserved_pages == 0
+
+    assert manifest.read_text().splitlines() == lines, "nothing may be dropped"
+    assert job.progress.reserved_pages is None
+    assert "no document id" in (job.progress.reserved_pages_source or "")
+
+
+def test_a_line_manifest_is_checked_through_its_page_field(tmp_path, monkeypatch):
+    """The fix, not only the refusal: a line corpus cropped from materialised
+    pages *is* checkable — the page is right there in the sample."""
+    import json as _json
+
+    from atr_training import heldout, runner_base
+
+    held = heldout.HeldOutDocuments(frozenset({"018155"}), {"german-medieval-v1": 1})
+    monkeypatch.setattr(runner_base, "load_heldout", lambda *a, **kw: held)
+
+    pipeline, job, data = _line_pipeline(tmp_path, "20260915T000001Z-kraken-lines")
+    manifest = data / "lines_train.jsonl"
+    reserved_line = _json.dumps({"image": "images/000001_x.jpg", "text": "wer dis liset",
+                                 "page": "0_018155_f001r_IMG001.xml"})
+    kept_line = _json.dumps({"image": "images/000002_y.jpg", "text": "der sol wissen",
+                             "page": "1_099999_f002v_IMG002.xml"})
+    manifest.write_text(reserved_line + "\n" + kept_line + "\n")
+
+    pipeline._reserve_eval_documents(job, manifest)
+
+    assert job.progress.reserved_pages == 1
+    assert job.progress.reserved_pages_source == "prepare"
+    assert manifest.read_text().splitlines() == [kept_line], "the reserved line is gone"
+
+
+def test_a_slash_in_the_transcription_no_longer_decides_the_reservation(tmp_path, monkeypatch):
+    """The measured defect.
+
+    `document_of` takes `Path(entry).name` — everything after the **last slash in
+    the whole JSON blob**. With a transcription containing "/" (`anno 1431 /
+    vigilia`, routine in this material) the last slash moved into the text, the
+    document came back None, and a held-out page stayed in training. Field order
+    and transcription content decided whether the boundary held.
+    """
+    import json as _json
+
+    from atr_training import heldout, runner_base
+
+    held = heldout.HeldOutDocuments(frozenset({"018155"}), {"german-medieval-v1": 1})
+    monkeypatch.setattr(runner_base, "load_heldout", lambda *a, **kw: held)
+
+    pipeline, job, data = _line_pipeline(tmp_path, "20260915T000002Z-kraken-lines")
+    manifest = data / "lines_train.jsonl"
+    # Two lines, because a manifest that is *only* reserved material is the
+    # other refusal — `DatasetSelectionError`, tested above.
+    manifest.write_text("\n".join([
+        _json.dumps({"image": "images/000001_x.jpg", "text": "anno 1431 / vigilia sancti",
+                     "source_type": "line", "bbox": None,
+                     "page": "0_018155_f001r_IMG001.xml"}),
+        _json.dumps({"image": "images/000002_y.jpg", "text": "item dedi 4 lb / 3 s",
+                     "source_type": "line", "bbox": None,
+                     "page": "1_099999_f002v_IMG002.xml"}),
+    ]) + "\n")
+
+    pipeline._reserve_eval_documents(job, manifest)
+
+    assert job.progress.reserved_pages == 1, (
+        "the slash in the transcription decides the reservation again")
+    assert "099999" in manifest.read_text(), "the unreserved line is still there"
+
+
+def test_a_chunk_plan_is_not_read_as_a_page_list(tmp_path, monkeypatch):
+    """What `prepare` returns in chunked mode is `train_plan.json`.
+
+    Read as a manifest it is nine lines of JSON that name no document, so nothing
+    was reserved and the record said `0`. The pages of a chunked run exist only
+    inside the compile loop, so the registry is not consulted at all — and that
+    is what the record now says.
+    """
+    from atr_training import heldout, runner_base
+    from atr_training.chunking import CHUNK_PLAN_FILENAME
+
+    held = heldout.HeldOutDocuments(frozenset({"018155"}), {"german-medieval-v1": 1})
+    monkeypatch.setattr(runner_base, "load_heldout", lambda *a, **kw: held)
+
+    pipeline, job, data = _line_pipeline(tmp_path, "20260915T000003Z-kraken-chunked")
+    plan = data / CHUNK_PLAN_FILENAME
+    body = json.dumps({"hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+                       "data_files": ["data/train-00000-of-00042.parquet"],
+                       "revision": None, "max_pages": None, "chunk_pages": 5000},
+                      indent=2)
+    plan.write_text(body, encoding="utf-8")
+
+    pipeline._reserve_eval_documents(job, plan)
+
+    assert job.progress.reserved_pages is None
+    assert "chunked" in (job.progress.reserved_pages_source or "")
+    assert plan.read_text(encoding="utf-8") == body, "the plan must not be rewritten"
 
 
 # ── a cache hit must not smuggle the reserved pages back in ────────────────
