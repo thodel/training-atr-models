@@ -96,13 +96,71 @@ def test_the_cached_walltime_is_short_but_not_zero():
 
 
 # ── the probe reads the cache the job will read ─────────────────────────────
-def test_the_probes_cache_root_is_the_one_prepare_exports():
-    """Declared twice — the probe runs before the batch file's `export` — so the
-    two are pinned to each other rather than left to drift."""
+#: A name no real account has, substituted into both sides below. The test used
+#: the ambient `$USER`, so it only ran correctly where one was set: in a
+#: container without it the needle was the empty string, and
+#: `str.replace("", "$USER")` inserts between every character — the expected
+#: value became `$USER/$USERs$USERc$USERr$USERa...`, and the test failed for
+#: whoever ran it there rather than where the defect was (#251).
+PROBE_USER = "ubelix-test-user"
+
+
+def _exported_cache_root(user: str) -> str:
+    """`prepare.sbatch`'s own export, with its two shell variables resolved."""
     line = next(ln for ln in PREPARE.read_text(encoding="utf-8").splitlines()
                 if ln.startswith("export ATR_TRAIN_ARTEFACT_CACHE_ROOT="))
-    exported = line.split("=", 1)[1].replace("$S", "/scratch/network/users/$USER")
-    assert exported == str(probe.DEFAULT_CACHE_ROOT).replace(os.environ.get("USER") or "", "$USER")
+    return (line.split("=", 1)[1]
+            .replace("$S", "/scratch/network/users/$USER")
+            .replace("$USER", user))
+
+
+def test_the_probes_cache_root_is_the_one_prepare_exports(monkeypatch):
+    """Declared twice — the probe runs before the batch file's `export` — so the
+    two are pinned to each other rather than left to drift.
+
+    Both sides are resolved against a fixed name, so neither the assertion nor
+    its expected value depends on the account the suite runs under.
+    """
+    monkeypatch.setenv("USER", PROBE_USER)
+    monkeypatch.delenv("ATR_TRAIN_ARTEFACT_CACHE_ROOT", raising=False)
+
+    assert str(probe.default_cache_root()) == _exported_cache_root(PROBE_USER)
+    assert str(probe.cache_root()) == _exported_cache_root(PROBE_USER)
+
+
+def test_the_user_is_a_path_component_and_not_a_substitution(monkeypatch):
+    """The component has to be the whole one. A name that is a substring of the
+    tree above it — `users`, `network` — must not change anything else in the
+    path, which a textual substitution on either side would."""
+    monkeypatch.setenv("USER", "users")
+    monkeypatch.delenv("ATR_TRAIN_ARTEFACT_CACHE_ROOT", raising=False)
+
+    assert str(probe.default_cache_root()) == \
+        "/scratch/network/users/users/expA/artefacts"
+
+
+def test_without_a_user_there_is_no_cache_root(monkeypatch):
+    """None, not a path with the component left out.
+
+    `Path("/scratch/network/users") / ""` drops the empty component without a
+    word, so the probe used to look into `/scratch/network/users/expA/artefacts`
+    — a directory belonging to nobody — and report it as the job's cache.
+    """
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("ATR_TRAIN_ARTEFACT_CACHE_ROOT", raising=False)
+
+    assert probe.default_cache_root() is None
+    assert probe.cache_root() is None
+
+
+def test_the_export_still_wins_without_a_user(monkeypatch, tmp_path):
+    """Which is the normal case inside the job: `prepare.sbatch` exports the
+    root and passes it into the container explicitly, so a job that got that far
+    reads what it was told and never derives anything."""
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.setenv("ATR_TRAIN_ARTEFACT_CACHE_ROOT", str(tmp_path))
+
+    assert probe.cache_root() == tmp_path
 
 
 def test_the_env_wins_over_the_default(monkeypatch, tmp_path):
@@ -234,6 +292,40 @@ def test_a_key_that_differs_in_the_selection_does_not_hit(tmp_path, cache):
         "datasets": [{"hf_repo": "dh-unibe/medieval", "train_projects": ["a"]}],
     }), encoding="utf-8")
     assert probe.verdict(str(other), root=cache.root)[0] == "build"
+
+
+def test_an_unnameable_cache_root_answers_build(tmp_path, monkeypatch):
+    """The module's own rule, applied to the one uncertainty it did not cover:
+    "every uncertainty answers `build`".
+
+    A wrong `cached` books a half-hour wall for an eleven-hour job, which is a
+    TIMEOUT and costs the corpus. Before, this case did not reach the rule at
+    all — the path was built without the user component and the probe looked
+    into a tree belonging to nobody. It answered `build` there too, but by
+    luck: nothing is in that directory. Something *in* it would have been
+    reported as this job's compiled corpus.
+    """
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("ATR_TRAIN_ARTEFACT_CACHE_ROOT", raising=False)
+
+    answer, why = probe.verdict(str(_spec_file(tmp_path)))
+
+    assert answer == "build"
+    assert "$USER" in why and "cannot be located" in why, (
+        f"the reason does not say what is missing: {why!r}")
+
+
+def test_a_named_root_is_still_used_without_a_user(tmp_path, cache, monkeypatch):
+    """The counter-test: refusing to derive a path must not refuse a given one.
+    `submit.sh` runs the probe inside apptainer, and the export is what the job
+    reads — a probe that gave up whenever `$USER` were absent from the container
+    would lose every short wall it exists to find."""
+    monkeypatch.delenv("USER", raising=False)
+    _store(cache, tmp_path)
+    monkeypatch.setenv("ATR_TRAIN_ARTEFACT_CACHE_ROOT", str(cache.root))
+
+    answer, _why = probe.verdict(str(_spec_file(tmp_path)))
+    assert answer == "cached"
 
 
 def test_the_probe_does_not_stamp_last_used(tmp_path, cache):

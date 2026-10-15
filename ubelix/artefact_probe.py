@@ -37,14 +37,39 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-#: Where `prepare.sbatch` points the artefact cache. Declared here as well as
-#: there because this runs on the login node, before the batch file's own
-#: `export` has happened — and pinned to it by
+#: The scratch tree the cache lives under, and the rest of the path below it.
+#: Declared here as well as in `prepare.sbatch` because this runs on the login
+#: node, before the batch file's own `export` has happened — and pinned to it by
 #: `tests/test_ubelix_prepare_walltime.py`, so the two cannot drift apart. That
 #: is the same remedy `backends.supports_chunked_prepare` uses for the same
 #: shape of problem.
-DEFAULT_CACHE_ROOT = (Path("/scratch/network/users") / (os.environ.get("USER") or "")
-                      / "expA" / "artefacts")
+SCRATCH_USERS = Path("/scratch/network/users")
+CACHE_SUBPATH = ("expA", "artefacts")
+
+
+def default_cache_root() -> Optional[Path]:
+    """Where `prepare.sbatch` points the artefact cache, or None without ``$USER``.
+
+    A function, not a constant: the path is derived from the environment, and a
+    constant evaluated at import would answer for the environment the module
+    happened to be imported in.
+
+    **None, never a path with the user left out.** This was
+    ``os.environ.get("USER") or ""``, and ``Path("/scratch/network/users") / ""``
+    drops the empty component silently: the probe looked into
+    ``/scratch/network/users/expA/artefacts`` — a directory belonging to nobody,
+    which exists on no node — and reported it as the job's cache. Not finding
+    anything there, it answered ``build``, so the wall was right by luck; had
+    something been there it would have answered ``cached`` about another
+    tree. That is precisely what this module's docstring forbids: "answer
+    confidently about the wrong digest — which is worse than not answering".
+
+    `prepare.sbatch` is already honest about this — it runs under ``set -u``, so
+    an unset ``$USER`` aborts the job at ``S=/scratch/network/users/$USER``
+    rather than building a path without it. Only the probe degraded quietly.
+    """
+    user = os.environ.get("USER") or None
+    return SCRATCH_USERS.joinpath(user, *CACHE_SUBPATH) if user else None
 
 #: How much of an unpinned entry's life must be left before `cached` is safe.
 #:
@@ -55,10 +80,15 @@ DEFAULT_CACHE_ROOT = (Path("/scratch/network/users") / (os.environ.get("USER") o
 MARGIN_DAYS = 1.0
 
 
-def cache_root() -> Path:
-    """The cache this submission's job will read. The env wins, as in the job."""
+def cache_root() -> Optional[Path]:
+    """The cache this submission's job will read, or None if it cannot be named.
+
+    The env wins, as in the job — `prepare.sbatch` exports it and passes it into
+    the container explicitly, so a job that got that far reads what it was told.
+    None only when neither the export nor ``$USER`` is there to derive it from.
+    """
     env = os.environ.get("ATR_TRAIN_ARTEFACT_CACHE_ROOT")
-    return Path(env) if env else DEFAULT_CACHE_ROOT
+    return Path(env) if env else default_cache_root()
 
 
 def pipeline_class(engine: str) -> Any:
@@ -106,6 +136,10 @@ def verdict(spec_path: str, *, root: Optional[Path] = None,
         return "build", "the %s backend does not reuse artefacts" % request.engine
 
     root = Path(root) if root is not None else cache_root()
+    if root is None:
+        return "build", (
+            "neither ATR_TRAIN_ARTEFACT_CACHE_ROOT nor $USER is set, so the "
+            "artefact cache cannot be located — this prepare is assumed to build")
     cache = ArtefactCache(root)
     # `entry`, not `lookup`: a probe must not stamp `last_used`. That field is the
     # only evidence eviction has that a run still depends on an artefact, and a
