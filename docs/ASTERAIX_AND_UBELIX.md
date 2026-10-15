@@ -182,6 +182,22 @@ under `hf_hub/` again means a host whose link points at the wrong level. The
 rule in [INFRASTRUCTURE.md](INFRASTRUCTURE.md#local-disk-or-the-share), *do
 not set `HF_HOME` on asteraix*, stands: it is about bypassing the share.
 
+That host was idhefix, for four more days. A `merge_loras.py` run there on
+14.10.2026 wrote its downloads to `hf_hub/models--*` and said so only in a
+`huggingface_hub` warning in the middle of a 17 GB download
+(serving-atr-inference#221). The serving documentation had described the bare
+`hf_hub/` as the right target all along. On 15.10.2026 idhefix's link was
+moved to `hf_hub/hub/` as well, and the old form held 21 entries again: 8 were
+moved into `hub/` (two LightOnOCR repos, bytellama, yolov9, swin and the first
+page model), 13 were duplicates of what `hub/` already had or stubs of a few
+KB — eight dataset directories with no download in them, written by a host
+that still links to the old level; tei and lassberg are the candidates. The
+duplicates were deleted, and with them, through a mistake in the cleanup
+command, the only full copy of the `qwen3.5-4b-german-xix-v1` adapter (325
+MB); it is a private Hub repo and the next merge fetches it again. The serving
+repo's `scripts/probe_host.sh` now reports the link level, as `check_env.sh`
+does here.
+
 ### The code
 
 The same repository, the same `TrainRequest`, the same runner. A UBELIX job
