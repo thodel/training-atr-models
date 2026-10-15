@@ -45,6 +45,7 @@ __all__ = [
     "materialize",
     "materialize_lines",
     "split_line_samples",
+    "transcribed_lines_of",
 ]
 
 
@@ -252,6 +253,35 @@ class PreparedSet:
             f"{self.pages_skipped} pages skipped, {self.bytes_written / 1e6:.1f} MB"
             f"{tail}"
         )
+
+
+def transcribed_lines_of(paths: Iterable[Path | str]) -> int:
+    """How many transcribed lines the pages at *paths* hold, as counted here.
+
+    The same ``page_stats(...).transcribed_lines`` that :func:`materialize` adds
+    up below, called on the files it wrote. It lives next to that line because
+    the two have to agree: a count taken a different way and then *subtracted*
+    from the first is a difference between two definitions, not a number of
+    lines.
+
+    Needed wherever pages leave a selection after it was counted — the held-out
+    reservation (#98) drops pages from a manifest that ``train_lines`` was
+    already computed over, and that field divides the step count (#72).
+
+    A page whose XML cannot be re-read counts as zero and is logged. That leaves
+    the caller's total where it was, which is high rather than invented: an
+    exception here would fail a stage over a measurement, and a guess would put
+    a number nobody produced into the record.
+    """
+    total = 0
+    for path in paths:
+        try:
+            total += page_stats(Path(path).read_text(encoding="utf-8")).transcribed_lines
+        except (OSError, ValueError) as exc:
+            logger.warning("could not re-read {} to count its lines ({}) — it counts "
+                           "as zero, so the caller's total stays high",
+                           Path(path).name, exc)
+    return total
 
 
 def materialize(

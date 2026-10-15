@@ -42,8 +42,7 @@ from atr_training.chunking import (chunk_record, chunks, finished_chunk,
                                    is_plan, read_plan)
 from atr_training.manifests import binary_manifest, write_manifest
 from atr_training.heldout import load_heldout
-from atr_training.pagexml import page_stats
-from atr_training.prepare import materialize
+from atr_training.prepare import materialize, transcribed_lines_of
 from atr_training.promote import PromotionResult, held_out_page, http_recognizer, promote
 from atr_training.registration import RegistrationError, set_enabled, weights_mib
 from atr_training.runner_base import (
@@ -225,28 +224,19 @@ class Pipeline(BasePipeline):
     def _reserve_chunk(reserved_set, xml_paths: list[Path]) -> tuple[list[Path], list[Path], int]:
         """``(keep, reserved, reserved_lines)`` for one chunk's materialised pages.
 
-        The lines are counted back out with :func:`page_stats`, the same function
-        ``materialize`` added them with — a chunk's ``written.lines`` counts every
-        page it materialised, and the reserved ones are not trained on. Counting
-        them into ``train_lines`` is what its own comment in ``runner_base``
-        forbids: the step-count guard divides by it, so held-out lines there
-        flatter every configuration.
-
-        A page whose XML cannot be re-read is counted as zero reserved lines and
-        logged: that leaves ``train_lines`` where it would have been before this
-        existed, which is high rather than invented.
+        The lines are counted back out by
+        :func:`~atr_training.prepare.transcribed_lines_of`, which is where that
+        count is defined — a chunk's ``written.lines`` counts every page it
+        materialised, and the reserved ones are not trained on. Counting them
+        into ``train_lines`` is what its own comment in ``runner_base`` forbids:
+        the step-count guard divides by it, so held-out lines there flatter every
+        configuration. The page path makes the same correction through
+        ``_drop_reserved_from_train_lines`` (#256), with the same function.
         """
         result = reserved_set.reserve([str(path) for path in xml_paths])
         reserved = [Path(entry) for entry in result.reserved]
-        reserved_lines = 0
-        for path in reserved:
-            try:
-                reserved_lines += page_stats(
-                    path.read_text(encoding="utf-8")).transcribed_lines
-            except (OSError, ValueError) as exc:
-                logger.warning("could not re-read {} to count its held-out lines ({}) "
-                               "— train_lines stays high for this page", path.name, exc)
-        return [Path(entry) for entry in result.keep], reserved, reserved_lines
+        return ([Path(entry) for entry in result.keep], reserved,
+                transcribed_lines_of(reserved))
 
     def _compile_chunked(self, job: TrainJob, plan, pages_val: Path,
                          record: StageRecord) -> tuple[Path, Path]:
