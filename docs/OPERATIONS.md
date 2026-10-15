@@ -365,6 +365,13 @@ as [Promoting by hand](#promoting-by-hand), and only the files that change are
 rewritten. The gateway picks each up at its next look at `trained/`. A second
 run finds nothing left to do, so it is safe to repeat after new weights land.
 
+The first run, on asteraix on 14.10.2026, read six files and rewrote five:
+`kraken-german-xix-v1` went from 0 to 16 MiB (its `.mlmodel`), and the gateway
+showed the 16 in `/models` at its next look; the four `vlm-xix-effective-batch-01-noise-s4*`
+adapters lost their 0 and wait for the merge on idhefix to write the merged
+size; `…-r0-3de4c2e3aef1` had no `vram_mb` and was left alone. The "thirteen"
+#225 had guessed were these five.
+
 ## Closing another host's stuck record
 
 This host never starts, judges or signals another host's job (#15). For a
