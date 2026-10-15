@@ -37,7 +37,8 @@ from atr_training.ketos_cmd import (
     weights_suffix,
 )
 from atr_training.curves import CURVE_FILENAME, curve_from_checkpoints, write_training_json
-from atr_training.chunking import chunks, is_plan, read_plan
+from atr_training.chunking import (chunk_record, chunks, finished_chunk,
+                                   is_plan, read_plan)
 from atr_training.manifests import binary_manifest, write_manifest
 from atr_training.prepare import materialize
 from atr_training.promote import PromotionResult, held_out_page, http_recognizer, promote
@@ -58,46 +59,24 @@ __all__ = [
 ]
 
 
-#: Written beside ``train_<i>.arrow`` **after** its ketos compile exited 0, and
-#: only then. Two things it settles that the arrow alone cannot (#72):
-#:
-#: * that the chunk is finished — an arrow exists after a SIGKILL too, and the
-#:   truncated file would go straight into ``ketos train``;
-#: * how many transcribed **lines** it holds. That number is produced inside
-#:   ``materialize()`` and exists nowhere on disk afterwards. The obvious
-#:   substitute, counting lines of ``pages_train_<i>.lst``, is one *page* per
-#:   line (``manifests.write_manifest``), so it reads about a factor 30 low and
-#:   looks plausible. It feeds ``check_convergence`` and is written into the
-#:   artefact-cache payload, from where every later job on that entry reads it
-#:   back — one resumed run would poison it for good.
-CHUNK_RECORD_SUFFIX = ".done.json"
-
-
-def _chunk_record(arrow: Path) -> Path:
-    return arrow.with_name(arrow.name + CHUNK_RECORD_SUFFIX)
+#: The record and the rule for reading it live in :mod:`atr_training.chunking`,
+#: because the observer in :mod:`atr_training.runtime_probe` has to call a chunk
+#: finished on exactly the same evidence this loop does (#250).
+_chunk_record = chunk_record
 
 
 def _finished_chunk(arrow: Path) -> dict | None:
     """The record of a finished chunk, or None — in which case it is rebuilt.
 
-    Strict on purpose: a record that does not parse, does not carry both counts,
-    or names an arrow that is gone or empty, is treated as absent. Recompiling a
-    chunk costs minutes; adopting a half-written one costs a training run and
-    says nothing while it does.
+    The rule is :func:`atr_training.chunking.finished_chunk`; what is added here
+    is the warning, which belongs to the loop that pays for the rebuild rather
+    than to the predicate.
     """
-    record = _chunk_record(arrow)
-    try:
-        data = json.loads(record.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    if not all(isinstance(data.get(k), int) for k in ("pages_written", "lines")):
-        return None
-    if not arrow.exists() or arrow.stat().st_size == 0:
+    data = finished_chunk(arrow)
+    if data is None and _chunk_record(arrow).exists() and (
+            not arrow.exists() or arrow.stat().st_size == 0):
         logger.warning("chunk record {} names an arrow that is missing or empty — "
-                       "recompiling the chunk", record.name)
-        return None
+                       "recompiling the chunk", _chunk_record(arrow).name)
     return data
 
 

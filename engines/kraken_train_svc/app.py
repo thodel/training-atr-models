@@ -42,8 +42,9 @@ import os
 import shutil
 import signal
 import socket
-import subprocess
 import time
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -53,6 +54,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from atr_training import gpu as gpu_probe
+from atr_training import runtime_probe
 from atr_training.preflight import free_disk_gb
 from atr_training.access import AccessGuard, key_refusal
 from atr_training.shared_registry import BaseEntry, RegistryUnavailable, load_shared_registry
@@ -1080,9 +1082,80 @@ def _load(job_id: str) -> TrainJob:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+#: The last observation per job, so a trend has two points to stand on (#250).
+#: In memory and not on the record: a GET that writes is a GET that costs a disk
+#: write per poll, and the bot polls every 60 s. A restart loses the previous
+#: sample, and the next answer then carries ``None`` for the trends — which is
+#: the truth about what this process can see, not a gap to paper over.
+_LAST_OBSERVATION: dict[str, runtime_probe.Sample] = {}
+
+
+def _observe(job) -> dict | None:
+    """What this box sees of *job* right now, or None when there is nothing to see.
+
+    None for a terminal job and for one that never started: an observation of a
+    process that has exited is not a reading of zero, and #366's whole point is
+    that flat, growing and absent mean three different things.
+
+    Not for a job of another host either. ``pid`` means nothing off the machine
+    that spawned it — matched here it would describe whatever now holds that
+    number locally, the failure ``/gpu``'s docstring spells out for cards.
+
+    The remembered sample is dropped when a job ends: there is nothing left to
+    compare against, and a dict that only ever grows is a leak on a service that
+    runs for months.
+    """
+    if job.is_terminal or not job.pid:
+        _LAST_OBSERVATION.pop(job.id, None)
+        return None
+    if job.host and job.host != _settings().host_id:
+        return None
+
+    paths = _store().paths(job.id)
+    now = time.time()
+    current = runtime_probe.Sample(
+        at=now,
+        rss_mib=runtime_probe.rss_mib(job.pid),
+        job_dir_mib=runtime_probe.dir_mib(paths.root),
+    )
+    previous = _LAST_OBSERVATION.get(job.id)
+    _LAST_OBSERVATION[job.id] = current
+
+    observed = {
+        "at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "rss_mib": current.rss_mib,
+        "rss_trend": runtime_probe.trend(previous, current, "rss_mib"),
+        "job_dir_mib": current.job_dir_mib,
+        "job_dir_trend": runtime_probe.trend(previous, current, "job_dir_mib"),
+    }
+    # Only when the run is chunked, and then it is a count of what the compile
+    # recorded rather than anything derived here (#250).
+    chunks = runtime_probe.compile_chunks(paths.data)
+    if chunks is not None:
+        observed["compile_chunks"] = chunks
+    return observed
+
+
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: str) -> dict:
-    return _store().reconcile(_load(job_id)).model_dump(mode="json")
+    """The record, plus what this box sees of the process right now (#250).
+
+    ``observed`` is a sample taken at read time and carries its own ``at``;
+    everything else in the record is what the run *wrote*, at a stage boundary,
+    and was true then. The two are kept apart because ``progress.epoch`` already
+    shows what happens when they are not: it reads as a live counter and means
+    "the highest epoch among the surviving top-ten checkpoints", set once after
+    training returns.
+
+    Absent, not nulled, when there is nothing to observe — a terminal job, one
+    that never started, or one belonging to another host.
+    """
+    job = _store().reconcile(_load(job_id))
+    payload = job.model_dump(mode="json")
+    observed = await asyncio.to_thread(_observe, job)
+    if observed is not None:
+        payload["observed"] = observed
+    return payload
 
 
 @app.get("/jobs/{job_id}/log")

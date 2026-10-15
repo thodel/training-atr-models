@@ -31,10 +31,62 @@ from itertools import islice
 from pathlib import Path
 from typing import Iterable, Iterator
 
-__all__ = ["CHUNK_PLAN_FILENAME", "ChunkPlan", "read_plan", "is_plan", "chunks", "chunk_count"]
+__all__ = ["CHUNK_PLAN_FILENAME", "CHUNK_RECORD_SUFFIX", "ChunkPlan", "chunk_record",
+           "finished_chunk", "read_plan", "is_plan", "chunks", "chunk_count"]
 
 #: Written by ``prepare`` in chunked mode, in place of materialized train pages.
 CHUNK_PLAN_FILENAME = "train_plan.json"
+
+#: Written beside ``train_<i>.arrow`` **after** its ketos compile exited 0, and
+#: only then. Two things it settles that the arrow alone cannot (#72):
+#:
+#: * that the chunk is finished — an arrow exists after a SIGKILL too, and the
+#:   truncated file would go straight into ``ketos train``;
+#: * how many transcribed **lines** it holds. That number is produced inside
+#:   ``materialize()`` and exists nowhere on disk afterwards. The obvious
+#:   substitute, counting lines of ``pages_train_<i>.lst``, is one *page* per
+#:   line (``manifests.write_manifest``), so it reads about a factor 30 low and
+#:   looks plausible. It feeds ``check_convergence`` and is written into the
+#:   artefact-cache payload, from where every later job on that entry reads it
+#:   back — one resumed run would poison it for good.
+CHUNK_RECORD_SUFFIX = ".done.json"
+
+
+def chunk_record(arrow: str | Path) -> Path:
+    """Where the record for *arrow* lives."""
+    arrow = Path(arrow)
+    return arrow.with_name(arrow.name + CHUNK_RECORD_SUFFIX)
+
+
+def finished_chunk(arrow: str | Path) -> dict | None:
+    """The record of a finished chunk, or None — in which case it is unfinished.
+
+    Strict on purpose: a record that does not parse, does not carry both counts,
+    or names an arrow that is gone or empty, is treated as absent. Recompiling a
+    chunk costs minutes; adopting a half-written one costs a training run and
+    says nothing while it does.
+
+    It lives here rather than in the backend because two callers need the *same*
+    answer: the resume loop, which rebuilds what this calls unfinished, and
+    :func:`atr_training.runtime_probe.compile_chunks`, which reports how many are
+    done. Two copies of the rule would drift, and the observer would then report
+    a chunk as compiled while the runner was rebuilding it.
+    """
+    arrow = Path(arrow)
+    try:
+        data = json.loads(chunk_record(arrow).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not all(isinstance(data.get(k), int) for k in ("pages_written", "lines")):
+        return None
+    try:
+        if arrow.stat().st_size == 0:
+            return None
+    except OSError:
+        return None
+    return data
 
 
 @dataclass(frozen=True)
