@@ -1,4 +1,4 @@
-"""``GET /gpu`` and ``GET /health`` as the gateway reads them across the network (#13).
+"""``GET /gpu``, ``/health`` and ``/host`` as the gateway reads them (#13, #250).
 
 After the split the gateway on idhefix can no longer read the training cards:
 its nvidia-smi describes idhefix, and matching asteraix's job pids against
@@ -11,6 +11,13 @@ tests stub them (serving tests/test_train_gpu_inspection.py). The response
 shapes are pinned against ``tests/fixtures/trainer_contract/``, byte-identical
 copies of the gateway's fixtures (serving-atr-inference#137), which feeds the
 same files through its proxy.
+
+``/host`` joined that set late (#250). It has answered since #40/#64, but the
+gateway never proxied it, so nothing held its shape across the seam — and when
+the proxy was written the fixture was invented from a reading of this code
+rather than from this code's answer, describing a ``disks`` list that nothing
+serves. A fixture is a contract only when both repositories hold the same file
+and one of them checks its real answer against it; that check is below.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from kraken_train_svc import app as app_module
 FIXTURES = Path(__file__).parent / "fixtures" / "trainer_contract"
 HEALTH = json.loads((FIXTURES / "health.json").read_text(encoding="utf-8"))
 GPU = json.loads((FIXTURES / "gpu.json").read_text(encoding="utf-8"))
+HOST = json.loads((FIXTURES / "host.json").read_text(encoding="utf-8"))
 
 LOOPBACK = ("127.0.0.1", 50000)
 REPO_ID = "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi"
@@ -358,3 +366,109 @@ def test_the_contract_fixtures_carry_no_secret(trainer_key):
     for path in FIXTURES.iterdir():
         text = path.read_text(encoding="utf-8").lower()
         assert "key" not in text and trainer_key.lower() not in text, path.name
+
+
+# ── GET /host, across the seam (#250) ───────────────────────────────────────
+def test_host_answers_the_shape_the_gateway_holds(client, monkeypatch, tmp_path):
+    """The contract, checked against this machine's real answer.
+
+    `assert_same_keys` rather than an equality: the values are this box's — a
+    hostname, free gigabytes, the RAM of whatever runs the suite — and the
+    structure is what the gateway may rely on. The stubs make the answer
+    *complete*, because the partial cases are the point of their own tests below
+    and a missing key here would read as a contract breach.
+    """
+    monkeypatch.setattr(app_module, "free_disk_gb", lambda p: 536.42)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:      257844000 kB\n"
+                       "MemAvailable:  237216000 kB\n", encoding="ascii")
+    monkeypatch.setattr(app_module, "MEMINFO_PATH", meminfo)
+
+    answer = client.get("/host")
+    assert answer.status_code == 200
+    body = answer.json()
+
+    assert body["host"] == socket.gethostname()
+    assert_same_keys(body, HOST)
+
+
+def test_the_host_contract_does_not_promise_a_shape_this_trainer_never_sends():
+    """The fixture is this trainer's shape, not a design sketch.
+
+    The gateway's first version of this file described `disks` as a list of
+    roles with `total_gib`/`free_gib`/`free_pct`, plus `load` and `cpu_count`.
+    None of that is served here: `/host` answers `volumes` keyed by the setting
+    that names each path, with `free_gb`. A proxy whose job is to forward
+    faithfully had pinned a shape nothing produces, and both repositories now
+    hold the same file so neither can drift alone.
+    """
+    assert set(HOST) == {"host", "volumes", "ram"}
+    assert set(HOST["ram"]) == {"total_gb", "available_gb"}
+    for volume in HOST["volumes"].values():
+        assert set(volume) == {"free_gb", "path"}
+    assert {"jobs_root", "checkpoint_root"} <= set(HOST["volumes"]), (
+        "jobs_root is where extract writes its arrow and checkpoint_root is "
+        "where a run dies of a full disk — the two #366 was diagnosing")
+
+
+def test_a_partial_host_answer_omits_rather_than_invents(client, monkeypatch, tmp_path):
+    """Already true (#40) and now part of the cross-repo contract.
+
+    The gateway forwards what it gets, so "unknown is absent" has to hold here
+    or the absence becomes a zero somewhere downstream — a full disk, or a box
+    with no memory.
+    """
+    def measure(path):
+        if str(path).endswith("ckpt"):
+            raise OSError("not a mount point")
+        return 7.0
+
+    monkeypatch.setattr(app_module, "free_disk_gb", measure)
+    monkeypatch.setattr(app_module, "MEMINFO_PATH", tmp_path / "absent")
+
+    body = client.get("/host").json()
+
+    assert "ram" not in body, "an unreadable /proc/meminfo must not become a 0"
+    assert "checkpoint_root" not in body["volumes"]
+    assert body["volumes"], "the volumes that could be read still answer"
+
+
+def test_host_is_read_off_the_event_loop():
+    """Four `statvfs` calls against volumes that may be on a share — and a share
+    that has gone away is exactly when this endpoint gets asked."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(app_module.host))
+    awaited = [n for n in ast.walk(tree) if isinstance(n, ast.Await)]
+    assert awaited, "/host does not await anything — is it still async?"
+    assert any("to_thread" in ast.unparse(n) for n in awaited), (
+        "/host measures on the event loop; a hung share would block every "
+        "other request, including the /jobs the operator is trying to read")
+
+
+def test_a_total_without_an_available_keeps_the_gap_explicit(client, monkeypatch, tmp_path):
+    """The half-read case, which is the one a zero would lie about.
+
+    `/proc/meminfo` always has MemTotal; MemAvailable is newer and a container
+    or an odd kernel can leave it out. The code says `None` there, and nothing
+    pinned it: a reversion to `(free_kb or 0)` survived the whole suite. Read as
+    a number, `available_gb: 0.0` says the box has no memory left — the opposite
+    of the truth on an idle machine, and precisely the sentence that would stop
+    somebody submitting a run.
+
+    The gateway's half of this is pinned too (serving test
+    `test_an_explicit_null_is_forwarded_as_a_null`): null crosses the seam as
+    null. This end makes sure there is a null to cross.
+    """
+    monkeypatch.setattr(app_module, "free_disk_gb", lambda p: 11.0)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal:      257844000 kB\n"
+                       "MemFree:         1000000 kB\n", encoding="ascii")
+    monkeypatch.setattr(app_module, "MEMINFO_PATH", meminfo)
+
+    ram = client.get("/host").json()["ram"]
+
+    assert ram["total_gb"] == 257.84, "the half that was readable still answers"
+    assert ram["available_gb"] is None, (
+        "an unread MemAvailable became a number; 0.0 here reads as a full box")

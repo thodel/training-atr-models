@@ -26,8 +26,11 @@ from pathlib import Path
 from tests.test_train_svc_pipeline import FakeRunner, FakeSource, TestChunkedCompile
 from tests.test_train_svc_pipeline import request_with, settings, store  # noqa: F401
 
-from engines.kraken_train_svc.runner import (
-    CHUNK_RECORD_SUFFIX,
+# The suffix and the rule are the chunking module's (#250): the resume loop here
+# and the observer in runtime_probe have to agree on what "finished" means, so
+# there is one definition and both import it.
+from atr_training.chunking import CHUNK_RECORD_SUFFIX
+from kraken_train_svc.runner import (
     Pipeline,
     _chunk_record,
     _finished_chunk,

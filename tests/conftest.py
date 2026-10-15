@@ -29,6 +29,7 @@ pass or fail by where it ran. :data:`TEST_HOST_ID` is a name no real host has.
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -98,7 +99,103 @@ def _host_identity_never_comes_from_env_files(monkeypatch):
     monkeypatch.setenv("ATR_TRAIN_LEGACY_JOB_HOST", "idhefix")
 
 
+@pytest.fixture(autouse=True)
+def _the_write_roots_never_point_at_a_real_place(tmp_path_factory, monkeypatch):
+    """The other three roots a settings object can be asked to write to.
+
+    The artefact cache above was pinned because a pipeline test would leave
+    tens of GB under ``$HOME``. The job store, the trained weights and the
+    checkpoints are the same kind of path and were left open, so a settings
+    object nobody pinned writes to ``~/atr-cache/{training,trained,checkpoints}``
+    here — and on asteraix, whose ``.env`` names the research share, into the
+    live job store.
+
+    Nothing in the suite reaches that today: every path installs its own
+    settings, and the fallback was measured as never taken (see
+    :func:`_the_settings_cache_is_never_a_previous_test_s` below). This is the
+    floor under the day one test forgets, which is the whole reason the four
+    fixtures above exist.
+
+    Explicit constructor arguments still win, so the fixtures that build their
+    own ``TrainerSettings`` are unaffected.
+    """
+    root = tmp_path_factory.mktemp("write-roots")
+    monkeypatch.setenv("ATR_TRAIN_JOBS_ROOT", str(root / "training"))
+    monkeypatch.setenv("ATR_TRAIN_TRAINED_ROOT", str(root / "trained"))
+    monkeypatch.setenv("ATR_TRAIN_CHECKPOINT_ROOT", str(root / "checkpoints"))
+
+
+@pytest.fixture(autouse=True)
+def _the_settings_cache_is_never_a_previous_test_s():
+    """``get_settings()`` keeps its answer in a module global, forever.
+
+    Whichever test filled it would pin *its* environment for the whole session:
+    the per-test registry root and write roots above are set with monkeypatch,
+    so the cached object would carry one test's tmp directories into every
+    later caller — and the fixtures that pin them would silently stop working.
+
+    Measured as never filled across the full suite, in three file orders, so
+    this is a net and not a fix. It is here because #252 removed the leak that
+    *hid* it: with ``app.state.settings`` now cleared after every test, a test
+    that installs none falls through to ``get_settings()`` rather than to the
+    previous test's object. Both are wrong; the new one reads the real ``.env``.
+    """
+    from atr_training import settings as settings_module
+
+    settings_module._settings = None
+    yield
+    settings_module._settings = None
+
+
 @pytest.fixture
 def trainer_key() -> str:
     """The key every ``TrainerSettings`` in the suite carries."""
     return TEST_API_KEY
+
+
+#: The seams the service reads off ``app.state``. ``kraken_train_svc.app`` is a
+#: module, so what a test installs there outlives the test — and the next one
+#: gets it. A single test leaving ``store`` behind made
+#: ``test_host_owned_jobs.py`` fail whenever it ran after
+#: ``test_train_svc_api.py``, while the full suite stayed green because that
+#: order does not happen to arise: the red appeared for whoever ran a subset,
+#: and looked like their fault (#252).
+#:
+#: ``scheduler`` is deliberately not here. It is not a test seam — the app's own
+#: lifespan sets it and cancels it — and a fixture that deleted it would be
+#: clearing up after the code under test.
+APP_STATE_SEAMS = ("settings", "store", "spawn", "vram_check", "verify_spec", "registry")
+
+#: Both import paths are in use across the suite, and they are *different*
+#: modules with different ``app`` objects. The net clears whichever ones exist.
+APP_MODULES = ("kraken_train_svc.app", "engines.kraken_train_svc.app")
+
+
+def clear_app_state() -> list[str]:
+    """Remove every installed seam from every loaded service module.
+
+    Returns what it removed, so a test can check the net rather than trust it.
+    """
+    removed = []
+    for name in APP_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue                       # nothing imported it; nothing to clear
+        for attr in APP_STATE_SEAMS:
+            if hasattr(module.app.state, attr):
+                delattr(module.app.state, attr)
+                removed.append(f"{name}.{attr}")
+    return removed
+
+
+@pytest.fixture(autouse=True)
+def _app_state_never_leaks_into_the_next_test():
+    """Per test, after it, whether or not it cleaned up itself.
+
+    The fixtures that install seams do delete them again; this is the net under
+    the tests that set ``app.state`` directly, which is easy to do and gives no
+    sign of having done it. Autouse and last to tear down, so a fixture's own
+    cleanup still runs first and sees what it expects.
+    """
+    yield
+    clear_app_state()

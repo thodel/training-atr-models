@@ -1161,8 +1161,20 @@ def test_bases_without_a_registry_is_503_not_an_empty_list(client, app):
 
 
 def test_bases_needs_the_key(settings, app, spawn):
-    """The access middleware covers this route like every other one but /health."""
+    """The access middleware covers this route like every other one but /health.
+
+    Sets the seams directly rather than through the ``client`` fixture, because
+    the point is a client *without* the key — and so it removes them again. It
+    did not, and ``app`` is a module-level object: the store it left behind was
+    the next test module's store (#252). The conftest net now catches this, but
+    a test that tidies up only because something else does it is one nobody can
+    read.
+    """
     app.state.settings = settings
     app.state.store = JobStore(settings.jobs_root, host_id=settings.host_id)
-    with TestClient(app, client=LOOPBACK) as unauthenticated:
-        assert unauthenticated.get("/bases").status_code in (401, 403)
+    try:
+        with TestClient(app, client=LOOPBACK) as unauthenticated:
+            assert unauthenticated.get("/bases").status_code in (401, 403)
+    finally:
+        for attr in ("settings", "store"):
+            delattr(app.state, attr)
