@@ -28,7 +28,10 @@ from atr_training.settings import TrainerSettings
 from tests.test_train_svc_api import (  # noqa: F401 — fixtures
     BODY, app, busy_gpu, client, free_gpu, settings, spawn, store_of, venvs,
 )
-import engines.kraken_train_svc.app as app_module
+# The same path the rest of the suite uses. `engines.kraken_train_svc.app`
+# and `kraken_train_svc.app` are two modules with two `app` objects, and the
+# fixtures imported above install their seams on the latter (#252).
+from kraken_train_svc import app as app_module
 
 
 # ── the settings ────────────────────────────────────────────────────────────

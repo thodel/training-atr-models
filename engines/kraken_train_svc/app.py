@@ -114,13 +114,34 @@ def _settings() -> TrainerSettings:
     return getattr(app.state, "settings", None) or get_settings()
 
 
+#: Marks a store this function built, and from which settings object. A store
+#: installed on ``app.state`` from outside carries no mark: that is a seam, not
+#: a cache, and it is never replaced.
+_BUILT_FROM = "_atr_built_from_settings"
+
+
 def _store() -> JobStore:
+    """The job store for the settings currently installed on ``app.state``.
+
+    Cached, because every request wants it and opening a store touches the
+    filesystem — but the cache remembers *which* settings object it was built
+    from. It used to just answer "already have one", so replacing the settings
+    and asking again returned a store built from the old ones: same host_id and
+    jobs_root as before, silently, with no error anywhere (#252). In production
+    the settings are installed once at startup and this changes nothing; it is
+    the suite that replaces them, and a suite that only passes in one order is
+    a bug in the suite.
+    """
+    settings = _settings()
     store = getattr(app.state, "store", None)
-    if store is None:
-        settings = _settings()
-        store = JobStore(settings.jobs_root, host_id=settings.host_id,
-                         legacy_host=settings.legacy_job_host)
-        app.state.store = store
+    if store is not None:
+        built_from = getattr(store, _BUILT_FROM, None)
+        if built_from is None or built_from is settings:
+            return store
+    store = JobStore(settings.jobs_root, host_id=settings.host_id,
+                     legacy_host=settings.legacy_job_host)
+    setattr(store, _BUILT_FROM, settings)
+    app.state.store = store
     return store
 
 

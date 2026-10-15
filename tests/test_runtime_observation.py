@@ -232,7 +232,7 @@ def test_a_chunk_the_runner_would_rebuild_is_not_counted_as_done(tmp_path):
 def test_the_probe_and_the_resume_loop_call_the_same_rule_finished():
     """Structural, because the failure mode is drift rather than a wrong answer:
     two copies of this rule would agree on the day they were written."""
-    from engines.kraken_train_svc import runner
+    from kraken_train_svc import runner
 
     for caller in (runner._finished_chunk, runtime_probe.compile_chunks):
         assert "finished_chunk(" in inspect.getsource(caller), (

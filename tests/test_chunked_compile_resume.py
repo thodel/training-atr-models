@@ -30,7 +30,7 @@ from tests.test_train_svc_pipeline import request_with, settings, store  # noqa:
 # and the observer in runtime_probe have to agree on what "finished" means, so
 # there is one definition and both import it.
 from atr_training.chunking import CHUNK_RECORD_SUFFIX
-from engines.kraken_train_svc.runner import (
+from kraken_train_svc.runner import (
     Pipeline,
     _chunk_record,
     _finished_chunk,
