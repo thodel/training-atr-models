@@ -45,6 +45,7 @@ an arbitrary half of a belt-and-braces pair, and would read like a requirement.
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
 import pytest
@@ -230,26 +231,50 @@ def _is_app_state(node: ast.AST) -> bool:
             and isinstance(node.value, ast.Name) and node.value.id in ("app", "_app"))
 
 
+def _modules_that_touch_app_state() -> dict[Path, set[str]]:
+    """Every shipped module that reads or writes `app.state`, and which names.
+
+    Over `src/` and `engines/` rather than over the one app module: the check
+    below says "every seam the service reads", and a version that looked only
+    at `app.py` would have claimed that while measuring less — this project's
+    most expensive recurring shape (#641, #646, and the first draft of the
+    import test below). Measured today: only `app.py`. `access.py` names
+    `app.state` in a docstring, which the AST does not see, and that is the
+    point of using one.
+    """
+    found = {}
+    for path in [*Path("src").rglob("*.py"), *Path("engines").rglob("*.py")]:
+        names = _state_attributes(path)
+        if names:
+            found[path.resolve()] = names
+    return found
+
+
 def test_the_net_knows_every_seam_the_service_reads():
     """The check that keeps the net honest.
 
     A list of names copied once is the failure this repository has twice paid
     for: a rule pinned only in a hardcoded list does not travel to new code
-    (#641 SEC-18, #646 SEC-19). So the names come out of the service's own AST,
-    and a seam added there without being added to the net fails here.
+    (#641 SEC-18, #646 SEC-19). So the names come out of the shipped modules'
+    own AST, and a seam added there without being added to the net fails here.
 
     `scheduler` is the one exception and it is listed by name with a reason: the
     lifespan owns it, so clearing it would be tidying up after the code under
     test rather than after a test.
     """
-    reads = _state_attributes(APP_SOURCE)
-    assert reads, "nothing found — the parse is matching the wrong shape"
+    touching = _modules_that_touch_app_state()
+    assert touching, "nothing found — the parse is matching the wrong shape"
+    assert APP_SOURCE in touching, (
+        "the service module itself no longer appears — the scan is looking in "
+        "the wrong place")
+    reads = set().union(*touching.values())
 
     unprotected = reads - set(APP_STATE_SEAMS) - {"scheduler"}
     assert not unprotected, (
         f"the service reads {sorted(unprotected)} off app.state, and the net in "
         f"conftest does not clear it: a test installing one leaks it into every "
-        f"test collected after")
+        f"test collected after. Found in: "
+        f"{sorted(str(p) for p, n in touching.items() if n & unprotected)}")
 
 
 #: `pythonpath` holds both `engines` and `.`, so every service module can be
@@ -313,3 +338,79 @@ def test_each_service_module_is_imported_under_one_name():
 
     assert APP_MODULES[0] == "kraken_train_svc.app", (
         "the net's first module is no longer the path the suite uses")
+
+
+# ── the state that outlives a test without being on app.state ───────────────
+#
+# Same class, one level down. `app.state` was the seam a test could see; these
+# two are a module global and an environment default, and a test that trips
+# either leaves nothing behind that points at it.
+
+def test_the_settings_cache_is_empty_inside_a_test():
+    """`get_settings()` answers from a module global that nothing ever reset.
+
+    Whichever test filled it would pin *its* environment for the session, and
+    the four fixtures that pin a root per test would quietly stop working from
+    there on. Reset on both sides of every test — before as well, because a
+    module-level `get_settings()` anywhere would fill it at **collection**,
+    before any fixture has run.
+    """
+    from atr_training import settings as settings_module
+
+    assert settings_module._settings is None
+
+
+def test_the_cache_is_reset_on_both_sides_of_the_test():
+    """Structural, because the before-reset is the half no behaviour can show:
+    a cache filled during collection is already there when the first test
+    starts, and only a reset *before* that test clears it."""
+    from tests import conftest
+
+    source = inspect.getsource(conftest._the_settings_cache_is_never_a_previous_test_s
+                               ._get_wrapped_function())
+    before, _, after = source.partition("yield")
+    assert "_settings = None" in before, (
+        "nothing is reset before the test — a cache filled at collection time "
+        "survives into the first test")
+    assert "_settings = None" in after, (
+        "nothing is reset after the test — the last test's cache outlives the "
+        "session it was built in")
+
+
+def test_the_fallback_settings_write_nowhere_real(tmp_path):
+    """What `get_settings()` hands back when a test installs none.
+
+    Four roots, each one a place a run writes tens of GB to: here they default
+    under `$HOME`, and on asteraix — whose `.env` this reads — the job store is
+    the research share. Pinned per test, so the day a test forgets its own
+    settings it writes into a tmp directory rather than into the live store.
+    """
+    from atr_training.settings import get_settings
+
+    fallback = get_settings()
+    roots = {
+        "jobs_root": fallback.jobs_root,
+        "trained_root": fallback.trained_root,
+        "checkpoint_root": fallback.checkpoint_root,
+        "artefact_cache_root": fallback.artefact_cache_root,
+        "registry_root": fallback.registry_root,
+    }
+    base = tmp_path.parent.parent          # pytest's per-session tmp root
+    for name, root in roots.items():
+        assert Path.home() not in Path(root).parents, (
+            f"{name} is {root} — a pipeline test would write into $HOME")
+        assert str(base) in str(root), (
+            f"{name} is {root}, which is not under this session's tmp root: it "
+            f"is a real place, and on asteraix it is the research share")
+
+
+def test_the_fallback_still_carries_the_test_identity_and_key():
+    """The counter-test: pinning the roots must not cost the rails that were
+    already there — the fake host id and the key the suite's routes expect."""
+    from atr_training.settings import get_settings
+    from tests.conftest import TEST_API_KEY, TEST_HOST_ID
+
+    fallback = get_settings()
+    assert fallback.host_id == TEST_HOST_ID
+    assert fallback.api_key == TEST_API_KEY
+    assert fallback.legacy_job_host == "idhefix"
