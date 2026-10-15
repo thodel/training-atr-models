@@ -26,7 +26,8 @@ from loguru import logger
 from atr_training.shared_registry import RegistryUnavailable, load_shared_registry
 from atr_training.artefact_cache import key_for_specs
 from atr_training.base_models import BaseModelError, resolve_base_model
-from atr_training.contracts import Metrics, StageRecord, TrainJob, utcnow
+from atr_training.contracts import (DatasetSelectionError, Metrics, StageRecord,
+                                    TrainJob, utcnow)
 from atr_training.ketos_cmd import (
     compile_cmd,
     compile_workers,
@@ -40,6 +41,8 @@ from atr_training.curves import CURVE_FILENAME, curve_from_checkpoints, write_tr
 from atr_training.chunking import (chunk_record, chunks, finished_chunk,
                                    is_plan, read_plan)
 from atr_training.manifests import binary_manifest, write_manifest
+from atr_training.heldout import load_heldout
+from atr_training.pagexml import page_stats
 from atr_training.prepare import materialize
 from atr_training.promote import PromotionResult, held_out_page, http_recognizer, promote
 from atr_training.registration import RegistrationError, set_enabled, weights_mib
@@ -218,6 +221,33 @@ class Pipeline(BasePipeline):
         os.replace(partial, arrow)
         return arrow
 
+    @staticmethod
+    def _reserve_chunk(reserved_set, xml_paths: list[Path]) -> tuple[list[Path], list[Path], int]:
+        """``(keep, reserved, reserved_lines)`` for one chunk's materialised pages.
+
+        The lines are counted back out with :func:`page_stats`, the same function
+        ``materialize`` added them with — a chunk's ``written.lines`` counts every
+        page it materialised, and the reserved ones are not trained on. Counting
+        them into ``train_lines`` is what its own comment in ``runner_base``
+        forbids: the step-count guard divides by it, so held-out lines there
+        flatter every configuration.
+
+        A page whose XML cannot be re-read is counted as zero reserved lines and
+        logged: that leaves ``train_lines`` where it would have been before this
+        existed, which is high rather than invented.
+        """
+        result = reserved_set.reserve([str(path) for path in xml_paths])
+        reserved = [Path(entry) for entry in result.reserved]
+        reserved_lines = 0
+        for path in reserved:
+            try:
+                reserved_lines += page_stats(
+                    path.read_text(encoding="utf-8")).transcribed_lines
+            except (OSError, ValueError) as exc:
+                logger.warning("could not re-read {} to count its held-out lines ({}) "
+                               "— train_lines stays high for this page", path.name, exc)
+        return [Path(entry) for entry in result.keep], reserved, reserved_lines
+
     def _compile_chunked(self, job: TrainJob, plan, pages_val: Path,
                          record: StageRecord) -> tuple[Path, Path]:
         """Materialize, compile and discard the train side a chunk at a time.
@@ -236,6 +266,17 @@ class Pipeline(BasePipeline):
         pages_total = lines_total = 0
         remaining = plan.max_pages
 
+        # The held-out boundary, enforced here because this is where the pages
+        # exist (#255). `prepare` had nothing to check: in chunked mode it writes
+        # `train_plan.json` and defers the train side to this loop, so the
+        # registry was never consulted and the record said `reserved_pages: 0`.
+        reserved_set = load_heldout()
+        reserved_total = 0
+        #: False once a chunk is adopted whose record predates the count. The sum
+        #: is then partial, and a partial count of held-out pages is exactly the
+        #: number that must not be published as a measurement (#119).
+        reserved_known = True
+
         for index, batch in enumerate(chunks(rows, plan.chunk_pages)):
             if remaining is not None and remaining <= 0:
                 break
@@ -252,6 +293,18 @@ class Pipeline(BasePipeline):
                 lines_total += done["lines"]
                 if remaining is not None:
                     remaining -= done["pages_written"]
+                adopted_reserved = done.get("reserved")
+                if isinstance(adopted_reserved, int):
+                    reserved_total += adopted_reserved
+                else:
+                    # A record written before this count existed. Its pages are
+                    # compiled and cannot be re-examined — the chunk directory is
+                    # long gone — so the total for this run is unknowable rather
+                    # than lower than it is.
+                    reserved_known = False
+                    logger.warning(
+                        "chunk {}: its record predates the held-out count, so this "
+                        "run's reserved_pages cannot be totalled (#255)", index)
                 logger.info("chunk {}: already compiled ({} pages, {} lines) — skipped",
                             index, done["pages_written"], done["lines"])
                 continue
@@ -270,22 +323,50 @@ class Pipeline(BasePipeline):
                 shutil.rmtree(chunk_dir, ignore_errors=True)
                 continue
 
+            keep_paths, chunk_reserved, reserved_lines = self._reserve_chunk(
+                reserved_set, written.xml_paths)
+            reserved_total += len(chunk_reserved)
+            if chunk_reserved:
+                logger.warning(
+                    "chunk {}: dropped {} of {} pages, reserved for evaluation by {} "
+                    "(#98)", index, len(chunk_reserved), written.pages_written,
+                    ", ".join(sorted(reserved_set.sets)))
+            if not keep_paths:
+                # Every page of this chunk is eval material. Not an error on its
+                # own — the next chunk may hold nothing but training pages — and
+                # the refusal for a selection that is *entirely* the eval set is
+                # made once, after the loop, where that can be known.
+                logger.warning("chunk {}: every page is reserved for evaluation — "
+                               "nothing to compile", index)
+                shutil.rmtree(chunk_dir, ignore_errors=True)
+                continue
+
             manifest = write_manifest(paths.data / f"pages_train_{index:04d}.lst",
-                                      [str(p) for p in written.xml_paths])
+                                      [str(p) for p in keep_paths])
             arrows.append(self._compile_one(
                 job, manifest, arrow, record, f"train chunk {index}"))
 
-            pages_total += written.pages_written
-            lines_total += written.lines
+            # Pages and lines as *trained on*, not as materialised: the reserved
+            # ones are on disk and in no manifest. `train_lines` divides the step
+            # count (#72), so counting them would flatter the configuration —
+            # which is what the field exists to prevent.
+            pages_total += len(keep_paths)
+            lines_total += written.lines - reserved_lines
             if remaining is not None:
+                # The budget counts what the stream gave up, reserved or not: it
+                # caps the materialisation, and those pages were materialised.
                 remaining -= written.pages_written
             # The record last, after the arrow is at its final name: it is what a
             # re-entry believes, so it must not exist a moment before it is true.
             _chunk_record(arrow).write_text(json.dumps({
-                "pages_written": written.pages_written,
-                "lines": written.lines,
-                "start_index": pages_total - written.pages_written,
+                "pages_written": len(keep_paths),
+                "lines": written.lines - reserved_lines,
+                "start_index": pages_total - len(keep_paths),
                 "arrow": arrow.name,
+                # New key (#255). A resume reads it back rather than recounting,
+                # because the pages are discarded once the arrow exists. Absent
+                # in records written before this, which `reserved_known` handles.
+                "reserved": len(chunk_reserved),
             }), encoding="utf-8")
             # Only now: the arrow is written and non-empty, so these pages have
             # been turned into something durable.
@@ -298,6 +379,16 @@ class Pipeline(BasePipeline):
                         index, written.pages_written, arrows[-1].name)
 
         if not arrows:
+            if reserved_total:
+                # Every page the stream gave up is eval material. The same
+                # refusal the page path makes, and for the same reason: this
+                # selection is the eval set, not a training corpus.
+                raise DatasetSelectionError(
+                    f"every one of the {reserved_total} pages materialised from "
+                    f"{plan.hf_repo} belongs to a document reserved for evaluation "
+                    f"({', '.join(sorted(reserved_set.sets))}). This selection is the "
+                    "eval set, not a training corpus."
+                )
             raise StageFailed(
                 f"chunked compile produced no training data from {plan.hf_repo} — "
                 "the stream yielded no page with a transcribed line"
@@ -311,6 +402,13 @@ class Pipeline(BasePipeline):
         job.progress.pages_written = pages_total
         job.progress.lines_written = lines_total
         job.progress.train_lines = lines_total
+        # What `prepare` could not say (#255). Three-valued, as everywhere this
+        # field is written: a number when every chunk of this run was counted,
+        # `None` when a resume adopted a chunk whose record predates the count.
+        job.progress.reserved_pages = reserved_total if reserved_known else None
+        job.progress.reserved_pages_source = (
+            "compile (per chunk)" if reserved_known
+            else "compile (per chunk); incomplete — a resumed chunk predates the count")
         self.store.save(job)
 
         val_arrow = self._compile_one(job, pages_val, paths.data / "val.arrow",

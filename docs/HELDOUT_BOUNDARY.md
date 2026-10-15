@@ -64,13 +64,24 @@ als Seitenliste gelesen: 9 'Seiten', reserviert 0
 document_of je Zeile: [None × 9]
 ```
 
-So **the boundary is not enforced for chunked runs**, and the record said `0`.
-Latent today — `chunk_pages` defaults to `0`, chunking is kraken-only and needs
+So **the boundary was not enforced for chunked runs**, and the record said `0`.
+Latent — `chunk_pages` defaults to `0`, chunking is kraken-only and needs
 explicit `eval_projects` — but armed: it is the corpus-scale run that turns
-chunking on, and that is the run the boundary matters most for. The pages exist
-only inside the compile loop, so enforcement belongs there; until it is built,
-the record says `not checked: chunked prepare defers the train side to compile`
-and a warning is logged. **Enforcement is #255.**
+chunking on, and that is the run the boundary matters most for.
+
+**Enforced since #255.** The pages of a chunked run exist for one chunk at a
+time, inside the compile loop, so that is where the registry is applied now:
+reserved pages are dropped from each chunk's manifest, the counts are summed
+across chunks, and the sum lands on the record as `compile (per chunk)`. A
+resume reads each adopted chunk's count back out of its `.done.json`; a record
+written before that key existed makes the run's total `None` rather than a sum
+that quietly omits it. `prepare` still records `not checked: chunked prepare
+defers the train side to compile`, which `compile` then overwrites with the real
+number.
+
+Runs compiled **before** that change are the ones this census reads as
+`uncheckable`: their train side was materialised per chunk and discarded, so
+there is nothing left to apply the registry to.
 
 ## The method
 
