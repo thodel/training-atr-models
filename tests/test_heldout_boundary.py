@@ -248,9 +248,9 @@ def test_the_summary_separates_the_answers_from_the_non_answers(tmp_path, held):
 
     counts = summarize(check_store(tmp_path, store="share", held=held))
 
-    assert counts == {"clean": 1, "crossed": 1, "uncheckable": 1, "gone": 1,
-                      "runs": 4, "reserved_pages": 2}
-    assert counts["clean"] + counts["crossed"] != counts["runs"], (
+    assert counts == {"clean": 1, "enforced": 0, "crossed": 1, "uncheckable": 1,
+                      "gone": 1, "runs": 4, "decided": 2, "reserved_pages": 2}
+    assert counts["decided"] != counts["runs"], (
         "two of these four runs are not a verdict about their number")
 
 
@@ -279,3 +279,131 @@ def test_the_row_shows_the_record_beside_the_measurement(tmp_path, held):
     assert cells == ["`20261001T000000Z-kraken-corpus`", "share", "0.1234", "0",
                      "uncheckable", "0",
                      "chunked run: the train side was materialised per chunk and discarded"]
+
+
+# ── decided without a manifest: the registry's own fingerprint ──────────────
+#
+# `progress.heldout_fingerprint` records which registry a run's corpus was
+# prepared under, and the artefact payload carries it across a cache hit — an
+# artefact built under a different registry has a different key and is never
+# adopted. So a run that applied today's registry needs no manifest to be
+# decided, which is the only way a purged run can be decided at all.
+#
+# The trap is that the field is written at the *top* of
+# `_reserve_eval_documents`, before any of its checks: it says "consulted", not
+# "applied". The two tests at the end of this block are that trap.
+
+TODAY = "6a47d9b94d2ac739"
+
+
+def _record(root: Path, job_id: str, *, fingerprint: str | None, reserved: int | None,
+            source: str | None = "prepare", manifest: str | None = None,
+            entries: list[str] | None = None) -> Path:
+    job_dir = root / job_id
+    (job_dir / "data").mkdir(parents=True)
+    if manifest is not None:
+        (job_dir / "data" / manifest).write_text("\n".join(entries or []) + "\n",
+                                                 encoding="utf-8")
+    (job_dir / "job.json").write_text(json.dumps({
+        "id": job_id, "status": "completed",
+        "progress": {"heldout_fingerprint": fingerprint, "reserved_pages": reserved,
+                     "reserved_pages_source": source},
+        "metrics": {"cer": 0.1224},
+    }), encoding="utf-8")
+    return job_dir
+
+
+def test_a_run_prepared_under_todays_registry_is_decided_without_its_manifest(tmp_path, held):
+    """The 3,173-page runs of the medieval ladder: the reservation really ran and
+    really dropped pages, so the number stands — and the scratch may be gone."""
+    job = _record(tmp_path, "20261016T000000Z-qwen3.5-27b-right-of-the-boundary",
+                  fingerprint=TODAY, reserved=3173, manifest=None)
+
+    check = check_run(job, store="share", held=held, today=TODAY)
+
+    assert check.verdict is Verdict.ENFORCED
+    assert "3173" in check.why and TODAY in check.why
+    assert check.verdict is not Verdict.GONE, "no manifest was needed"
+
+
+def test_an_artefact_hit_answers_for_the_registry_it_was_built_under(tmp_path, held):
+    """A reused corpus skips prepare, and the payload carries the fingerprint —
+    so the run answers for the registry the *artefact* was built under, which is
+    the registry its corpus actually had."""
+    job = _record(tmp_path, "20261016T000001Z-reused",
+                  fingerprint=TODAY, reserved=3173,
+                  source="artefact f7188cd0b798 built by 20261015T120000Z-first")
+
+    check = check_run(job, store="share", held=held, today=TODAY)
+
+    assert check.verdict is Verdict.ENFORCED
+    assert "artefact f7188cd0b798" in check.why
+
+
+def test_an_older_registry_is_not_decided_by_its_fingerprint(tmp_path, held):
+    """It dropped *some* registry's documents, and today's set is a different
+    one. Only the manifest can say whether the difference is in this corpus."""
+    job = _record(tmp_path, "20260910T110352Z-under-an-older-registry",
+                  fingerprint="0000000000000000", reserved=198,
+                  manifest="pages_train.lst",
+                  entries=[_page(RESERVED_DOC), _page(OTHER_DOC)])
+
+    check = check_run(job, store="share", held=held, today=TODAY)
+
+    assert check.verdict is Verdict.CROSSED, "the manifest decided it, not the record"
+    assert check.reserved == 1
+
+
+def test_todays_fingerprint_with_nothing_dropped_is_not_decided(tmp_path, held):
+    """The trap, and the reason this rule needs two fields.
+
+    The fingerprint is written before the reservation's own checks, so a chunked
+    run from before #255 carries today's value and dropped nothing: it read
+    `train_plan.json` as a page list, found no document, and recorded `0`. From
+    the record alone that is indistinguishable from a page run that was really
+    checked and really holds nothing reserved — so it falls through, and here
+    there is no manifest left to fall through to.
+    """
+    job = _record(tmp_path, "20261001T000000Z-chunked-before-255",
+                  fingerprint=TODAY, reserved=0, manifest=None)
+
+    check = check_run(job, store="share", held=held, today=TODAY)
+
+    assert check.verdict is Verdict.GONE
+    assert check.verdict is not Verdict.ENFORCED, (
+        "a 0 beside today's fingerprint was taken as proof that it was applied")
+
+
+def test_a_consulted_but_unchecked_registry_is_not_decided(tmp_path, held):
+    """What #247 made the record say: `reserved_pages: None` with a reason. The
+    fingerprint is there — the registry was consulted — and nothing was applied."""
+    job = _record(tmp_path, "20261002T000000Z-chunked-after-255",
+                  fingerprint=TODAY, reserved=None,
+                  source="not checked: chunked prepare defers the train side to compile",
+                  manifest=None)
+
+    check = check_run(job, store="share", held=held, today=TODAY)
+
+    assert check.verdict is Verdict.GONE
+    assert check.verdict is not Verdict.ENFORCED
+
+
+def test_the_fingerprint_is_the_trainers_own_definition():
+    """Compared value against value, not implementation against implementation:
+    the same function the trainer writes onto the record and folds into the
+    artefact key."""
+    from atr_training.artefact_cache import heldout_fingerprint
+    from atr_training.heldout_boundary import today_fingerprint
+
+    assert today_fingerprint() == heldout_fingerprint()
+
+
+def test_without_a_fingerprint_to_compare_nothing_is_decided_by_it(tmp_path, held):
+    """`today=None` is how a caller says "do not use this rule" — and then every
+    run goes to its manifest, as before."""
+    job = _record(tmp_path, "20261016T000002Z-no-rule",
+                  fingerprint=TODAY, reserved=3173, manifest="pages_train.lst",
+                  entries=[_page(OTHER_DOC)])
+
+    assert check_run(job, store="share", held=held, today=None).verdict is Verdict.CLEAN
+    assert check_run(job, store="share", held=held, today=TODAY).verdict is Verdict.ENFORCED

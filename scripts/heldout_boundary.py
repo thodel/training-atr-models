@@ -23,7 +23,11 @@ and the row shows both.
 
 Four verdicts, and the two that are not verdicts about the number:
 
-    clean        entries name documents, none reserved today
+    clean        the manifest was read; no document is reserved today
+    enforced     the record shows this corpus was prepared under today's
+                 registry and that pages were really dropped — same answer as
+                 `clean`, on evidence that needs no manifest, so it decides
+                 runs whose scratch was purged
     crossed      trained on material reserved today — the number is optimistic
     uncheckable  nothing in the manifest names a document (line corpus of
                  foreign scans, or a chunked run whose train side was
@@ -44,10 +48,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from atr_training.heldout_boundary import (  # noqa: E402
+    DECIDED,
     Verdict,
     check_store,
     load_today,
     summarize,
+    today_fingerprint,
 )
 from atr_training.settings import TrainerSettings  # noqa: E402
 
@@ -91,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="held-out registry (default: this checkout's)")
     parser.add_argument("--all", action="store_true",
                         help="every run, not only those with a CER")
+    parser.add_argument("--no-fingerprint", action="store_true",
+                        help="do not decide any run from its recorded fingerprint; "
+                             "read every manifest instead")
     parser.add_argument("--markdown", action="store_true", help="the table for the docs page")
     parser.add_argument("--json", action="store_true", help="machine-readable")
     args = parser.parse_args(argv)
@@ -100,6 +109,11 @@ def main(argv: list[str] | None = None) -> int:
         print("the held-out registry holds nothing — every run would read as clean, "
               "which is the one answer this script must not give", file=sys.stderr)
         return 2
+
+    today = None if args.no_fingerprint else today_fingerprint()
+    if today:
+        print(f"today's held-out registry: {len(held.documents)} documents, "
+              f"fingerprint {today}", file=sys.stderr)
 
     settings = TrainerSettings()
     stores = ([(str(p), p) for p in args.store] if args.store
@@ -112,12 +126,13 @@ def main(argv: list[str] | None = None) -> int:
                   f"absent from this table, not clean", file=sys.stderr)
             continue
         checks += check_store(Path(root), store=label, held=held,
-                              completed_only=not args.all)
+                              completed_only=not args.all, today=today)
 
     counts = summarize(checks)
     if args.json:
         print(json.dumps({"summary": counts,
                           "registry_documents": len(held.documents),
+                          "today_fingerprint": today,
                           "runs": [vars(c) | {"verdict": c.verdict.value} for c in checks]},
                          indent=2, ensure_ascii=False, default=str))
         return 0
@@ -135,10 +150,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{check.verdict.value:12s} {check.job_id:48s} {check.why}")
 
     crossed = [c for c in checks if c.verdict is Verdict.CROSSED]
-    unknown = [c for c in checks if c.verdict in (Verdict.UNCHECKABLE, Verdict.GONE)]
-    print(f"\n{counts['runs']} Läufe: {counts['clean']} unberührt, "
+    unknown = [c for c in checks if c.verdict not in DECIDED]
+    print(f"\n{counts['runs']} Läufe: {counts['clean']} unberührt (Manifest geprüft), "
+          f"{counts['enforced']} unberührt (heutige Registry angewandt), "
           f"{counts['crossed']} betroffen, {counts['uncheckable']} nicht prüfbar, "
-          f"{counts['gone']} unentscheidbar.")
+          f"{counts['gone']} unentscheidbar — {counts['decided']} von "
+          f"{counts['runs']} entschieden.")
     if crossed:
         print(f"{counts['reserved_pages']} Trainingsseiten liegen heute im Held-out.")
     if unknown:

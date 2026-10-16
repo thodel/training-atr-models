@@ -98,14 +98,39 @@ Both stores by default, because they do not hold the same runs — 61 in the sha
 against 58 in scratch — and a run purged from one may still be whole in the
 other.
 
-### Four states, and only two of them are verdicts about a number
+### Five states, and only three of them are verdicts about a number
 
 | state | meaning |
 |---|---|
-| `clean` | entries name documents, and none is reserved today — the number stands |
+| `clean` | the manifest was read; no document is reserved today — the number stands |
+| `enforced` | the record shows this corpus was prepared under **today's** registry and that pages were really dropped — the same answer, on evidence that needs no manifest |
 | `crossed` | trained on material reserved today; the number is optimistic |
-| `uncheckable` | nothing in the manifest names a document (line corpus of foreign scans, or a chunked run) — **nothing was ruled out** |
+| `uncheckable` | nothing in the manifest names a document (line corpus of foreign scans, or a chunked run compiled before #255) — **nothing was ruled out** |
 | `gone` | no manifest left (scratch purge after 30 days) — undecidable |
+
+#### Why `enforced` is kept apart from `clean`
+
+Both mean the number stands. They are not the same evidence, and the project
+has paid enough for conflating a measurement with a record: `clean` means
+somebody re-read the manifest against today's registry, `enforced` means the
+run itself applied today's registry and said so.
+
+`enforced` is the only state that can decide a run whose scratch was purged,
+which is what makes it worth having: `progress.heldout_fingerprint` is on the
+record, and the artefact payload carries it across a cache hit (an artefact
+built under a different registry has a different key and is never adopted).
+
+**It takes two fields, and the second one is the point.** The fingerprint is
+written at the *top* of `_reserve_eval_documents`, before any of its checks, so
+it says "this registry was consulted" and not "it was applied". A chunked run
+from before #255 carries today's fingerprint and dropped nothing — it read
+`train_plan.json` as a page list, found no document, and recorded `0`. So a
+match only decides together with `reserved_pages > 0`: pages were really
+removed, and only a reservation that worked removes pages. A `0` beside today's
+fingerprint falls through to the manifest, and if there is none, the run is
+`gone` rather than cleared.
+
+`--no-fingerprint` turns the rule off and reads every manifest instead.
 
 #247 named three states and warned that the third must not fall into the first.
 `uncheckable` is the fourth, and it exists because of the two findings above.

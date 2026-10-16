@@ -55,10 +55,21 @@ __all__ = ["Verdict", "RunCheck", "TRAIN_MANIFESTS", "check_run", "check_store",
 class Verdict(str, Enum):
     """Why a run is or is not affected. A ``str`` enum so JSON output is plain."""
 
+    #: The manifest was read and holds no document reserved today.
     CLEAN = "clean"
+    #: The record shows this corpus was prepared under **today's** registry and
+    #: that pages were really dropped. Same answer as ``CLEAN`` — the number
+    #: stands — on different evidence, and kept apart from it for that reason:
+    #: this one needs no manifest, so it decides runs whose scratch was purged.
+    ENFORCED = "enforced"
     CROSSED = "crossed"
     UNCHECKABLE = "uncheckable"
     GONE = "gone"
+
+
+#: Verdicts that answer the question #247 asks. ``ENFORCED`` and ``CLEAN`` both
+#: mean the published number stands; the other three mean nobody knows yet.
+DECIDED = (Verdict.CLEAN, Verdict.ENFORCED, Verdict.CROSSED)
 
 
 #: Train manifests in the order they are looked for. A chunked run's plan is
@@ -92,6 +103,35 @@ class RunCheck:
                 f"{self.verdict.value} | {self.reserved} | {self.why} |")
 
 
+def enforced_by_record(job: dict, today: str) -> bool:
+    """Did this run's corpus get **today's** registry applied to it?
+
+    Two fields, and the second one is the reason this is not a one-liner.
+
+    ``progress.heldout_fingerprint`` is written at the *top* of
+    ``_reserve_eval_documents``, before any of its checks, so it says "this
+    registry was consulted" and not "it was applied". A chunked run from before
+    #255 carries today's fingerprint and dropped nothing: the reservation read
+    ``train_plan.json`` as a page list, found no document, and recorded ``0``.
+
+    So a match is only decisive together with ``reserved_pages > 0`` — pages
+    were really removed, and only a reservation that worked removes pages. A
+    ``0`` beside today's fingerprint cannot be told apart, from the record
+    alone, from that broken path, and falls through to the manifest.
+
+    A **cache hit** is covered: the artefact payload carries the fingerprint and
+    is copied onto the record, and an artefact built under a different registry
+    has a different key and is never adopted (``runner_base`` says so at the
+    hit). So a reused corpus answers for the registry it was built under, which
+    is the honest answer.
+    """
+    progress = job.get("progress") or {}
+    if progress.get("heldout_fingerprint") != today:
+        return False
+    reserved = progress.get("reserved_pages")
+    return isinstance(reserved, int) and reserved > 0
+
+
 def find_manifest(data_dir: Path) -> Path | None:
     """The train manifest of a run, or None when the directory holds none.
 
@@ -108,7 +148,7 @@ def find_manifest(data_dir: Path) -> Path | None:
 
 
 def check_run(job_dir: Path, *, store: str, held: HeldOutDocuments,
-              job: dict | None = None) -> RunCheck:
+              job: dict | None = None, today: str | None = None) -> RunCheck:
     """Apply *held* to the manifest in *job_dir*; never guess a verdict.
 
     *job* is the parsed ``job.json`` when the caller has it, for the CER and the
@@ -127,6 +167,15 @@ def check_run(job_dir: Path, *, store: str, held: HeldOutDocuments,
         cer=metrics.get("cer") if isinstance(metrics.get("cer"), (int, float)) else None,
         recorded_reserved=progress.get("reserved_pages"),
     )
+
+    if today and enforced_by_record(job, today):
+        reserved = (job.get("progress") or {}).get("reserved_pages")
+        source = (job.get("progress") or {}).get("reserved_pages_source") or "?"
+        return RunCheck(
+            verdict=Verdict.ENFORCED, reserved=0,
+            why=(f"prepared under today's registry ({today}), which dropped "
+                 f"{reserved} page(s) — source: {source}"),
+            **common)
 
     manifest = find_manifest(job_dir / "data")
     if manifest is None:
@@ -185,7 +234,7 @@ def _read_record(job_dir: Path) -> dict | None:
 
 
 def check_store(root: Path, *, store: str, held: HeldOutDocuments,
-                completed_only: bool = True) -> list[RunCheck]:
+                completed_only: bool = True, today: str | None = None) -> list[RunCheck]:
     """Every run under *root*, newest first. Unreadable records are not skipped.
 
     A job whose ``job.json`` cannot be parsed still gets a row: #247 counts 54
@@ -203,7 +252,7 @@ def check_store(root: Path, *, store: str, held: HeldOutDocuments,
             continue
         if completed_only and not _has_cer(job):
             continue
-        checks.append(check_run(job_dir, store=store, held=held, job=job))
+        checks.append(check_run(job_dir, store=store, held=held, job=job, today=today))
     return checks
 
 
@@ -215,11 +264,16 @@ def _has_cer(job: dict) -> bool:
 
 
 def summarize(checks: list[RunCheck]) -> dict[str, int]:
-    """How many runs per verdict — the reach #247 asks for, in one line."""
+    """How many runs per verdict — the reach #247 asks for, in one line.
+
+    ``decided`` is the number that are an answer about a published number;
+    everything else is "nobody knows yet" and must never be read as a pass.
+    """
     counts = {verdict.value: 0 for verdict in Verdict}
     for check in checks:
         counts[check.verdict.value] += 1
     counts["runs"] = len(checks)
+    counts["decided"] = sum(counts[v.value] for v in DECIDED)
     counts["reserved_pages"] = sum(c.reserved for c in checks)
     return counts
 
@@ -227,3 +281,15 @@ def summarize(checks: list[RunCheck]) -> dict[str, int]:
 def load_today(registry: str | Path | None = None) -> HeldOutDocuments:
     """Today's held-out set — the registry in this checkout, not the run's."""
     return load_heldout(registry)
+
+
+def today_fingerprint() -> str:
+    """The fingerprint a run prepared **now** would record.
+
+    The same function the trainer writes onto the record and folds into the
+    artefact key, so the comparison in :func:`enforced_by_record` is between two
+    values of one definition rather than between two implementations of one idea.
+    """
+    from atr_training.artefact_cache import heldout_fingerprint
+
+    return heldout_fingerprint()
