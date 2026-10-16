@@ -34,7 +34,7 @@ from typing import Any, Callable, ClassVar, Protocol
 from loguru import logger
 
 from atr_training.artefact_cache import ArtefactCache, ArtefactCacheError
-from atr_training.chunking import CHUNK_PLAN_FILENAME
+from atr_training.chunking import CHUNK_PLAN_FILENAME, is_plan
 from atr_training.codeversion import current_code, describe_drift
 from atr_training.contracts import (
     DatasetCounts,
@@ -60,6 +60,7 @@ from atr_training.prepare import (
     materialize,
     materialize_lines,
     split_line_samples,
+    transcribed_lines_of,
 )
 from atr_training.pagexml import line_boxes
 from atr_training.promote import PromotionResult
@@ -513,32 +514,111 @@ class BasePipeline(ABC):
             job.progress.reserved_pages_source = "prepare (registry empty)"
             self.store.save(job)
             return train_manifest
-        pages = [line for line in
-                 train_manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
-        keep, reserved = reserved_set.split(pages)
+        if is_plan(train_manifest):
+            # A chunked run defers the train side to `compile`, so what arrives
+            # here is `train_plan.json` — nine lines of JSON, not a page list.
+            # Read as one, it names no document, nothing is reserved, and the
+            # record used to say `0`: "consulted, held nothing back". The pages
+            # exist only per chunk, inside the compile loop, so enforcement
+            # belongs there; until it is built this says so instead of counting.
+            job.progress.reserved_pages = None
+            job.progress.reserved_pages_source = (
+                "not checked: chunked prepare defers the train side to compile")
+            logger.warning(
+                "held-out documents: {} is a chunk plan, not a page manifest — the "
+                "train side is materialised per chunk in compile and is NOT checked "
+                "against the registry (#98)", train_manifest.name)
+            self.store.save(job)
+            return train_manifest
+
+        entries = [line for line in
+                   train_manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+        result = reserved_set.reserve(entries)
+        keep, reserved = result.keep, result.reserved
+        if not result.measurable:
+            # Nothing in this manifest named a document, so a count would be a
+            # statement about the registry that this manifest cannot support —
+            # a line-level corpus whose pages are foreign scans, for instance.
+            # `0` would read as "checked, nothing held back" (#119).
+            job.progress.reserved_pages = None
+            job.progress.reserved_pages_source = (
+                f"not checked: no document id in any of {result.total} entries of "
+                f"{train_manifest.name}")
+            logger.warning(
+                "held-out documents: none of the {} entries in {} names a document — "
+                "this selection cannot be checked against the registry, and the "
+                "record says so rather than claiming nothing is reserved (#98)",
+                result.total, train_manifest.name)
+            self.store.save(job)
+            return train_manifest
         job.progress.reserved_pages = len(reserved)
         job.progress.reserved_pages_source = "prepare"
         if not reserved:
             logger.info("held-out documents: none of {} training pages are reserved "
-                        "({} documents in the registry)", len(pages), len(reserved_set.documents))
+                        "({} of them name a document; {} documents in the registry)",
+                        result.total, result.identified, len(reserved_set.documents))
             self.store.save(job)
             return train_manifest
         if not keep:
             raise DatasetSelectionError(
-                f"every one of the {len(pages)} selected training pages belongs to a "
+                f"every one of the {result.total} selected training pages belongs to a "
                 f"document reserved for evaluation ({', '.join(reserved_set.sets)}). "
                 "This selection is the eval set, not a training corpus."
             )
         logger.warning(
             "held-out documents: dropped {} of {} training pages, reserved for "
             "evaluation by {} (#98)",
-            len(reserved), len(pages), ", ".join(sorted(reserved_set.sets)),
+            len(reserved), result.total, ", ".join(sorted(reserved_set.sets)),
         )
+        self._drop_reserved_from_train_lines(job, train_manifest, reserved)
         train_manifest.write_text("\n".join(keep) + "\n", encoding="utf-8")
         (train_manifest.parent / "pages_reserved.lst").write_text(
             "\n".join(reserved) + "\n", encoding="utf-8")
         self.store.save(job)
         return train_manifest
+
+    @staticmethod
+    def _drop_reserved_from_train_lines(job: TrainJob, train_manifest: Path,
+                                        reserved: list[str]) -> None:
+        """Take the reserved material back out of ``train_lines`` (#256).
+
+        ``train_lines`` is set by whichever prepare path ran, **before** the
+        reservation — and its own comment says why it exists: "the step-count
+        guard (#72) divides by the lines actually trained on, and counting the
+        held-out ones would flatter every configuration". It did count them.
+        Three producers write the field and all three funnel through here, so
+        the correction is made once, at the only point that knows what was
+        dropped.
+
+        **The unit follows the manifest.** A page manifest lists pages, and a
+        page holds many lines, so they are counted out of the files with
+        :func:`~atr_training.prepare.transcribed_lines_of`. A line manifest
+        lists *samples*, one line each, so the count is the number of entries.
+        Subtracting pages from a line count — or line counts from a sample
+        count — is the kind of arithmetic that produces a plausible number out
+        of two different units.
+
+        In the 0.9-split path ``train_lines`` is an estimate
+        (``lines * partition``, approximate by its own comment) and stays one:
+        an exact subtraction from an estimate is still closer than no
+        subtraction. Clamped at zero, because a negative line count would be
+        read as a sentinel somewhere downstream.
+        """
+        if job.progress.train_lines is None:
+            return
+        if train_manifest.suffix == ".jsonl":
+            removed = len(reserved)          # one sample per entry
+        else:
+            removed = transcribed_lines_of(reserved)
+        if not removed:
+            # Nothing dropped, or nothing countable among what was: either way
+            # the field already says what it should. This also covers the empty
+            # case, so there is no second guard for it.
+            return
+        before = job.progress.train_lines
+        job.progress.train_lines = max(0, before - removed)
+        logger.info("train_lines: {} → {} after removing {} held-out line(s) (#256)",
+                    before, job.progress.train_lines, removed)
 
     def _chunked(self, spec) -> bool:
         """Should this run materialize a chunk at a time?

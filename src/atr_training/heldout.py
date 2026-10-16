@@ -31,7 +31,8 @@ from pathlib import Path
 
 from loguru import logger
 
-__all__ = ["HeldOutDocuments", "DEFAULT_REGISTRY", "document_of", "load_heldout"]
+__all__ = ["HeldOutDocuments", "DEFAULT_REGISTRY", "Reservation", "document_of",
+           "document_of_entry", "load_heldout"]
 
 #: Repo-relative, resolved from this file so a service started anywhere finds it.
 DEFAULT_REGISTRY = Path(__file__).resolve().parents[2] / "config" / "heldout_eval_documents.json"
@@ -55,6 +56,64 @@ def document_of(path: str | Path) -> str | None:
     return document or None
 
 
+def document_of_entry(entry: str) -> str | None:
+    """The document of one manifest entry, whatever kind of manifest it is from.
+
+    Three kinds reach the reservation step, and only the first is a page path:
+
+    * a page manifest (``pages_train.lst``) — one materialised page name per line;
+    * a **line manifest** (``lines_train.jsonl``) — one JSON object per line, whose
+      ``page`` field holds the scan the crop came from;
+    * a **chunk plan** (``train_plan.json``) — not a manifest at all, but what
+      ``prepare`` returns in chunked mode, so it used to arrive here too.
+
+    Handing a JSON object to :func:`document_of` parses it as a path, and
+    ``Path(line).name`` is whatever follows the **last slash in the whole blob**.
+    Measured on the shape ``prepare`` writes: with ``image`` and then a
+    transcription containing a slash — ``anno 1431 / vigilia``, routine in this
+    material — the answer flips from the right document to None, i.e. from
+    "reserved" to "kept". Field order and transcription content decided whether a
+    held-out page was removed from training.
+
+    So the kind is established first, and only a page path goes to
+    :func:`document_of`. A JSON entry with no usable ``page`` yields None, which
+    the caller must read as *unidentifiable*, never as "not reserved" — see
+    :class:`Reservation`.
+    """
+    text = entry.strip()
+    if text.startswith("{"):
+        try:
+            sample = json.loads(text)
+        except ValueError:
+            return None
+        page = sample.get("page") if isinstance(sample, dict) else None
+        return document_of(page) if isinstance(page, str) and page else None
+    return document_of(text)
+
+
+@dataclass(frozen=True)
+class Reservation:
+    """What a manifest yielded: the two lists, and whether it could be read.
+
+    ``identified`` is the point. An empty ``reserved`` means two different things
+    — the registry was consulted against pages it holds nothing of, or no entry
+    named a document it could have matched — and the project has paid for that
+    confusion six times over (#119, #595, #631, #633, #649, #251). A caller that
+    records a count without looking at ``measurable`` writes a zero that cannot be
+    read afterwards, which is what #247 then has to untangle across 54 runs.
+    """
+
+    keep: list[str]
+    reserved: list[str]
+    identified: int
+    total: int
+
+    @property
+    def measurable(self) -> bool:
+        """Did any entry name a document? If not, the count means nothing."""
+        return self.identified > 0
+
+
 @dataclass(frozen=True)
 class HeldOutDocuments:
     """The union of every reserved set, and where each document came from."""
@@ -67,13 +126,31 @@ class HeldOutDocuments:
         return bool(self.documents)
 
     def split(self, pages: list[str]) -> tuple[list[str], list[str]]:
-        """``(keep, reserved)`` — order preserved, so a manifest stays comparable."""
+        """``(keep, reserved)`` — order preserved, so a manifest stays comparable.
+
+        Page paths only. :meth:`reserve` is the one to call on a manifest whose
+        kind is not certain, because it also says whether anything *could* be
+        matched.
+        """
+        result = self.reserve(pages, document=document_of)
+        return result.keep, result.reserved
+
+    def reserve(self, entries: list[str], document=document_of_entry) -> Reservation:
+        """Split *entries* and report how many of them named a document.
+
+        The count of identified entries travels with the split because the caller
+        cannot reconstruct it: ``reserved == []`` is the same output for "nothing
+        of this corpus is held back" and for "nothing here could be checked".
+        """
         keep: list[str] = []
         reserved: list[str] = []
-        for page in pages:
-            document = document_of(page)
-            (reserved if document in self.documents else keep).append(page)
-        return keep, reserved
+        identified = 0
+        for entry in entries:
+            name = document(entry)
+            if name is not None:
+                identified += 1
+            (reserved if name in self.documents else keep).append(entry)
+        return Reservation(keep, reserved, identified, len(entries))
 
 
 def load_heldout(registry: str | Path | None = None) -> HeldOutDocuments:
