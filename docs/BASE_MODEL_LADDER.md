@@ -380,7 +380,8 @@ geometry and prompt knobs. The first to finish was `cap3072` (job `17653686`,
 
 | Arm | CER | `truncated_cer` | `length_ratio` |
 |---|---:|---:|---:|
-| `olmocr2-7b-medieval-page-px4m` (4 194 304 px) | **27.75 %** | **24.16 %** | 1.057 |
+| `olmocr2-7b-medieval-page-px4m-native` (beide Regler) | **26.59 %** | **22.85 %** | 1.061 |
+| `olmocr2-7b-medieval-page-px4m` (4 194 304 px) | 27.75 % | 24.16 % | 1.057 |
 | `olmocr2-7b-medieval-page-nativeprompt` | 34.38 % | 28.31 % | 1.083 |
 | `olmocr2-7b-medieval-german-page-v1` (Grundlinie) | 34.92 % | 30.89 % | 1.006 |
 | `olmocr2-7b-medieval-page-px1288` | 41.14 % | 36.46 % | 1.053 |
@@ -401,7 +402,30 @@ etwas gebracht haben, übereinander: `olmocr2-7b-medieval-page-px4m-native`
 flacher Vergleich der drei Dateien zeigt genau `model_id` und `params.prompt`
 gegen `px4m`, genau `model_id` und `params.max_pixels` gegen `nativeprompt`
 als Abweichung. Er übernimmt dasselbe Artefakt `2ad500ee8414` und damit die
-Ziehung `cb4d1c88`; die Frage ist, ob die beiden Effekte addieren.
+Ziehung `cb4d1c88`; die Frage war, ob die beiden Effekte addieren.
+
+**Sie addieren, und etwas mehr als das.** `px4m-native` lief am 16.10.2026 um
+08:56 durch und misst **26.59 %** (`truncated_cer` 22.85 %, `length_ratio`
+1.061) — der beste Seitenwert dieses Projekts. Die Rechnung:
+
+| | gegen die Grundlinie |
+|---|---:|
+| Prompt allein (`nativeprompt`) | −0.54 |
+| Pixelbudget allein (`px4m`) | −7.17 |
+| Summe, wenn sie unabhängig wären | −7.71 |
+| **beide zusammen (`px4m-native`)** | **−8.33** |
+
+Die 0.62 Punkte darüber hinaus sind klein, aber sie zeigen in eine
+nachvollziehbare Richtung: **olmOCRs eigener Prompt bringt bei hoher Auflösung
+mehr als bei niedriger** (1.16 Punkte gegen `px4m`, 0.54 gegen die Grundlinie).
+Das ist plausibel, wenn der Prompt auf Seiten zielt, deren Schrift überhaupt
+lesbar aufgelöst ist. Eine Erklärung ist es nicht — zwei Differenzen von
+0.5 und 1.2 Punkten tragen keine Wechselwirkungsaussage, und die
+Ziehungsauflösung dieses Messsatzes ist unvermessen.
+
+Der Arm trägt `code_drift: false`; `px4m` dagegen `true`, und seine Zahl stammt
+aus dem Doppelversuch (#231). Für die Spitzenstellung von `px4m-native` ist das
+unerheblich — sie steht auch gegen den höheren der beiden `px4m`-Werte (28.05 %).
 
 Die drei übrigen Regler sind klein: olmOCRs eigener Prompt liegt 0.54 Punkte
 vor der Grundlinie, der Token-Deckel und die halbierte Kante dahinter. `px1288`
