@@ -304,6 +304,51 @@ shas zeigen auf dieselben April-Commits. Zwei Korpora von 306 582 und 219 261
 Zeilen aus derselben Spezifikation: **der Unterschied steckt im Code und in der
 Registry, nicht in der Datei.**
 
+### 1f-bis. Die Leiter rechts der Grenze — und sie ist die erste, die trägt
+
+Vollständig am 16.10.2026. Vier Arme, **ein** Artefakt (`f7188cd0b798`), **eine**
+Ziehung (`9fe26816`, 200 Zeilen), **219 261** Trainingszeilen in jedem,
+`reserved_pages: 3173` in jedem, `code_drift` in keinem — alles nachgemessen,
+nicht aus dem Artefakt gefolgert. Jede Spezifikation unterscheidet sich von jeder
+anderen in genau zwei Feldern von 721.
+
+| Basis | CER | WER | `truncated_cer` | `length_ratio` | Schritt |
+|---|---:|---:|---:|---:|---:|
+| `Qwen/Qwen3.5-4B` | 15.94 % | 38.51 % | 16.06 % | 0.964 | — |
+| `Qwen/Qwen3.5-9B` | 13.75 % | 33.71 % | 13.94 % | 0.973 | **−2.19** |
+| `Qwen/Qwen3.5-27B` | **12.24 %** | 30.30 % | 12.43 % | 0.970 | **−1.51** |
+| `Qwen/Qwen3.8-27B` | 12.15 % | 31.54 % | 12.49 % | 0.975 | −0.09 (andere Generation) |
+
+**Grösse zahlt, und zwar mit abnehmendem Ertrag:** 2.19 Punkte für ×2,25 (4 → 9 B),
+1.51 Punkte für ×3 (9 → 27 B). Das ist die erwartete Form einer Skalierungskurve,
+und es ist **der erste Leiterabschnitt dieses Projekts, bei dem „nur die Grösse
+ist verschieden" eine geprüfte Aussage ist** und keine Annahme: eine Familie, eine
+Quantisierung (4-bit), ein Korpus, eine Ziehung.
+
+### 1f-ter. Was die Grenze gekostet hat — und sie kostete den Grossen mehr
+
+Zwei Basismodelle sind jetzt auf **beiden** Seiten gemessen:
+
+| Basis | links der Grenze | rechts | Differenz |
+|---|---:|---:|---:|
+| `Qwen3.5-9B` | 12.13 % | 13.75 % | **+1.62** |
+| `Qwen3.5-27B` | 9.55 % | 12.24 % | **+2.69** |
+
+**Der 27B verlor 1.07 Punkte mehr als der 9B, als 28 % des Trainingsmaterials
+wegfielen.** Das ist die Richtung, die man erwartet, wenn Kapazität Daten
+braucht — und es erklärt, warum die Leiter links der Grenze die falsche Form
+hatte.
+
+Der Vergleich, der dafür trägt, ist der Schritt **9 → 27 B**, denn dort sind
+Basis und Quantisierung auf beiden Seiten dieselben: links **−2.58** Punkte,
+rechts **−1.51**. Links sah die Kurve also beschleunigend aus, rechts verläuft
+sie abnehmend. Der Schritt 4 → 9 B taugt für diesen Vergleich **nicht**: links
+war der 4-B-Arm ein `Qwen3-VL-4B` in bf16, rechts ein `Qwen3.5-4B` in 4-bit.
+
+Damit ist auch die Aussage aus §1b erledigt, der 27B sei „3.0 Punkte vor dem
+4-B-Bezug": rechts der Grenze sind es 3.70 Punkte gegen einen anderen 4-B-Arm,
+und die 9.55 %, auf die sich der Satz stützte, sind links der Grenze gemessen.
+
 ### 1g. Das Training ist bitgenau reproduzierbar
 
 Beiläufig, und nützlicher als die Rangfolge: `ladder-med-qwen38-27b-v3` hat
