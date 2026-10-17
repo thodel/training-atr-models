@@ -36,6 +36,7 @@ from atr_training.heldout_boundary import (
     check_run,
     check_store,
     find_manifest,
+    resolve_adoptions,
     summarize,
 )
 
@@ -55,7 +56,8 @@ def _page(document: str, folio: str = "f001r") -> str:
 
 def _run(root: Path, job_id: str, *, manifest: str | None = None,
          entries: list[str] | None = None, cer: float | None = 0.0712,
-         reserved_pages: int | None = None, record: bool = True) -> Path:
+         reserved_pages: int | None = None, record: bool = True,
+         artefact: str | None = None) -> Path:
     job_dir = root / job_id
     (job_dir / "data").mkdir(parents=True)
     if manifest is not None:
@@ -63,7 +65,7 @@ def _run(root: Path, job_id: str, *, manifest: str | None = None,
                                                  encoding="utf-8")
     if record:
         body = {"id": job_id, "status": "completed",
-                "progress": {"reserved_pages": reserved_pages},
+                "progress": {"reserved_pages": reserved_pages, "artefact": artefact},
                 "metrics": {"cer": cer} if cer is not None else {}}
         (job_dir / "job.json").write_text(json.dumps(body), encoding="utf-8")
     return job_dir
@@ -254,6 +256,21 @@ def test_the_summary_separates_the_answers_from_the_non_answers(tmp_path, held):
         "two of these four runs are not a verdict about their number")
 
 
+def test_a_directory_that_is_not_a_run_gets_no_row(tmp_path, held):
+    """`evalset-federal-minutes` holds benchmark reports beside the jobs. Read as
+    a run it was a purged one, and the undecidable column grew by a run that
+    never trained."""
+    (tmp_path / "evalset-federal-minutes" / "data").mkdir(parents=True)
+    (tmp_path / "evalset-federal-minutes" / "report_qwen35-4b.json").write_text("{}")
+    job = _run(tmp_path, "20260912T000000Z-broken", manifest=None, record=False)
+    job.joinpath("data").rmdir()
+
+    checks = check_store(tmp_path, store="scratch", held=held)
+
+    assert [c.job_id for c in checks] == ["20260912T000000Z-broken"], (
+        "a job-shaped directory without a record still gets its row")
+
+
 def test_a_store_that_is_not_there_contributes_no_rows_and_no_verdicts(tmp_path, held):
     """Not an error, and not an empty 'all clean' either — the caller prints the
     store as unreadable, and nothing is counted."""
@@ -279,3 +296,161 @@ def test_the_row_shows_the_record_beside_the_measurement(tmp_path, held):
     assert cells == ["`20261001T000000Z-kraken-corpus`", "share", "0.1234", "0",
                      "uncheckable", "0",
                      "chunked run: the train side was materialised per chunk and discarded"]
+
+
+# ── a run that adopted its corpus has the builder's manifest ────────────────
+#
+# Measured 2026-10-17: 16 of the 25 runs without a manifest had adopted a
+# compiled corpus, and their records name the builder. Every case below is one
+# that occurred: the adopter in scratch and the builder in the share, a builder
+# without a CER of its own (a cancelled first attempt), and an adopter whose
+# "built by" names a later job that rebuilt the same key.
+
+KEY = "2439ac90f727"
+
+
+def _adopter(root: Path, job_id: str, builder: str, *, key: str = KEY,
+             reserved_pages: int | None = 0) -> Path:
+    return _run(root, job_id, manifest=None, reserved_pages=reserved_pages,
+                artefact=f"{key} reused, built by {builder}")
+
+
+def _builder(root: Path, job_id: str, pages: list[str], *, key: str = KEY,
+             cer: float | None = 0.4265) -> Path:
+    return _run(root, job_id, manifest="pages_train.lst", entries=pages, cer=cer,
+                artefact=f"{key} built by this job")
+
+
+def _census(stores, held):
+    checks = []
+    for label, root in stores:
+        checks += check_store(root, store=label, held=held)
+    return resolve_adoptions(checks, stores, held=held)
+
+
+def test_an_adopter_takes_the_clean_verdict_of_its_builder(tmp_path, held):
+    """The medieval page arms: the record said `0`, the builder had held back
+    3173 pages, and the run is clean — not because of the `0`."""
+    scratch = tmp_path / "scratch"
+    _builder(scratch, "20260923T000000Z-qwen3vl-page", [_page(OTHER_DOC)])
+    _adopter(scratch, "20260926T000000Z-qwen35-page", "20260923T000000Z-qwen3vl-page")
+
+    checks = {c.job_id: c for c in _census([("scratch", scratch)], held)}
+    adopter = checks["20260926T000000Z-qwen35-page"]
+
+    assert adopter.verdict is Verdict.CLEAN
+    assert adopter.inherited_from == "20260923T000000Z-qwen3vl-page"
+    assert adopter.recorded_reserved == 0, "the record stays beside the verdict"
+    assert adopter.cer == 0.0712, "the adopter keeps its own number"
+    assert f"adopted {KEY}" in adopter.why
+
+
+def test_an_adopter_of_a_crossed_corpus_is_crossed(tmp_path, held):
+    """Inheritance has to carry the bad answer as readily as the good one."""
+    scratch = tmp_path / "scratch"
+    _builder(scratch, "20260925T000000Z-ladder-27b",
+             [_page(RESERVED_DOC), _page(OTHER_DOC)])
+    _adopter(scratch, "20260930T000000Z-ladder-9b", "20260925T000000Z-ladder-27b")
+
+    adopter = {c.job_id: c for c in _census([("scratch", scratch)], held)}[
+        "20260930T000000Z-ladder-9b"]
+
+    assert adopter.verdict is Verdict.CROSSED
+    assert adopter.reserved == 1
+    assert adopter.documents == [RESERVED_DOC]
+
+
+def test_the_builder_is_found_in_another_store_and_without_a_cer(tmp_path, held):
+    """`qwen3vl-german-pages-v5-asteraix`: the builder was cancelled, has no CER,
+    and so is not in the census at all — it still holds the manifest."""
+    share, scratch = tmp_path / "share", tmp_path / "scratch"
+    _builder(share, "20260916T115939Z-pages-v5", [_page(RESERVED_DOC)], key="82db328c96d7",
+             cer=None)
+    _adopter(scratch, "20260916T205123Z-pages-v5", "20260916T115939Z-pages-v5",
+             key="82db328c96d7")
+
+    checks = _census([("scratch", scratch), ("share", share)], held)
+
+    assert [c.job_id for c in checks] == ["20260916T205123Z-pages-v5"]
+    assert checks[0].verdict is Verdict.CROSSED
+    assert "(share)" in checks[0].why
+
+
+def test_a_builder_that_does_not_confirm_the_key_is_not_trusted(tmp_path, held):
+    """The name in an adopter's record is a label. A job of that name that says
+    it built a different key cannot vouch for this corpus."""
+    scratch = tmp_path / "scratch"
+    _builder(scratch, "20261001T000000Z-olmocr-page", [_page(OTHER_DOC)], key="2ad500ee8414")
+    _adopter(scratch, "20261002T000000Z-sweep", "20261001T000000Z-olmocr-page")
+
+    adopter = {c.job_id: c for c in _census([("scratch", scratch)], held)}[
+        "20261002T000000Z-sweep"]
+
+    assert adopter.verdict is Verdict.GONE
+    assert adopter.verdict is not Verdict.CLEAN
+    assert "confirms building" in adopter.why
+
+
+def test_a_builder_that_records_its_copy_time_still_confirms(tmp_path, held):
+    """#238 appended the cache copy time: `<key> built by this job, stored in
+    12 min`. An exact match on the old form would make every builder from then
+    on fail to confirm, and leave its adopters `gone` without anyone noticing —
+    GitHub merged the two changes as textually independent."""
+    scratch = tmp_path / "scratch"
+    _run(scratch, "20261020T000000Z-builder", manifest="pages_train.lst",
+         entries=[_page(OTHER_DOC)], artefact=f"{KEY} built by this job, stored in 12 min")
+    _adopter(scratch, "20261021T000000Z-adopter", "20261020T000000Z-builder")
+
+    adopter = {c.job_id: c for c in _census([("scratch", scratch)], held)}[
+        "20261021T000000Z-adopter"]
+
+    assert adopter.verdict is Verdict.CLEAN
+
+
+def test_a_builder_of_a_longer_key_with_the_same_prefix_does_not_confirm(tmp_path, held):
+    """The prefix match must stop at the key: `<key>0` is another corpus."""
+    scratch = tmp_path / "scratch"
+    _run(scratch, "20261020T000000Z-builder", manifest="pages_train.lst",
+         entries=[_page(OTHER_DOC)], artefact=f"{KEY}0 built by this job")
+    _adopter(scratch, "20261021T000000Z-adopter", "20261020T000000Z-builder")
+
+    adopter = {c.job_id: c for c in _census([("scratch", scratch)], held)}[
+        "20261021T000000Z-adopter"]
+
+    assert adopter.verdict is Verdict.GONE
+
+
+def test_a_builder_whose_manifest_is_gone_too_leaves_the_adopter_gone(tmp_path, held):
+    scratch = tmp_path / "scratch"
+    _run(scratch, "20260901T000000Z-builder", manifest=None,
+         artefact=f"{KEY} built by this job")
+    _adopter(scratch, "20260902T000000Z-adopter", "20260901T000000Z-builder")
+
+    checks = {c.job_id: c for c in _census([("scratch", scratch)], held)}
+
+    assert checks["20260902T000000Z-adopter"].verdict is Verdict.GONE
+
+
+def test_a_builder_in_no_store_leaves_the_adopter_gone(tmp_path, held):
+    scratch = tmp_path / "scratch"
+    _adopter(scratch, "20260902T000000Z-adopter", "20260901T000000Z-nowhere")
+
+    (adopter,) = _census([("scratch", scratch)], held)
+
+    assert adopter.verdict is Verdict.GONE
+    assert "in no store" in adopter.why
+
+
+def test_a_run_with_its_own_manifest_is_judged_on_it_not_on_its_builder(tmp_path, held):
+    """Adoption is consulted only for a run that has nothing of its own: the
+    material it holds wins over what its record says about where it came from."""
+    scratch = tmp_path / "scratch"
+    _builder(scratch, "20260901T000000Z-builder", [_page(OTHER_DOC)])
+    _run(scratch, "20260902T000000Z-adopter", manifest="pages_train.lst",
+         entries=[_page(RESERVED_DOC)], artefact=f"{KEY} reused, built by 20260901T000000Z-builder")
+
+    adopter = {c.job_id: c for c in _census([("scratch", scratch)], held)}[
+        "20260902T000000Z-adopter"]
+
+    assert adopter.verdict is Verdict.CROSSED
+    assert adopter.inherited_from is None

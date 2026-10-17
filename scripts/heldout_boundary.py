@@ -2,7 +2,7 @@
 """Which published numbers cross the held-out boundary? (#247, #98)
 
     # on asteraix, or any box with the research share mounted
-    python scripts/heldout_boundary.py --markdown > docs/HELDOUT_BOUNDARY.md
+    python scripts/heldout_boundary.py --markdown   # the Results table, to paste
     python scripts/heldout_boundary.py --json | jq '.summary'
     python scripts/heldout_boundary.py --store /scratch/.../jobs --all
 
@@ -47,6 +47,7 @@ from atr_training.heldout_boundary import (  # noqa: E402
     Verdict,
     check_store,
     load_today,
+    resolve_adoptions,
     summarize,
 )
 from atr_training.settings import TrainerSettings  # noqa: E402
@@ -90,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registry", type=Path, default=None,
                         help="held-out registry (default: this checkout's)")
     parser.add_argument("--all", action="store_true",
-                        help="every run, not only those with a CER")
+                        help="every run, not only those with a CER in the record — a CER "
+                             "recovered by re-scoring lives outside it")
     parser.add_argument("--markdown", action="store_true", help="the table for the docs page")
     parser.add_argument("--json", action="store_true", help="machine-readable")
     args = parser.parse_args(argv)
@@ -113,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
             continue
         checks += check_store(Path(root), store=label, held=held,
                               completed_only=not args.all)
+    # After every store is read: a builder may sit in a store other than its
+    # adopter's, and it need not have a CER of its own.
+    checks = resolve_adoptions(checks, [(label, Path(root)) for label, root in stores],
+                               held=held)
 
     counts = summarize(checks)
     if args.json:
@@ -123,7 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.markdown:
-        print("# Welche publizierten Zahlen kreuzen die Held-out-Grenze?\n")
+        # The table and its count only: the page around it is prose, and
+        # redirecting this into the page would replace that prose.
         print(f"Gemessen gegen die heutige Registry ({len(held.documents)} Dokumente, "
               f"{', '.join(sorted(held.sets))}).\n")
         print(HEADER)

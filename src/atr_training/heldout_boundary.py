@@ -26,6 +26,18 @@ first. There is a fourth, found while reading the code for this:
   not ``CLEAN``, and the reason to read both job stores: the share held 61 runs
   against 58 in scratch.
 
+A run that **adopted** a compiled corpus instead of building one never had a
+manifest of its own to lose: it trained on another job's bytes, and its record
+says whose — ``progress.artefact = "<key> reused, built by <job>"``. Such a run
+is ``GONE`` only until the builder is found. :func:`resolve_adoptions` takes the
+builder's verdict over, but only when the builder's own record confirms the key
+(``"<key> built by this job"``): two jobs can have built the same key, and the
+name in an adopter's record is a label, the key is the identity. Measured on
+2026-10-17: 16 of 24 runs without a manifest resolve this way, all clean, and
+three of them recorded ``reserved_pages: 0`` where their builder had held pages
+back — an adoption does not re-run the reservation, so the record keeps
+whatever the job started with.
+
 Reading ``UNCHECKABLE`` as ``CLEAN`` is the mistake this module exists to
 prevent, and it is the same mistake the records themselves made: before #247
 both of those runs recorded ``reserved_pages: 0``, which is also what a real
@@ -41,6 +53,7 @@ with the research share) — not in a container that has neither.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -49,7 +62,7 @@ from atr_training.chunking import CHUNK_PLAN_FILENAME
 from atr_training.heldout import HeldOutDocuments, document_of_entry, load_heldout
 
 __all__ = ["Verdict", "RunCheck", "TRAIN_MANIFESTS", "check_run", "check_store",
-           "find_manifest", "summarize"]
+           "find_manifest", "resolve_adoptions", "summarize"]
 
 
 class Verdict(str, Enum):
@@ -64,6 +77,18 @@ class Verdict(str, Enum):
 #: Train manifests in the order they are looked for. A chunked run's plan is
 #: last and is recognised as unreadable rather than parsed: it is not a manifest.
 TRAIN_MANIFESTS = ("pages_train.lst", "lines_train.jsonl", CHUNK_PLAN_FILENAME)
+
+#: ``progress.artefact`` of a job that adopted a corpus, and of one that built it
+#: (``runner_base._reuse_artefact`` / ``_publish_artefact``). The builder's form
+#: grew a suffix in #238 (``", stored in 12 min"``), so it is matched up to the
+#: end of the claim, not to the end of the string.
+_ADOPTED = re.compile(r"^(?P<key>[0-9a-f]{12}) reused, built by (?P<builder>\S+)$")
+_BUILT = re.compile(r"^(?P<key>[0-9a-f]{12}) built by this job(?:,|$)")
+
+#: What a job directory is called. A store also holds directories that are not
+#: runs — ``evalset-federal-minutes`` keeps benchmark reports — and one of those
+#: without a ``job.json`` is not a run whose manifest was lost.
+_JOB_ID = re.compile(r"^\d{8}T\d{6}Z-")
 
 
 @dataclass
@@ -82,6 +107,10 @@ class RunCheck:
     recorded_reserved: int | None = None
     #: Which documents of the manifest are held out today, for the write-up.
     documents: list[str] = field(default_factory=list)
+    #: ``progress.artefact`` when the run adopted a corpus rather than built one.
+    adopted: str | None = None
+    #: The job whose manifest the verdict was read from, when it is not this one.
+    inherited_from: str | None = None
 
     @property
     def row(self) -> str:
@@ -126,6 +155,8 @@ def check_run(job_dir: Path, *, store: str, held: HeldOutDocuments,
         job_id=job_dir.name, store=store,
         cer=metrics.get("cer") if isinstance(metrics.get("cer"), (int, float)) else None,
         recorded_reserved=progress.get("reserved_pages"),
+        adopted=(progress.get("artefact")
+                 if _ADOPTED.match(str(progress.get("artefact") or "")) else None),
     )
 
     manifest = find_manifest(job_dir / "data")
@@ -190,13 +221,23 @@ def check_store(root: Path, *, store: str, held: HeldOutDocuments,
 
     A job whose ``job.json`` cannot be parsed still gets a row: #247 counts 54
     completed runs, and a row missing from the table without a reason is how a
-    run quietly leaves a census.
+    run quietly leaves a census. A directory that is not named like a job and
+    has no record is not a run, and gets none.
+
+    *completed_only* keeps the runs whose record carries a CER. A published
+    number can live outside the record — the medieval Gemma line arms are
+    ``failed`` with no metrics, and their CER was recovered by re-scoring the
+    adapter — so the census of what was *published* needs ``completed_only=False``
+    as well (2026-10-17: all eight Gemma attempts crossed, two published figures).
     """
     checks: list[RunCheck] = []
     if not root.is_dir():
         return checks
     for job_dir in sorted((d for d in root.iterdir() if d.is_dir()), reverse=True):
         job = _read_record(job_dir)
+        if job is None and not _JOB_ID.match(job_dir.name) \
+                and not (job_dir / "job.json").exists():
+            continue
         if job is None:
             checks.append(RunCheck(job_id=job_dir.name, store=store, verdict=Verdict.GONE,
                                    why="job.json missing or unreadable"))
@@ -212,6 +253,68 @@ def _has_cer(job: dict) -> bool:
     metrics = job.get("metrics") or {}
     return any(isinstance(metrics.get(key), (int, float))
                for key in ("cer", "benchmark_cer"))
+
+
+def resolve_adoptions(checks: list[RunCheck], stores: list[tuple[str, Path]], *,
+                      held: HeldOutDocuments) -> list[RunCheck]:
+    """Give a ``GONE`` run that adopted its corpus the verdict of the builder.
+
+    An adopter trained on the builder's bytes, so the builder's manifest is the
+    adopter's manifest. The builder is looked up in every store, whether or not
+    it has a CER of its own — the run that built a corpus is often a cancelled
+    first attempt. It must confirm the key in its own record: the adopter's
+    "built by" names whoever registered the cache entry last, and a key can be
+    rebuilt. A builder that does not confirm, or whose manifest is gone too,
+    leaves the run ``GONE`` with the reason extended — never ``CLEAN``.
+    """
+    resolved: list[RunCheck] = []
+    for check in checks:
+        match = _ADOPTED.match(check.adopted or "")
+        if check.verdict is not Verdict.GONE or match is None:
+            resolved.append(check)
+            continue
+        key, builder = match["key"], match["builder"]
+        source = _find_builder(builder, key, stores, held)
+        if isinstance(source, str):
+            check.why = f"{check.why}; adopted {key} from {builder}, but {source}"
+            resolved.append(check)
+            continue
+        if source.verdict not in (Verdict.CLEAN, Verdict.CROSSED):
+            check.why = (f"{check.why}; adopted {key} from {builder}, "
+                         f"whose verdict is {source.verdict.value}: {source.why}")
+            resolved.append(check)
+            continue
+        resolved.append(RunCheck(
+            job_id=check.job_id, store=check.store, verdict=source.verdict,
+            why=f"adopted {key} from {builder} ({source.store}): {source.why}",
+            manifest=source.manifest, entries=source.entries,
+            identified=source.identified, reserved=source.reserved,
+            documents=source.documents, cer=check.cer,
+            recorded_reserved=check.recorded_reserved, adopted=check.adopted,
+            inherited_from=builder))
+    return resolved
+
+
+def _find_builder(job_id: str, key: str, stores: list[tuple[str, Path]],
+                  held: HeldOutDocuments) -> RunCheck | str:
+    """The builder's own check, or the reason it cannot stand in (a string)."""
+    found_record = False
+    for label, root in stores:
+        job_dir = Path(root) / job_id
+        job = _read_record(job_dir)
+        if job is None:
+            continue
+        found_record = True
+        artefact = str((job.get("progress") or {}).get("artefact") or "")
+        built = _BUILT.match(artefact)
+        if built is None or built["key"] != key:
+            continue
+        check = check_run(job_dir, store=label, held=held, job=job)
+        if check.verdict is not Verdict.GONE:
+            return check
+    if not found_record:
+        return "its record is in no store"
+    return f"no copy of it confirms building {key} and still holds a manifest"
 
 
 def summarize(checks: list[RunCheck]) -> dict[str, int]:
