@@ -147,7 +147,8 @@ def test_the_noise_floor_is_measured_and_says_on_what():
     assert block["measured_on"] == RAW["data"]["digest"]
     assert block["value"] == pytest.approx(max(block["values"]) - min(block["values"]))
     assert block["n"] == len(block["seeds"]) == 4
-    assert block["steps"] == RAW["budget"]["steps"]
+    # 3,000 steps at batch 16 = the 48,000 samples rung 0 gives every cell.
+    assert block["steps"] * 16 == RAW["budget"]["samples"]
     assert block["eval_seed"] == RAW["base"]["seed"] == 42
     assert "md5" in block["draw"]
     m = parse_manifest(RAW, source=str(MANIFEST))
@@ -159,5 +160,14 @@ def test_the_noise_floor_is_measured_and_says_on_what():
 def test_the_budget_has_a_ceiling():
     """A continuously running sweep without an upper bound is not a process, it
     is a leak (#117)."""
-    assert RAW["budget"]["max_total_steps"] >= sum(
-        n * s for n, s in zip(RAW["budget"]["rungs"], (3000, 9000)))
+    samples = RAW["budget"]["samples"]
+    assert RAW["budget"]["max_total_samples"] >= sum(
+        n * samples * 3 ** rung for rung, n in enumerate(RAW["budget"]["rungs"]))
+
+
+def test_the_budget_is_in_samples_because_the_batch_moves():
+    """At equal steps the batch of 64 saw four times the lines of the batch of
+    16, and the first rung 0 ranked that (#138, 17.10.2026)."""
+    assert "steps" not in RAW["budget"]
+    m = parse_manifest(RAW, source=str(MANIFEST))
+    assert m.budget_unit == "samples"

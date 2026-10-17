@@ -99,7 +99,8 @@ def test_the_request_is_the_sweep_s_own_rung_zero(manifest, cell):
     theirs = SweepDriver(manifest, state, mvnf._NoTrainer()).request_for(cell, 0)
     assert ours["datasets"] == theirs["datasets"]
     assert ours["base_model"] == theirs["base_model"]
-    assert ours["params"]["max_steps"] == theirs["params"]["max_steps"] == manifest.steps
+    # Cell one is batch 16, so its share of the 48,000-sample rung is 3,000 steps.
+    assert ours["params"]["max_steps"] == theirs["params"]["max_steps"] == 3000
     assert "force" not in ours
 
 

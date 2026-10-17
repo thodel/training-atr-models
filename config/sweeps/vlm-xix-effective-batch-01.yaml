@@ -201,20 +201,29 @@ data:
         - VBV_05__Sitzung_–_29_11_1848
 
 budget:
-  # `qwen3vl-german-xix-v2` trained one epoch over 405k lines at effective batch
-  # 16, which is ~25,000 optimizer steps. A screening rung at 3,000 is an eighth
-  # of that: enough to separate three learning rates, far too little to call a
-  # model trained — which is what a rung 0 is for.
+  # IN SAMPLES, NOT STEPS (#138, 17.10.2026). The first run of this sweep gave
+  # every cell 3,000 optimizer steps, and at equal steps the effective batch of
+  # 64 sees four times the lines the batch of 16 sees: rung 0 came back 0.3010
+  # (eff 16) / 0.1455 (eff 32) / cancelled (eff 64), and the order was the data
+  # each cell had seen as much as its learning rate. The linear-scaling rule
+  # this axis is built on predicts EQUAL results at equal samples, so equal
+  # samples is what has to be held fixed:
   #
-  # The engine takes this as `max_steps` (#138, 12.10.2026). It has to: the only
-  # budget it took before was epochs, and `epochs_for(3000, 405k, 16)` rounds up
-  # to the smallest epoch count — one, which is ~25,000 steps. Every "3,000-step"
-  # cell would have trained a whole epoch, rung 1 would have equalled rung 0,
-  # and nothing would have said so. Found one check before the first run.
-  steps: 3000
+  #   rung 0   48,000 samples  →  3,000 / 1,500 / 750 steps   (~3 h each on an A40)
+  #   rung 1  144,000 samples  →  9,000 / 4,500 / 2,250 steps (the survivor only)
+  #
+  # 48,000 is 3,000 steps at batch 16 — exactly what cell one's four noise-floor
+  # seeds trained, so they ARE cell one at rung 0, and the floor (0.117) was
+  # measured at this budget. Steps at the first attempt's budget, for the record:
+  # state file vlm-xix-effective-batch-01.yaml.steps-budget.state.json on asteraix.
+  #
+  # `qwen3vl-german-xix-v2` trained one epoch over ~405k lines, ~25,000 steps at
+  # batch 16. Rung 0 is an eighth of that: enough to separate rates if they
+  # differ by more than the floor, far too little to call a model trained.
+  samples: 48000
   rungs: [3, 1]
-  # 3x3,000 + 1x9,000 = 18,000, plus room for one preempted cell.
-  max_total_steps: 22000
+  # 3 × 48,000 + 1 × 144,000 = 288,000, plus one rung-0 cell lost to a preemption.
+  max_total_samples: 336000
 
 base:
   granularity: line

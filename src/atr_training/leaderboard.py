@@ -176,7 +176,9 @@ def rows_for(manifest: SweepManifest, state: SweepState) -> list[Row]:
                 rung=rung,
                 axes=dict(config.axes) if config else {},
                 labels=dict(config.labels) if config else {},
-                steps=steps_at_rung(state.base_steps, rung),
+                # What the cell was given, from its own entry: under a samples
+                # budget the cells of one rung get different step counts (#138).
+                steps=int(entry.get("steps") or steps_at_rung(state.base_steps, rung)),
                 raw=entry.get("raw"),
                 score=entry.get("score"),
                 minutes=entry.get("minutes"),
@@ -382,8 +384,10 @@ def render(manifest: SweepManifest, state: SweepState,
     lines.append("")
     lines.append(_commits(rows))
     lines.append("")
-    lines.append(f"**metric** {state.metric}. **budget** {state.base_steps} optimizer "
-                 f"steps at rung 0, ×3 per rung."
+    unit = ("training samples" if getattr(state, "budget_unit", "steps") == "samples"
+            else "optimizer steps")
+    lines.append(f"**metric** {state.metric}. **budget** {state.base_steps:,} {unit} "
+                 f"at rung 0, ×3 per rung."
                  + (f" **corpus** {state.train_lines:,} training lines."
                     if state.train_lines else ""))
     lines.append("")

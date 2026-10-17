@@ -105,7 +105,9 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(bases))
     if manifest.rungs:
         print(f"\nrung 0 runs {manifest.rungs[0]} of {len(configs)} configurations "
-              f"for {manifest.steps} steps each.")
+              + (f"for {manifest.steps:,} training samples each."
+                 if manifest.budget_unit == "samples" else
+                 f"for {manifest.steps} steps each."))
     return 0
 
 

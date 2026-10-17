@@ -51,6 +51,15 @@ axis would rank by how long each configuration got. A `budget.epochs` key is
 refused rather than translated, because the translation depends on the data
 version and would be silent.
 
+**Or in samples, when the batch is on an axis** (#138, 17.10.2026). Equal steps
+are the right control when the batch does not move — and the wrong one when it
+does: at 3,000 steps the effective batch of 64 saw four times the lines the
+batch of 16 saw, so the XIX sweep would have ranked data, not learning rates.
+The linear-scaling rule that couples batch and rate predicts equal results at
+equal *samples*, so that is what a coupled batch axis has to hold fixed.
+``budget.samples`` says so; each cell then gets ``ceil(samples / effective
+batch)`` optimizer steps, and ``budget.max_total_samples`` is its ceiling.
+
 The id deliberately does **not** include the sweep's name: the same parameters on
 the same data are the same experiment, and two sweeps that overlap should be able
 to see that they do.
@@ -335,8 +344,14 @@ class SweepManifest:
     #: The most optimizer steps this sweep may ever spend, across every rung and
     #: every configuration. ``None`` means no ceiling — fine for a sweep somebody
     #: starts and watches, and wrong for one that runs continuously (#117): a
-    #: process without an upper bound is not a process, it is a leak.
+    #: process without an upper bound is not a process, it is a leak. Counted in
+    #: ``budget_unit``: optimizer steps, or samples for ``max_total_samples``.
     max_total_steps: int | None = None
+    #: What ``steps`` and the ceiling count: ``"steps"`` (optimizer steps, the
+    #: same for every cell) or ``"samples"`` (training samples, so a cell gets
+    #: ``ceil(steps / its effective batch)`` optimizer steps). See the module
+    #: docstring for why a coupled batch axis needs the second.
+    budget_unit: str = "steps"
     noise_floor: float | None = None
     #: Where that floor came from: the seeds, the commit and the data version it
     #: was measured on, or ``{"provenance": "unstated"}`` for a bare number.
@@ -492,7 +507,8 @@ def _axis_values(name: str, values: Any) -> tuple:
     return tuple(folded)
 
 
-def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...], int | None]:
+def _budget(raw: Mapping, n_configs: int
+            ) -> tuple[int, tuple[int, ...], int | None, str]:
     if "epochs" in raw:
         raise ManifestError(
             "budget.epochs: the budget is in optimizer steps, not epochs. An "
@@ -502,19 +518,32 @@ def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...], int | N
             "yourself — the conversion depends on the data version, and doing "
             "it here would hide that.")
 
-    ceiling = raw.get("max_total_steps")
+    if ("steps" in raw) == ("samples" in raw):
+        raise ManifestError(
+            "budget: give exactly one of `steps` (optimizer steps, the same for "
+            "every cell) and `samples` (training samples, for a sweep whose "
+            "effective batch is on an axis — #138).")
+    unit = "samples" if "samples" in raw else "steps"
+    wrong = "max_total_steps" if unit == "samples" else "max_total_samples"
+    if wrong in raw:
+        raise ManifestError(
+            f"budget.{wrong}: this budget is in {unit}, and a ceiling in the other "
+            f"unit would count something the budget does not. Use "
+            f"budget.max_total_{unit}.")
+    ceiling_key = f"max_total_{unit}"
+    ceiling = raw.get(ceiling_key)
     if ceiling is not None and (not isinstance(ceiling, int) or isinstance(ceiling, bool)
                                 or ceiling < 1):
         raise ManifestError(
-            f"budget.max_total_steps: expected a positive whole number, got {ceiling!r}")
+            f"budget.{ceiling_key}: expected a positive whole number, got {ceiling!r}")
 
-    steps = _require(raw, "steps", "budget")
+    steps = raw[unit]
     if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
-        raise ManifestError(f"budget.steps: expected a positive whole number, got {steps!r}")
+        raise ManifestError(f"budget.{unit}: expected a positive whole number, got {steps!r}")
 
     rungs_raw = raw.get("rungs")
     if rungs_raw is None:
-        return steps, (), ceiling
+        return steps, (), ceiling, unit
     if (not isinstance(rungs_raw, (list, tuple)) or not rungs_raw
             or any(not isinstance(r, int) or isinstance(r, bool) or r < 1 for r in rungs_raw)):
         raise ManifestError(f"budget.rungs: expected positive whole numbers, got {rungs_raw!r}")
@@ -536,7 +565,7 @@ def _budget(raw: Mapping, n_configs: int) -> tuple[int, tuple[int, ...], int | N
             "has nothing to eliminate, and a narrower one would leave "
             "configurations unrun without saying which — they would be decided "
             "by the order the cross product happens to come out in.")
-    return steps, rungs, ceiling
+    return steps, rungs, ceiling, unit
 
 
 def _baseline(raw: Mapping[str, Any], where: str) -> tuple[float | None, dict]:
@@ -669,7 +698,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
     n_configs = 1
     for values in axes.values():
         n_configs *= len(values)
-    steps, rungs, ceiling = _budget(_require(raw, "budget", where), n_configs)
+    steps, rungs, ceiling, unit = _budget(_require(raw, "budget", where), n_configs)
 
     specs = _require(data, "datasets", f"{where}.data")
     if not isinstance(specs, (list, tuple)) or not specs:
@@ -693,6 +722,7 @@ def parse_manifest(raw: Mapping, *, source: str | None = None) -> SweepManifest:
         steps=steps,
         rungs=rungs,
         max_total_steps=ceiling,
+        budget_unit=unit,
         base=canonical(base),
         axes=axes,
         noise_floor=floor, noise_floor_provenance=floor_provenance,
@@ -721,7 +751,9 @@ def describe(manifest: SweepManifest, configs: Sequence[SweepConfig] | None = No
     yield f"sweep   {manifest.name}"
     yield f"data    {manifest.train} / {manifest.eval}"
     yield f"digest  {manifest.data_digest}"
-    yield f"budget  {manifest.steps} optimizer steps per configuration"
+    yield (f"budget  {manifest.steps:,} training samples per configuration at rung 0"
+           if manifest.budget_unit == "samples"
+           else f"budget  {manifest.steps} optimizer steps per configuration")
     if manifest.rungs:
         yield f"rungs   {' → '.join(str(r) for r in manifest.rungs)}"
     if BASE_AXIS in manifest.axes:

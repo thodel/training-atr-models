@@ -57,7 +57,8 @@ from atr_training.sweep_manifest import SweepConfig, SweepManifest, params_field
 
 __all__ = [
     "SweepError", "Preempted", "Metric", "METRICS", "SweepState", "SweepDriver",
-    "TrainerClient", "epochs_for", "steps_at_rung", "YIELD_POLICIES", "IDLE_S",
+    "TrainerClient", "epochs_for", "steps_at_rung", "cell_steps", "effective_batch",
+    "YIELD_POLICIES", "IDLE_S",
 ]
 
 #: Job statuses from which no further progress is possible.
@@ -178,6 +179,28 @@ def epochs_for(steps: int, train_lines: int, effective_batch: int) -> int:
     return _epochs_for(steps, train_lines, effective_batch)
 
 
+def effective_batch(params: Mapping[str, Any]) -> int:
+    """``batch_size × accumulate_grad_batches`` — what one optimizer step sees."""
+    batch = int(params.get("batch_size", 1) or 1)
+    accumulate = int(params.get("accumulate_grad_batches", 1) or 1)
+    return batch * accumulate
+
+
+def cell_steps(base: int, unit: str, params: Mapping[str, Any], rung: int,
+               eta: int = DEFAULT_ETA) -> int:
+    """The optimizer steps one cell gets at ``rung``.
+
+    In ``steps`` the budget is the count itself. In ``samples`` it is divided by
+    the cell's effective batch, rounded up, so every cell sees the same number
+    of training samples (#138): equal steps at a batch of 64 are four times the
+    data of equal steps at 16.
+    """
+    budget = steps_at_rung(base, rung, eta)
+    if unit == "samples":
+        return max(1, -(-budget // effective_batch(params)))
+    return budget
+
+
 def steps_at_rung(base_steps: int, rung: int, eta: int = DEFAULT_ETA) -> int:
     """Successive halving multiplies the budget as the field narrows.
 
@@ -203,9 +226,12 @@ class SweepState:
 
     sweep: str
     data_digest: str
+    #: The rung-0 budget, in ``budget_unit``. Named for the original unit; a
+    #: samples budget is stored here too, and ``budget_unit`` says which.
     base_steps: int
     metric: str
     train_lines: int | None = None
+    budget_unit: str = "steps"
     #: What the noise floor was measured on, carried so a reader of this file
     #: never has to trust a bare number (#115).
     noise_floor_provenance: dict = field(default_factory=dict)
@@ -224,6 +250,7 @@ class SweepState:
                      path: Path | None = None) -> "SweepState":
         return cls(sweep=manifest.name, data_digest=manifest.data_digest,
                    base_steps=manifest.steps, metric=metric, path=path,
+                   budget_unit=manifest.budget_unit,
                    noise_floor_provenance=dict(manifest.noise_floor_provenance))
 
     @classmethod
@@ -234,6 +261,8 @@ class SweepState:
         state = cls(sweep=raw["sweep"], data_digest=raw["data_digest"],
                     base_steps=raw["base_steps"], metric=raw["metric"],
                     train_lines=raw.get("train_lines"),
+                    # Absent in every state file written before #138: steps.
+                    budget_unit=raw.get("budget_unit", "steps"),
                     noise_floor_provenance=(raw.get("noise_floor_provenance")
                                             or dict(manifest.noise_floor_provenance)),
                     results=raw.get("results", {}),
@@ -251,7 +280,9 @@ class SweepState:
         """
         for field_name, was, now in (("data.digest", self.data_digest, manifest.data_digest),
                                      ("metric", self.metric, metric),
-                                     ("budget.steps", self.base_steps, manifest.steps)):
+                                     ("budget.unit", self.budget_unit, manifest.budget_unit),
+                                     (f"budget.{self.budget_unit}", self.base_steps,
+                                      manifest.steps)):
             if was != now:
                 raise SweepError(
                     f"{self.path}: this sweep was run with {field_name} = {was!r} "
@@ -286,6 +317,7 @@ class SweepState:
             "version": STATE_VERSION, "sweep": self.sweep,
             "data_digest": self.data_digest, "base_steps": self.base_steps,
             "metric": self.metric, "train_lines": self.train_lines,
+            "budget_unit": self.budget_unit,
             "noise_floor_provenance": self.noise_floor_provenance,
             "results": self.results, "promotions": self.promotions,
         }
@@ -318,6 +350,12 @@ class SweepState:
         counts successful work is not a ceiling on what the sweep consumes.
         """
         return sum(int(entry.get("steps") or 0)
+                   for rung in self.results.values() for entry in rung.values())
+
+    def spent_samples(self) -> int:
+        """Training samples this sweep has spent, preempted cells included —
+        what a ``samples`` budget's ceiling counts."""
+        return sum(int(entry.get("samples") or 0)
                    for rung in self.results.values() for entry in rung.values())
 
 
@@ -363,9 +401,13 @@ class SweepDriver:
             return list(self.manifest.rungs)
         return [rung.configs for rung in plan_rungs(n_configs, eta=self.eta)]
 
+    def cell_steps(self, config: SweepConfig, rung: int) -> int:
+        return cell_steps(self.state.base_steps, self.state.budget_unit,
+                          config.params, rung, self.eta)
+
     def request_for(self, config: SweepConfig, rung: int) -> dict:
         """A `TrainRequest` body. Note what is *not* here: `force`."""
-        steps = steps_at_rung(self.state.base_steps, rung, self.eta)
+        steps = self.cell_steps(config, rung)
         params = dict(config.params)
         batch = int(params.get("batch_size", 1) or 1)
         accumulate = int(params.get("accumulate_grad_batches", 1) or 1)
@@ -522,7 +564,8 @@ class SweepDriver:
                 # What this cell is allowed to cost, recorded at submit so the
                 # ceiling counts a preempted cell too: it spent the card whether
                 # or not it produced a number.
-                "steps": steps_at_rung(self.state.base_steps, rung, self.eta),
+                "steps": self.cell_steps(config, rung),
+                "samples": self.cell_steps(config, rung) * effective_batch(config.params),
             })
             self.state.save()
             logger.info("rung {}: submitted {} as {}", rung, config.config_id, job_id)
@@ -559,11 +602,14 @@ class SweepDriver:
         ceiling = self.manifest.max_total_steps
         if ceiling is None:
             return None
-        spent = self.state.spent_steps()
+        unit = self.manifest.budget_unit
+        spent = (self.state.spent_samples() if unit == "samples"
+                 else self.state.spent_steps())
         if spent < ceiling:
             return None
-        return (f"{self.manifest.name} has spent {spent:,} optimizer steps of its "
-                f"{ceiling:,} ceiling. Raise budget.max_total_steps if this sweep "
+        what = "training samples" if unit == "samples" else "optimizer steps"
+        return (f"{self.manifest.name} has spent {spent:,} {what} of its "
+                f"{ceiling:,} ceiling. Raise budget.max_total_{unit} if this sweep "
                 "is worth more, but raise it deliberately.")
 
     def serve(self, *, reload: Callable[[], SweepManifest] | None = None,
@@ -622,8 +668,12 @@ class SweepDriver:
         promotions: list[Promotion] = []
         for rung, width in enumerate(ladder):
             entrants = entrants[:width]
-            logger.info("rung {}: {} configurations, {} steps each", rung,
-                        len(entrants), steps_at_rung(self.state.base_steps, rung, self.eta))
+            if self.state.budget_unit == "samples":
+                logger.info("rung {}: {} configurations, {:,} samples each", rung,
+                            len(entrants), steps_at_rung(self.state.base_steps, rung, self.eta))
+            else:
+                logger.info("rung {}: {} configurations, {} steps each", rung,
+                            len(entrants), steps_at_rung(self.state.base_steps, rung, self.eta))
             for config_id in entrants:
                 reason = self.over_ceiling()
                 if reason:
