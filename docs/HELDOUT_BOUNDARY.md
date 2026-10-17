@@ -3,13 +3,15 @@
 The held-out boundary (#98, `docs/BASE_MODEL_LADDER.md` §1f) is proven for the
 medieval ladder: the September corpus held 306,582 training lines, the October
 one 219,261, because `_reserve_eval_documents` keeps 3,173 of 11,277 pages for
-`german-medieval-v1`. **Which other published numbers cross the same boundary is
-not yet known.** This page is where the answer goes (#247).
+`german-medieval-v1`. **Which other published numbers cross the same boundary**
+is the question of #247.
 
-It is written before the measurement because the measurement needs the job
-stores, and the stores are on the research share and in UBELIX scratch. What is
-settled here is the method, the states, and two findings that change how the
-existing records must be read.
+**Answer, measured 2026-10-17 on UBELIX over both stores:** of 58 runs whose
+record carries a CER, **6 crossed**, 43 are clean, 8 are undecidable and 1 is
+uncheckable. The six are the medieval September corpus and nothing else. Two
+more published figures are crossed whose CER is not in any record — the
+medieval Gemma line arms — and only `--all` finds them. Details in
+[Results](#results).
 
 ## `reserved_pages` cannot answer the question
 
@@ -85,14 +87,28 @@ there is nothing left to apply the registry to.
 
 ## The method
 
-For each of the 54 runs: apply **today's** registry
+For each run whose record carries a CER (58 on 2026-10-17): apply **today's** registry
 (`config/heldout_eval_documents.json`) to the manifest the run actually trained
 on, and count how many pages *would* fall. No GPU, no network, minutes.
 
 ```
-python scripts/heldout_boundary.py --markdown > docs/HELDOUT_BOUNDARY.md
+python scripts/heldout_boundary.py --markdown   # the Results table, to paste below
 python scripts/heldout_boundary.py --json | jq '.summary'
+python scripts/heldout_boundary.py --all        # also runs whose CER is not in the record
 ```
+
+On UBELIX it runs inside the training image, which has the dependencies the
+plain `python3` there lacks:
+
+```
+apptainer exec --bind /storage --bind /scratch --bind /rs_scratch \
+  ~/ubelix/vlm-train-tf5.sif env PYTHONPATH=$PWD/src:$PWD/engines \
+  python3 scripts/heldout_boundary.py --markdown
+```
+
+It also names a third store, `local`, as unreadable there: that is this box's
+`TrainerSettings.jobs_root`, which on UBELIX points at a directory that does not
+exist. It holds no runs; the message is the script refusing to assume so.
 
 Both stores by default, because they do not hold the same runs — 61 in the share
 against 58 in scratch — and a run purged from one may still be whole in the
@@ -116,31 +132,216 @@ direction the records themselves already failed in.
 The table prints the recorded `reserved_pages` **beside** the measurement rather
 than instead of it. Where the two disagree, that disagreement is the finding.
 
+### A run that adopted its corpus has its builder's manifest
+
+The first pass left **25** runs `gone`, one of them not a run at all (below).
+Sixteen of the other 24 had never had a manifest
+of their own to lose: they adopted a compiled corpus from the artefact cache,
+and their record says from whom — `progress.artefact = "<key> reused, built by
+<job>"`. An adopter trained on the builder's bytes, so the builder's manifest is
+its manifest. `resolve_adoptions` takes the builder's verdict over, after every
+store is read, because the builder can sit in the other store and need not have
+a CER of its own (`qwen3vl-german-pages-v5-asteraix` was adopted from a
+cancelled first attempt).
+
+**The key is the identity, the name is a label.** The builder must confirm the
+key in its own record (`"<key> built by this job"`). That is not pedantry:
+`gemma4-12b-medieval-german-page-v1` adopted `2439ac90f727`, its prepare log
+names `qwen3vl-medieval-german-page-v1` as the builder, and its record names
+`20261001T090507Z-olmocr2-7b-medieval-german-page-v1` — an abandoned olmOCR
+attempt that rebuilt the same key and re-registered the cache entry while the
+Gemma run was being requeued. Both confirm the key and both hold an 8,104-page
+manifest, so here the answer is the same either way; a builder that does not
+confirm leaves the adopter `gone`, never `clean`.
+
+**And adoption is a third way the record says `0` without checking.** An adopter
+skips prepare, so the reservation never runs and `reserved_pages` keeps what the
+job started with. Three records say `0` where the builder had held pages back:
+`qwen3.5-4b-medieval-german-page-v1` and `gemma4-e4b-medieval-german-page-v1`
+(builder: 3,173) and `qwen3vl-german-pages-v5-asteraix` (builder: 3,187). All
+three are clean — but not because of the `0`.
+
+A directory in a store is not necessarily a run: `evalset-federal-minutes`
+holds the published-benchmark reports beside the jobs. Without a `job.json` and
+without a job-shaped name it is skipped, rather than counted as a purged run.
+
 ## Results
 
-Not yet measured. The run needs a box that can read the job stores; the script
-refuses to produce a table from stores it cannot see, and names each one it
-could not read:
+Measured 2026-10-17 on UBELIX, both stores, today's registry (350 documents,
+all from `german-medieval-v1`).
 
-```
-store share (/storage/research/.../training_folder/jobs) is not readable from
-here — its runs are absent from this table, not clean
+| verdict | runs | |
+|---|---:|---|
+| `clean` | **43** | 27 from their own manifest, 16 through their builder |
+| `crossed` | **6** | 15,349 training pages reserved today |
+| `uncheckable` | 1 | `kraken-corpus-thun-ft-v1`, chunked |
+| `gone` | 8 | all from 10.–14.09., the first generation |
+| **runs with a CER** | **58** | |
 
-0 Läufe: 0 unberührt, 0 betroffen, 0 nicht prüfbar, 0 unentscheidbar.
-```
+### The six crossed runs
+
+| run | CER | pages | reserved today |
+|---|---:|---:|---:|
+| `qwen3vl-medieval-german-v3` | 0.1120 | 11,448 | **3,091** (27.0 %) |
+| `ladder-med-qwen35-27b` | **0.0955** | 11,448 | **3,091** |
+| `ladder-med-qwen35-9b` | 0.1213 | 11,448 | **3,091** |
+| `ladder-med-olmocr2-7b` | 0.7465 | 11,448 | **3,091** |
+| `qwen3vl-german-pages-v3` | 0.9756 | 12,557 | **2,979** (23.7 %) |
+| `qwen3vl-german-medieval-v1` | 0.2324 | 279 | 6 (2.2 %) |
+
+**They are exactly the four numbers the medieval ladder stood on** — including
+the 9.55 % this repository carried as its best medieval line result until
+14.10. — and their corrected counterparts are in `docs/BASE_MODEL_LADDER.md`
+§1f-bis. The other two do not matter in practice and are listed so the list is
+complete: `qwen3vl-german-pages-v3` is a collapse at 97.56 %, and
+`qwen3vl-german-medieval-v1` loses 6 of 279 pages.
+
+### Two more published figures, whose CER is in no record
+
+The census counts runs whose *record* carries a CER, as a proxy for "was
+published". The proxy has a hole. The medieval Gemma line arms —
+`ladder-med-gemma4-e4b` (six attempts) and `ladder-med-gemma4-12b` (two) — are
+all `failed` with no metrics: most attempts are the drop-in failures of §6 on
+the published page, which died within minutes, and the ones that trained
+crashed in their evaluation (items 6 and 7 there), so their CER was recovered by
+re-scoring the stored adapter. **All eight attempts are crossed**, 3,091 of
+11,448 pages each, because they share one corpus. That puts two more published
+figures on the wrong side: Gemma-E4B 16.9 % and Gemma-12B 12.2 % on medieval
+lines. The comparison they were
+published in still holds *within itself* — `qwen3vl-medieval-german-v3`, the
+Qwen arm beside them, trained on the same corpus — but no figure in it is
+comparable with anything measured after the boundary.
+
+`--all` lists them (121 runs: 56 clean, 34 crossed, 1 uncheckable, 30 gone);
+the default does not, and says so in its help text.
+
+### Two cross-checks
+
+**Two implementations agree.** A first survey for #247 (PR #261, first
+version) applied `HeldOutDocuments.split` to each `pages_train.lst` with its own
+loop; this module uses `HeldOutDocuments.reserve` through `check_run`. They name
+the same six crossed runs with the same counts — 3,091, 2,979 and 6.
+
+**A positive record is right where it can be checked.** Every run that records
+`reserved_pages: 3173` and still holds a manifest shows 8,104 pages in it —
+11,277 − 3,173 exactly — and comes out clean: four of four. A *positive* count
+has so far never been wrong; it is the `0` that cannot be trusted (above).
+
+### What the census decided
+
+**The 19th-century series is clean — with one exception that shows why the
+name of a run is no evidence.** Every `german-xix` arm shows 0 reserved pages of
+23,971, and so does `kraken-german-xix-v1` (14,093). But
+`qwen3vl-german-pages-v3`, filed with the XIX work, trained on 12,557 pages of
+which 2,979 are reserved today.
+
+**The `MM_2_*` worry was unfounded.** #247 asked whether `kurrent-xix` was
+structurally immune to the reservation because `document_of` cannot read its
+file names. Measured: both Kurrent arms have **13,606 of 13,606** pages with a
+document id, and no run in either store is `uncheckable` for that reason.
+
+**Every number in the current tables is clean.** The post-boundary ladder
+(4B/9B/27B, Qwen3.8-27B), the five olmOCR page knobs, both Kurrent arms, every
+medieval page arm and every 19th-century arm — directly or through the run that
+built their corpus.
+
+### The eight undecidable runs
+
+All from 10.–14.09.: `qwen3vl-medieval-german-v1`, `-v2`, the three
+`qwen3.5-*-medieval-german-v1`, `qwen3.5-{2b,4b}-german-xix-v1` and
+`resume-probe-a100`. Their manifests went with the 30-day scratch purge, their
+records carry `reserved_pages: None`, and none of them adopted a corpus. These
+are the first-generation numbers that the parser fix replaced; nothing current
+rests on them. **They stay open, and that is the result, not a missing one.**
+
+### The full table
+
+<details>
+<summary>58 runs, as printed by <code>--markdown</code></summary>
 
 | Lauf | Store | CER | `reserved_pages` | Verdikt | gefallen | Grund |
 |---|---|---:|---:|---|---:|---|
-| _(pending the run on asteraix)_ | | | | | | |
+| `20261014T194417Z-ladder-med-qwen35-4b-v2` | scratch | 0.1594 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261014T193118Z-ladder-med-qwen35-9b-v2` | scratch | 0.1375 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261013T121310Z-olmocr2-7b-medieval-page-px4m-native` | scratch | 0.2659 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1` | scratch | 0.2704 | 1318 | clean | 0 | 13606 of 13606 entries name a document; none reserved |
+| `20261013T100004Z-ladder-med-qwen38-27b-v3` | scratch | 0.1215 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261013T043436Z-ladder-med-qwen35-27b-v2` | scratch | 0.1224 | 3173 | clean | 0 | 8104 of 8104 entries name a document; none reserved |
+| `20261010T111013Z-ladder-med-qwen38-27b-v2` | scratch | 0.1215 | 3173 | clean | 0 | 8104 of 8104 entries name a document; none reserved |
+| `20261009T174425Z-olmocr2-7b-medieval-page-px4m` | scratch | 0.2775 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261009T174425Z-olmocr2-7b-medieval-page-nativeprompt` | scratch | 0.3438 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261009T150138Z-qwen3.5-4b-german-kurrent-xvi-xix-v1` | scratch | 0.0882 | 1318 | clean | 0 | 13606 of 13606 entries name a document; none reserved |
+| `20261008T103636Z-olmocr2-7b-medieval-page-px1288` | scratch | 0.4114 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261008T103636Z-olmocr2-7b-medieval-page-cap3072` | scratch | 0.4674 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261001T093909Z-olmocr2-7b-medieval-german-page-v1` | scratch | 0.3492 | 3173 | clean | 0 | 8104 of 8104 entries name a document; none reserved |
+| `20261001T085321Z-ladder-med-olmocr2-7b` | scratch | 0.7465 | None | crossed | 3091 | 3091 of 11448 training pages are reserved today (345 documents) |
+| `20260930T211455Z-ladder-med-qwen35-9b` | scratch | 0.1213 | None | crossed | 3091 | 3091 of 11448 training pages are reserved today (345 documents) |
+| `20260930T210559Z-gemma4-12b-medieval-german-page-v1` | scratch | 0.9620 | 3173 | clean | 0 | adopted 2439ac90f727 from 20261001T090507Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20260930T170315Z-ladder-xix-gemma4-12b` | scratch | 0.2122 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260929T160031Z-gemma4-e4b-medieval-german-page-v1` | scratch | 0.5184 | 0 | clean | 0 | adopted 2439ac90f727 from 20260923T202356Z-qwen3vl-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20260926T080902Z-ladder-xix-gemma4-e4b` | scratch | 0.1110 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260926T073357Z-qwen3.5-4b-medieval-german-page-v1` | scratch | 0.4160 | 0 | clean | 0 | adopted 2439ac90f727 from 20260923T202356Z-qwen3vl-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20260925T045500Z-ladder-med-qwen35-27b` | scratch | 0.0955 | 0 | crossed | 3091 | 3091 of 11448 training pages are reserved today (345 documents) |
+| `20260924T124211Z-qwen3vl-german-xix-mixed-v1` | scratch | 0.2558 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260923T202356Z-qwen3vl-medieval-german-page-v1` | scratch | 0.4265 | 3173 | clean | 0 | 8104 of 8104 entries name a document; none reserved |
+| `20260923T005341Z-qwen3vl-german-xix-page-v1` | scratch | 0.0801 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260922T181814Z-qwen3vl-german-xix-block-v1` | scratch | 0.0754 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260918T070304Z-qwen3.5-2b-german-xix-v2` | scratch | 0.0549 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260918T070304Z-qwen3.5-0.8b-german-xix-v2` | scratch | 0.0704 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260918T070300Z-qwen3.5-4b-german-xix-v2` | scratch | 0.0478 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260916T090417Z-qwen3vl-german-xix-v2` | scratch | 0.0533 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20260915T055400Z-qwen3vl-medieval-german-v3` | scratch | 0.1120 | None | crossed | 3091 | 3091 of 11448 training pages are reserved today (345 documents) |
+| `20260914T055236Z-qwen3vl-medieval-german-v2` | scratch | 0.4995 | None | gone | 0 | no train manifest in data/ |
+| `20260911T154340Z-qwen3.5-4b-german-xix-v1` | scratch | 0.0107 | None | gone | 0 | no train manifest in data/ |
+| `20260911T154340Z-qwen3.5-2b-german-xix-v1` | scratch | 0.0141 | None | gone | 0 | no train manifest in data/ |
+| `20260911T114344Z-qwen3vl-german-xix-v1` | scratch | 0.0100 | None | clean | 0 | 24097 of 24097 entries name a document; none reserved |
+| `20260911T053821Z-qwen3.5-4b-medieval-german-v1` | scratch | 0.5806 | None | gone | 0 | no train manifest in data/ |
+| `20260911T053821Z-qwen3.5-2b-medieval-german-v1` | scratch | 6.1581 | None | gone | 0 | no train manifest in data/ |
+| `20260911T053821Z-qwen3.5-0.8b-medieval-german-v1` | scratch | 6.9842 | None | gone | 0 | no train manifest in data/ |
+| `20260910T202205Z-qwen3vl-medieval-german-v1` | scratch | 0.5322 | None | gone | 0 | no train manifest in data/ |
+| `20260910T180413Z-resume-probe-a100` | scratch | 0.3057 | None | gone | 0 | no train manifest in data/ |
+| `20261014T064653Z-vlm-xix-effective-batch-01-r0-3de4c2e3aef1` | share | 0.1455 | 0 | clean | 0 | adopted 1ab0a28006d1 from 20261012T135706Z-vlm-xix-effective-batch-01-noise-s42 (share): 23971 of 23971 entries name a document; none reserved |
+| `20261012T135715Z-vlm-xix-effective-batch-01-noise-s45` | share | 0.1842 | 0 | clean | 0 | adopted 1ab0a28006d1 from 20261012T135706Z-vlm-xix-effective-batch-01-noise-s42 (share): 23971 of 23971 entries name a document; none reserved |
+| `20261012T135712Z-vlm-xix-effective-batch-01-noise-s44` | share | 0.1877 | 0 | clean | 0 | adopted 1ab0a28006d1 from 20261012T135706Z-vlm-xix-effective-batch-01-noise-s42 (share): 23971 of 23971 entries name a document; none reserved |
+| `20261012T135709Z-vlm-xix-effective-batch-01-noise-s43` | share | 0.1837 | 0 | clean | 0 | adopted 1ab0a28006d1 from 20261012T135706Z-vlm-xix-effective-batch-01-noise-s42 (share): 23971 of 23971 entries name a document; none reserved |
+| `20261012T135706Z-vlm-xix-effective-batch-01-noise-s42` | share | 0.3010 | 0 | clean | 0 | 23971 of 23971 entries name a document; none reserved |
+| `20261007T131819Z-kraken-german-xix-v1` | share | 0.0312 | 0 | clean | 0 | 14093 of 14093 entries name a document; none reserved |
+| `20260916T205123Z-qwen3vl-german-pages-v5-asteraix` | share | 0.5235 | 0 | clean | 0 | adopted 82db328c96d7 from 20260916T115939Z-qwen3vl-german-pages-v5-asteraix (share): 9457 of 9457 entries name a document; none reserved |
+| `20260916T115539Z-trocr-thun-smoke-asteraix-v2` | share | 0.9757 | 0 | clean | 0 | 127 of 127 entries name a document; none reserved |
+| `20260914T074401Z-trocr-thun-smoke-v3` | share | 0.9585 | None | clean | 0 | 127 of 127 entries name a document; none reserved |
+| `20260910T110352Z-qwen3vl-german-pages-v3` | share | 0.9756 | None | crossed | 2979 | 2979 of 12557 training pages are reserved today (345 documents) |
+| `20260903T105603Z-kraken-corpus-thun-ft-v1` | share | 0.2054 | None | uncheckable | 0 | chunked run: the train side was materialised per chunk and discarded |
+| `20260903T104406Z-qwen3vl-sg-missiven-v1` | share | 0.2785 | None | clean | 0 | 1500 of 1500 entries name a document; none reserved |
+| `20260821T163926Z-qwen3vl-german-medieval-v1` | share | 0.2324 | None | crossed | 6 | 6 of 279 training pages are reserved today (3 documents) |
+| `20260813T144649Z-kraken-thun-kurrent-v2` | share | 0.2180 | None | clean | 0 | 127 of 127 entries name a document; none reserved |
+| `20260813T141927Z-kraken-thun-kurrent-v1` | share | 0.2350 | None | clean | 0 | 127 of 127 entries name a document; none reserved |
+| `20260813T090059Z-kraken-thun-finetune-v1` | share | 0.3921 | None | clean | 0 | 127 of 127 entries name a document; none reserved |
+| `20260808T080206Z-qwen3vl-thun-smoke` | share | 0.4656 | None | clean | 0 | 40 of 40 entries name a document; none reserved |
+| `20260807T212539Z-kraken-medieval-scripts-v1` | share | 0.7074 | None | clean | 0 | 4121 of 4121 entries name a document; none reserved |
+| `20260807T161137Z-kraken-thun-missiven-v1` | share | 0.9838 | None | clean | 0 | 127 of 127 entries name a document; none reserved |
+
+</details>
 
 ## Still open
 
 * **The 171 pages.** The three medieval September runs each carry 11,448 pages
   in `data/pages_train.lst`, including `qwen3vl-medieval-german-v3`, the 4B
   reference of the §1b table — against 11,277 in October, *before* the 3,173 are
-  deducted. Where the difference comes from is unanswered, and it is not
-  answerable from the repository alone: it is a property of two materialisations.
+  deducted. The census sharpens this rather than answering it:
+
+  | | selected | reserved | remaining |
+  |---|---:|---:|---:|
+  | September (the crossed arms) | 11,448 | 3,091 | 8,357 *(hypothetical)* |
+  | October (everything since) | 11,277 | 3,173 | 8,104 |
+  | difference | **−171** | +82 | **−253** |
+
+  So the October corpus is not "September minus reserved". The selection moved
+  by 171 pages, and 171 pages *fewer* produced 82 reserved pages *more*: the
+  composition changed, not only the size. The registry was the same for both
+  measurements, so it is not the registry. It is a property of two
+  materialisations, and not answerable from the repository alone.
 * **The published page.** `docs/vlm-finetuning.md` in
-  `thodel/agentic-historian-outputs` carries the affected numbers. Correcting it
-  once with the full reach is better than correcting it twice — that is #248,
-  and it waits for the table above.
+  `thodel/agentic-historian-outputs` carries the affected numbers: its §8a
+  already corrects the ladder, but §6 (`qwen3vl-medieval-german-v3`, both Gemma
+  line arms) is crossed and not yet marked, nor is the olmOCR line figure (74.6 %, §4 and §8) and the 9 B line
+figure beside it in §4. The reach is now known; correcting it is #248.
