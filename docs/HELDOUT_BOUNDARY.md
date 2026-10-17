@@ -145,7 +145,8 @@ a CER of its own (`qwen3vl-german-pages-v5-asteraix` was adopted from a
 cancelled first attempt).
 
 **The key is the identity, the name is a label.** The builder must confirm the
-key in its own record (`"<key> built by this job"`). That is not pedantry:
+key in its own record (`"<key> built by this job"`, since #238 followed by
+`", stored in N min"`). That is not pedantry:
 `gemma4-12b-medieval-german-page-v1` adopted `2439ac90f727`, its prepare log
 names `qwen3vl-medieval-german-page-v1` as the builder, and its record names
 `20261001T090507Z-olmocr2-7b-medieval-german-page-v1` — an abandoned olmOCR

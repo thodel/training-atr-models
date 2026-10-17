@@ -391,6 +391,35 @@ def test_a_builder_that_does_not_confirm_the_key_is_not_trusted(tmp_path, held):
     assert "confirms building" in adopter.why
 
 
+def test_a_builder_that_records_its_copy_time_still_confirms(tmp_path, held):
+    """#238 appended the cache copy time: `<key> built by this job, stored in
+    12 min`. An exact match on the old form would make every builder from then
+    on fail to confirm, and leave its adopters `gone` without anyone noticing —
+    GitHub merged the two changes as textually independent."""
+    scratch = tmp_path / "scratch"
+    _run(scratch, "20261020T000000Z-builder", manifest="pages_train.lst",
+         entries=[_page(OTHER_DOC)], artefact=f"{KEY} built by this job, stored in 12 min")
+    _adopter(scratch, "20261021T000000Z-adopter", "20261020T000000Z-builder")
+
+    adopter = {c.job_id: c for c in _census([("scratch", scratch)], held)}[
+        "20261021T000000Z-adopter"]
+
+    assert adopter.verdict is Verdict.CLEAN
+
+
+def test_a_builder_of_a_longer_key_with_the_same_prefix_does_not_confirm(tmp_path, held):
+    """The prefix match must stop at the key: `<key>0` is another corpus."""
+    scratch = tmp_path / "scratch"
+    _run(scratch, "20261020T000000Z-builder", manifest="pages_train.lst",
+         entries=[_page(OTHER_DOC)], artefact=f"{KEY}0 built by this job")
+    _adopter(scratch, "20261021T000000Z-adopter", "20261020T000000Z-builder")
+
+    adopter = {c.job_id: c for c in _census([("scratch", scratch)], held)}[
+        "20261021T000000Z-adopter"]
+
+    assert adopter.verdict is Verdict.GONE
+
+
 def test_a_builder_whose_manifest_is_gone_too_leaves_the_adopter_gone(tmp_path, held):
     scratch = tmp_path / "scratch"
     _run(scratch, "20260901T000000Z-builder", manifest=None,

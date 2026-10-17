@@ -79,9 +79,11 @@ class Verdict(str, Enum):
 TRAIN_MANIFESTS = ("pages_train.lst", "lines_train.jsonl", CHUNK_PLAN_FILENAME)
 
 #: ``progress.artefact`` of a job that adopted a corpus, and of one that built it
-#: (``runner_base._reuse_artefact`` / ``_publish_artefact``).
+#: (``runner_base._reuse_artefact`` / ``_publish_artefact``). The builder's form
+#: grew a suffix in #238 (``", stored in 12 min"``), so it is matched up to the
+#: end of the claim, not to the end of the string.
 _ADOPTED = re.compile(r"^(?P<key>[0-9a-f]{12}) reused, built by (?P<builder>\S+)$")
-_BUILT = "{key} built by this job"
+_BUILT = re.compile(r"^(?P<key>[0-9a-f]{12}) built by this job(?:,|$)")
 
 #: What a job directory is called. A store also holds directories that are not
 #: runs — ``evalset-federal-minutes`` keeps benchmark reports — and one of those
@@ -304,7 +306,8 @@ def _find_builder(job_id: str, key: str, stores: list[tuple[str, Path]],
             continue
         found_record = True
         artefact = str((job.get("progress") or {}).get("artefact") or "")
-        if artefact != _BUILT.format(key=key):
+        built = _BUILT.match(artefact)
+        if built is None or built["key"] != key:
             continue
         check = check_run(job_dir, store=label, held=held, job=job)
         if check.verdict is not Verdict.GONE:
