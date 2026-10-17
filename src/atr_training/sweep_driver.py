@@ -56,7 +56,7 @@ from atr_training.rungs import DEFAULT_ETA, Promotion, plan_rungs, promote
 from atr_training.sweep_manifest import SweepConfig, SweepManifest, params_fields
 
 __all__ = [
-    "SweepError", "Preempted", "Metric", "METRICS", "SweepState", "SweepDriver",
+    "SweepError", "SubmitConflict", "Preempted", "Metric", "METRICS", "SweepState", "SweepDriver",
     "TrainerClient", "epochs_for", "steps_at_rung", "cell_steps", "effective_batch",
     "YIELD_POLICIES", "IDLE_S",
 ]
@@ -71,7 +71,10 @@ ACTIVE = frozenset({"queued", "preparing", "compiling", "training", "testing",
 #: How a sweep gets out of the way when somebody asks for the card (#117).
 #:
 #: ``cancel`` stops the running cell at once. ``finish_cell`` lets it end and
-#: submits nothing more. Which is right depends on what a cell costs: at rung 0
+#: submits nothing more — and a cell that ran to its end ran its whole budget, so
+#: its score is recorded like any other (#138: until 17.10.2026 it was thrown
+#: away as "half a budget", and the next pass resubmitted a cell whose job was
+#: still training, which the trainer refused with 409 and the driver died of). Which is right depends on what a cell costs: at rung 0
 #: it is under an hour and cancelling is cheap, at the last rung it is many hours
 #: and cancelling throws all of them away — but waiting them out is exactly the
 #: block this issue exists to prevent. The default is ``cancel``, because a sweep
@@ -110,6 +113,14 @@ def _minutes(started: str | None, finished: str | None) -> float | None:
 
 class SweepError(RuntimeError):
     """The sweep cannot proceed without a person deciding something."""
+
+
+class SubmitConflict(RuntimeError):
+    """The trainer already has a live job for this model_id; ``job_id`` is it."""
+
+    def __init__(self, job_id: str, detail: str = "") -> None:
+        super().__init__(detail or f"already live as {job_id}")
+        self.job_id = job_id
 
 
 class Preempted(RuntimeError):
@@ -378,6 +389,9 @@ class SweepDriver:
                              f"got {yield_policy!r}")
         self.yield_policy = yield_policy
         self.metric = METRICS[state.metric]
+        #: Set while a ``finish_cell`` yield lets the running cell end: once it
+        #: is recorded, the pass gives the card back instead of going on.
+        self._holding: list[str] | None = None
 
     @property
     def budgets_in_steps(self) -> bool:
@@ -495,9 +509,16 @@ class SweepDriver:
             job = self.client.job(job_id)
             if str(job.get("status")) in TERMINAL:
                 return job
-            if config is not None:
+            if config is not None and self._holding is None:
                 wanted_by = self.requested_jobs()
-                if wanted_by:
+                if wanted_by and self.yield_policy == "finish_cell":
+                    logger.warning(
+                        "rung {}: {} wants the card — {} runs to the end of its "
+                        "budget and is recorded, and nothing more is submitted "
+                        "until the card is free", rung, ", ".join(wanted_by[:3]),
+                        config.config_id)
+                    self._holding = wanted_by[:3]
+                elif wanted_by:
                     self._preempt(config, rung, job_id, wanted_by)
                     return None
             self.sleep(self.poll_s)
@@ -556,7 +577,16 @@ class SweepDriver:
                 logger.info("rung {}: not submitting {} — {} has the card",
                             rung, config.config_id, ", ".join(wanted_by[:3]))
                 raise Preempted(config.config_id)
-            answer = self.client.submit(self.request_for(config, rung))
+            request = self.request_for(config, rung)
+            try:
+                answer = self.client.submit(request)
+            except SubmitConflict as clash:
+                # The trainer refuses a second live job for one model_id (#56).
+                # That job is this cell's — the only way to get here is a state
+                # file that lost track of it — so wait for it instead of dying.
+                logger.warning("rung {}: {} is already live as {} — re-attaching",
+                               rung, request["model_id"], clash.job_id)
+                answer = {"job_id": clash.job_id, "status": "training"}
             job_id = str(answer["job_id"])
             self.state.put(rung, config.config_id, {
                 "job_id": job_id, "status": str(answer.get("status", "queued")),
@@ -573,6 +603,11 @@ class SweepDriver:
         if finished is None:
             raise Preempted(config.config_id)
         self._record(config, rung, finished)
+        if self._holding is not None:
+            logger.info("rung {}: {} recorded; the card goes to {}", rung,
+                        config.config_id, ", ".join(self._holding))
+            self._holding = None
+            raise Preempted(config.config_id)
 
     # ── the sweep ───────────────────────────────────────────────────────────
     def verify_all(self, configs: list[SweepConfig]) -> None:

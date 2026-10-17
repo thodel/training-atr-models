@@ -236,8 +236,10 @@ def test_the_finish_cell_policy_does_not_cancel():
     assert trainer.cancelled == []
 
 
-def test_the_finish_cell_policy_still_records_no_score():
-    """Whichever policy, the cell ran on part of its budget."""
+def test_the_finish_cell_policy_records_the_cell_it_let_finish():
+    """A cell left to finish ran its whole budget: its score is a measurement.
+    Until 17.10.2026 it was forfeited, the next pass resubmitted it while its
+    job was still training, the trainer answered 409 and the driver died (#138)."""
     m = manifest()
     trainer = Slow(scores_for(m, [0.2] * 12))
     d = driver(trainer, m, policy="finish_cell")
@@ -245,7 +247,45 @@ def test_the_finish_cell_policy_still_records_no_score():
     with pytest.raises(Preempted):
         d.run()
 
-    assert next(iter(d.state.results["0"].values()))["score"] is None
+    entry = next(iter(d.state.results["0"].values()))
+    assert entry["score"] is not None and not entry.get("preempted")
+    assert len(trainer.submitted) == 1, "nothing more after the held cell"
+
+
+def test_a_held_cell_is_not_run_again_on_the_next_pass():
+    m = manifest()
+    trainer = Slow(scores_for(m, [0.2] * 12))
+    d = driver(trainer, m, policy="finish_cell")
+    with pytest.raises(Preempted):
+        d.run()
+    first = next(iter(d.state.results["0"]))
+    trainer.foreign.clear()                      # the requested job is done
+    d.run()
+    # Once at rung 0, however many passes; a later rung is a different budget.
+    rung0 = [r["model_id"] for r in trainer.submitted if "-r0-" in r["model_id"]]
+    assert sum(mid.endswith(first) for mid in rung0) == 1
+
+
+def test_a_409_for_a_live_job_re_attaches_instead_of_dying():
+    from atr_training.sweep_driver import SubmitConflict
+
+    m = manifest()
+    trainer = FakeTrainer(scores_for(m, [0.2] * 12))
+    real_submit = trainer.submit
+    clashed = {}
+
+    def submit(request):
+        if not clashed:
+            job = real_submit(request)              # the job that is "already live"
+            clashed["id"] = job["job_id"]
+            raise SubmitConflict(job["job_id"])
+        return real_submit(request)
+
+    trainer.submit = submit
+    d = driver(trainer, m)
+    d.run()
+    first = next(iter(d.state.results["0"].values()))
+    assert first["job_id"] == clashed["id"] and first["score"] is not None
 
 
 def test_an_unknown_yield_policy_is_refused():

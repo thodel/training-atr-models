@@ -8,9 +8,19 @@ keep in step with the API.
 
 from __future__ import annotations
 
+import re
+
 import httpx
 
 __all__ = ["HttpTrainer"]
+
+
+def _json(response: httpx.Response) -> dict | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
 
 
 class HttpTrainer:
@@ -29,6 +39,14 @@ class HttpTrainer:
 
     def submit(self, request: dict) -> dict:
         response = self._client.post("/jobs", json=request)
+        if response.status_code == 409:
+            # "job <id> is already <status> for model_id …" — the one 409 that
+            # names a live job; the curated-id 409 names none and is raised.
+            detail = str((_json(response) or {}).get("detail") or "")
+            live = re.match(r"job (\S+) is already ", detail)
+            if live:
+                from atr_training.sweep_driver import SubmitConflict
+                raise SubmitConflict(live.group(1), detail)
         response.raise_for_status()
         return response.json()
 
