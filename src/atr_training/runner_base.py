@@ -26,6 +26,7 @@ import os
 import signal
 import threading
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from pathlib import Path
@@ -1599,6 +1600,7 @@ class BasePipeline(ABC):
                 isinstance(source, (list, tuple))
                 and _filesystem_of(Path(source[0]).parent) == _filesystem_of(cache.root)
             )
+            started = time.monotonic()
             entry = cache.put(key, source, job_id=job.id,
                               move=do_move, inner=self.ARTEFACT_INNER, payload={
                 "train_lines": job.progress.train_lines,
@@ -1619,15 +1621,20 @@ class BasePipeline(ABC):
             # "Which corpus did this run actually train on" has to stay answerable
             # from the job record: after this the arrows live in the cache, not in
             # the job directory anyone would look in first.
-            job.progress.artefact = f"{entry.key[:12]} built by this job"
+            # With the time it took (#238): the copy into the cache is a stage of
+            # its own in all but name, and 14.5 h of it once read as "training,
+            # no train.log" in every report.
+            minutes = (time.monotonic() - started) / 60
+            job.progress.artefact = (f"{entry.key[:12]} built by this job, stored in "
+                                     f"{minutes:.0f} min")
             self.store.save(job)
             # Claimed by the job that built it, for the same reason a job that
             # adopts one claims it (#96): after this the corpus lives in the
             # cache, so a resume days later resolves it by key, and the entry
             # must not have expired out from under the run that made it.
             cache.claim(key, job.id)
-            logger.info("artefact cache: stored {} ({:.1f} GB)",
-                        entry.key[:12], entry.bytes_ / 1e9)
+            logger.info("artefact cache: stored {} ({:.1f} GB in {:.0f} min)",
+                        entry.key[:12], entry.bytes_ / 1e9, minutes)
             removed, note = cache.evict()
             if removed:
                 logger.info("artefact cache eviction: {}", note)

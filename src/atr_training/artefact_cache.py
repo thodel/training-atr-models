@@ -47,7 +47,9 @@ import hashlib
 import json
 import os
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -98,13 +100,61 @@ class _Counter:
 
     def __init__(self) -> None:
         self.total: int | None = 0
+        # Called from COPY_WORKERS threads at once (#238); the sum is the only
+        # shared state.
+        self._lock = threading.Lock()
 
     def __call__(self, src, dst, *, follow_symlinks: bool = True):
         result = shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
-        if self.total is not None:
-            written = _size_of(dst)
-            self.total = None if written is None else self.total + written
+        written = _size_of(dst)
+        with self._lock:
+            if self.total is not None:
+                self.total = None if written is None else self.total + written
         return result
+
+
+#: Files copied at once when a directory goes into the cache (#238). The share is
+#: CIFS and one stream is latency-bound: measured on asteraix, 17.10.2026, from a
+#: job directory on the share to the NVMe cache —
+#:
+#:   line crops (~34 KB)   1 thread  109 files/s    32 threads  548–756 files/s
+#:   page images (~1.2 MB) 1 thread   22 MB/s        8 threads  95 MB/s, 32: 105 MB/s
+#:
+#: The first XIX VLM artefact (87.5 GB, 1,019,120 files) took 14.5 h one file
+#: at a time. 32 is past the knee for the small files and at the link for the
+#: large ones.
+COPY_WORKERS = 32
+
+
+def _copytree_parallel(source: Path, target: Path, copy_function,
+                       workers: int = COPY_WORKERS) -> None:
+    """``shutil.copytree(source, target, copy_function=…)``, with the files copied
+    by ``workers`` threads instead of one.
+
+    Same result: every directory is created first, every file goes through
+    ``copy_function`` (``copy2``, so times and modes survive), and directories get
+    their stat copied last, deepest first, as ``copytree`` does. The first
+    exception from any file is raised, after the pool has finished, so the
+    caller's "not stored" path sees the same error it saw before.
+    """
+    source, target = Path(source), Path(target)
+    pairs: list[tuple[str, str]] = []
+    dirs: list[tuple[str, str]] = []
+    for here, subdirs, files in os.walk(source, followlinks=True):
+        rel = os.path.relpath(here, source)
+        dest = target if rel == "." else target / rel
+        dest.mkdir(parents=True, exist_ok=False if rel == "." else True)
+        dirs.append((here, str(dest)))
+        pairs.extend((os.path.join(here, f), str(dest / f)) for f in files)
+    if workers <= 1:
+        for src, dst in pairs:
+            copy_function(src, dst)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for future in [pool.submit(copy_function, src, dst) for src, dst in pairs]:
+                future.result()
+    for src, dst in reversed(dirs):
+        shutil.copystat(src, dst)
 
 
 class ArtefactCacheError(RuntimeError):
@@ -459,7 +509,7 @@ class ArtefactCache:
                 shutil.move(str(source), str(target))
             else:
                 counted = _Counter()
-                shutil.copytree(source, target, copy_function=counted)
+                _copytree_parallel(source, target, counted)
                 size = counted.total
         else:
             files = [Path(f) for f in source]
