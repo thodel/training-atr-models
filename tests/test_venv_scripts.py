@@ -78,3 +78,15 @@ def test_the_unit_keeps_detached_runs_alive():
     assert "PYTHONPATH=%h/Repo/training-atr-models/src" in unit
     assert "HF_HOME" not in [line.split("=")[0].replace("Environment=", "")
                              for line in unit.splitlines() if line.startswith("Environment=")]
+
+
+def test_the_tf5_venv_can_be_built_and_is_pinned_to_the_image():
+    """#162: the A40 half has to run the H100 half's stack (vlm-train-tf5.sif)."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "scripts" / "make_venvs.sh").read_text(encoding="utf-8")
+    assert "vlm-train-tf5" in script
+    pins = (root / "engines" / "vlm_train_svc" / "tf5-pins.txt").read_text(encoding="utf-8")
+    for pin in ("transformers==5.17.0", "peft==0.20.0", "accelerate==1.15.0",
+                "bitsandbytes==0.50.2"):
+        assert pin in pins

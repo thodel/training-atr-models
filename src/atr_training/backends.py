@@ -27,7 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["UnknownBackend", "Backend", "BACKENDS", "backend_for", "runner_python"]
+__all__ = ["UnknownBackend", "Backend", "BACKENDS", "backend_for", "runner_python",
+           "venv_for", "TF5_VENV", "needs_transformers_5"]
 
 
 class UnknownBackend(ValueError):
@@ -87,12 +88,47 @@ def backend_for(engine: str) -> Backend:
         ) from None
 
 
-def runner_python(engine: str, venvs_root: str | Path) -> Path:
-    """Interpreter that runs ``engine``'s jobs.
+#: The VLM venv for bases that transformers 4.x cannot load. Qwen3.5 folded vision
+#: into the base models and reports ``model_type: qwen3_5``; the 4.x line ended at
+#: 4.57.6 before it shipped (ubelix/vlm-train-tf5.def). UBELIX has had a second
+#: image for that since 10.09.2026; asteraix had only ``vlm-train``, so a Qwen3.5
+#: job here died in its train stage after a 1 h 40 prepare
+#: (20261014T160430Z-throughput-qwen35-4b-a40, #162). A second venv rather than an
+#: upgrade, for the reason the image gives: the Qwen3-VL runs keep the stack they
+#: were measured on, and the two differ in exactly one pin.
+TF5_VENV = "vlm-train-tf5"
+_TF5_FAMILIES = ("qwen3.5-", "qwen3.8-")
+
+
+def needs_transformers_5(base_model: str | None) -> bool:
+    """Is ``base_model`` a hub id of the ``qwen3_5`` family?
+
+    Matched on the repo name, case-insensitively: ``Qwen/Qwen3.5-4B``,
+    ``Qwen/Qwen3.8-27B``. A Qwen3-VL base, a local path and None are not.
+    """
+    if not base_model:
+        return False
+    name = str(base_model).rsplit("/", 1)[-1].lower()
+    return name.startswith(_TF5_FAMILIES)
+
+
+def venv_for(engine: str, base_model: str | None = None) -> str:
+    """The venv directory a job of ``engine`` on ``base_model`` runs in."""
+    backend = backend_for(engine)
+    if engine == "vllm" and needs_transformers_5(base_model):
+        return TF5_VENV
+    return backend.venv
+
+
+def runner_python(engine: str, venvs_root: str | Path,
+                  base_model: str | None = None) -> Path:
+    """Interpreter that runs ``engine``'s jobs — on ``base_model``, where the
+    base decides the venv (a ``qwen3_5`` base needs transformers 5).
 
     Existence is checked by the caller at spawn time, not here: a box that only
     ever trains kraken has every right not to have built the VLM venv, and that
     should surface as a clear failure on the job that needs it — not as an import
-    error in the service.
+    error in the service. There is no fallback to ``vlm-train`` for a Qwen3.5
+    base: that is the venv the job would die in.
     """
-    return Path(venvs_root) / backend_for(engine).venv / "bin" / "python"
+    return Path(venvs_root) / venv_for(engine, base_model) / "bin" / "python"

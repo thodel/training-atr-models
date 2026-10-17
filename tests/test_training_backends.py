@@ -61,3 +61,44 @@ def test_every_backend_names_a_venv_and_a_requirements_file():
 def test_an_unknown_engine_lists_the_ones_that_exist():
     with pytest.raises(UnknownBackend, match="Trainable:"):
         backend_for("nonesuch")
+
+
+# ── a qwen3_5 base needs transformers 5 (#162) ──────────────────────────────
+#
+# 20261014T160430Z-throughput-qwen35-4b-a40 ran a 1 h 40 prepare on asteraix and
+# then died in its train stage: "model type `qwen3_5` but Transformers does not
+# recognize this architecture" — vlm-train holds 4.57.6, the last 4.x.
+
+import pytest  # noqa: E402
+
+from atr_training.backends import (  # noqa: E402
+    TF5_VENV, needs_transformers_5, runner_python, venv_for,
+)
+
+
+@pytest.mark.parametrize("base", ["Qwen/Qwen3.5-4B", "Qwen/Qwen3.5-9B", "Qwen/Qwen3.8-27B",
+                                  "qwen/qwen3.5-0.8b"])
+def test_a_qwen3_5_base_runs_in_the_tf5_venv(base):
+    assert needs_transformers_5(base)
+    assert venv_for("vllm", base) == TF5_VENV
+    assert runner_python("vllm", "/r/.venvs", base) == \
+        __import__("pathlib").Path("/r/.venvs/vlm-train-tf5/bin/python")
+
+
+@pytest.mark.parametrize("base", ["Qwen/Qwen3-VL-4B-Instruct", "Qwen/Qwen3-VL-8B-Instruct",
+                                  "allenai/olmOCR-2-7B-1025", None, "",
+                                  "/mnt/share/trained/qwen3vl-german-xix-v2"])
+def test_everything_else_stays_where_it_was_measured(base):
+    assert venv_for("vllm", base) == "vlm-train"
+
+
+def test_only_the_vlm_engine_is_routed():
+    """kraken and trocr have no qwen3_5 base; a name that looks like one must
+    not move them out of their own venv."""
+    assert venv_for("kraken", "Qwen/Qwen3.5-4B") == "kraken-train"
+    assert venv_for("trocr", "Qwen/Qwen3.5-4B") == "trocr-train"
+
+
+def test_without_a_base_the_signature_is_the_old_one():
+    assert runner_python("vllm", "/r/.venvs") == \
+        __import__("pathlib").Path("/r/.venvs/vlm-train/bin/python")

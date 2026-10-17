@@ -288,7 +288,7 @@ class Pipeline(BasePipeline):
 
         try:
             self._run(job, "train",
-                      train_cmd(self.settings.runner_python(self.engine),
+                      train_cmd(self.settings.runner_python(self.engine, job.request.base_model),
                                 params=params, base_model=job.request.base_model,
                                 train_jsonl=train_jsonl, val_jsonl=val_jsonl,
                                 data_root=self._corpus_root(train_jsonl),
@@ -449,7 +449,7 @@ class Pipeline(BasePipeline):
         # ── split evaluation ────────────────────────────────────────────────
         report = paths.data / "eval_report.json"
         self._run(job, "test",
-                  evaluate_cmd(self.settings.runner_python(self.engine),
+                  evaluate_cmd(self.settings.runner_python(self.engine, job.request.base_model),
                                params=params, base_model=job.request.base_model,
                                adapter_dir=adapter,
                                val_jsonl=self._eval_subset(job, val_jsonl),
@@ -479,7 +479,7 @@ class Pipeline(BasePipeline):
             self._refuse_contaminated_benchmark(job, first)
             bm_report = paths.data / "eval_report_benchmark.json"
             self._run(job, "test (benchmark)",
-                      evaluate_cmd(self.settings.runner_python(self.engine),
+                      evaluate_cmd(self.settings.runner_python(self.engine, job.request.base_model),
                                    params=params, base_model=job.request.base_model,
                                    adapter_dir=adapter, val_jsonl=bm_jsonl,
                                    data_root=self._corpus_root(bm_jsonl),

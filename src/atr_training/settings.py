@@ -293,9 +293,9 @@ class TrainerSettings(BaseSettings):
             self.models_config = self.registry_root / CURATED_FILENAME
         return self
 
-    def runner_python(self, engine: str) -> Path:
-        """Interpreter for ``engine``'s detached runner."""
-        return runner_python(engine, self.venvs_root)
+    def runner_python(self, engine: str, base_model: str | None = None) -> Path:
+        """Interpreter for ``engine``'s detached runner, on ``base_model``."""
+        return runner_python(engine, self.venvs_root, base_model)
 
     # ── the promotion gate (#36) ──────────────────────────────────────────
     #: The gate posts one held-out page here. Through the gateway, not straight

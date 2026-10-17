@@ -10,6 +10,13 @@
 # Usage:
 #   bash scripts/make_venvs.sh                     # all three
 #   bash scripts/make_venvs.sh vlm-train           # just one (or several)
+#   bash scripts/make_venvs.sh vlm-train-tf5       # transformers 5, for Qwen3.5/3.8
+#
+# vlm-train-tf5 is NOT in the default set: it is the asteraix twin of
+# ubelix/vlm-train-tf5.sif, built from the same requirements with the
+# transformers cap lifted and the four libraries that decide a step's cost pinned
+# to what that image holds (engines/vlm_train_svc/tf5-pins.txt). The trainer picks
+# it for a qwen3_5 base by itself (backends.venv_for).
 #
 # The SERVICE runs in kraken-train (deploy/systemd/atr-train.service), which is
 # why that venv's requirements carry fastapi and uvicorn as well.
@@ -45,12 +52,13 @@ case "$(stat -f -c %T "${TMPDIR:-/tmp}" 2>/dev/null || echo unknown)" in
 esac
 
 ALL=(kraken-train vlm-train trocr-train)
+KNOWN=("${ALL[@]}" vlm-train-tf5)
 TARGETS=("$@")
 [ ${#TARGETS[@]} -eq 0 ] && TARGETS=("${ALL[@]}")
 for t in "${TARGETS[@]}"; do
-  case " ${ALL[*]} " in
+  case " ${KNOWN[*]} " in
     *" ${t} "*) ;;
-    *) echo "unknown venv '${t}'. Known: ${ALL[*]}" >&2; exit 2 ;;
+    *) echo "unknown venv '${t}'. Known: ${KNOWN[*]}" >&2; exit 2 ;;
   esac
 done
 
@@ -58,6 +66,7 @@ declare -A REQS=(
   [kraken-train]=engines/kraken_train_svc/requirements.txt
   [vlm-train]=engines/vlm_train_svc/requirements.txt
   [trocr-train]=engines/trocr_train_svc/requirements.txt
+  [vlm-train-tf5]=engines/vlm_train_svc/requirements.txt
 )
 
 mkdir -p "${VENVS}"
@@ -75,7 +84,17 @@ for t in "${TARGETS[@]}"; do
   # the build proven on these A40s.
   "${VENVS}/${t}/bin/pip" install torch==2.8.0 torchvision==0.23.0 \
     --index-url https://download.pytorch.org/whl/cu128
-  "${VENVS}/${t}/bin/pip" install -r "${ROOT}/${REQS[${t}]}"
+  if [ "${t}" = vlm-train-tf5 ]; then
+    # The image's recipe: everything but transformers from the repo's pins, then
+    # the 5.x stack the image holds — so a step here costs what it costs there.
+    grep -v '^transformers' "${ROOT}/${REQS[${t}]}" > "${TMPDIR:-/tmp}/vlm-tf5-reqs.txt"
+    "${VENVS}/${t}/bin/pip" install -r "${TMPDIR:-/tmp}/vlm-tf5-reqs.txt" \
+      -c "${ROOT}/engines/vlm_train_svc/tf5-pins.txt"
+    "${VENVS}/${t}/bin/pip" install -c "${ROOT}/engines/vlm_train_svc/tf5-pins.txt" \
+      transformers
+  else
+    "${VENVS}/${t}/bin/pip" install -r "${ROOT}/${REQS[${t}]}"
+  fi
 done
 
 echo "Done: ${TARGETS[*]}"

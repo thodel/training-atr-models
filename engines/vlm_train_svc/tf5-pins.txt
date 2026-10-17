@@ -1,0 +1,13 @@
+# Constraints for .venvs/vlm-train-tf5 (scripts/make_venvs.sh vlm-train-tf5).
+#
+# Read from inside ubelix/vlm-train-tf5.sif on 17.10.2026 (built 10.09.2026):
+#   transformers 5.17.0  peft 0.20.0  torch 2.8.0+cu128  bitsandbytes 0.50.2
+#   accelerate 1.15.0
+# The H100 half of the A40/H100 throughput comparison (#162,
+# 20260925T070224Z-throughput-qwen35-4b) ran in that image, so the A40 half has
+# to run on the same four libraries or the ratio measures a version difference.
+# torch/torchvision come from the cu128 index before this file is read.
+transformers==5.17.0
+peft==0.20.0
+accelerate==1.15.0
+bitsandbytes==0.50.2

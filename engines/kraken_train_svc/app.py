@@ -173,14 +173,15 @@ def _spawn(settings: TrainerSettings, job: TrainJob) -> int:
     trainer subprocess it drives) rather than orphaning the child.
     """
     backend = backend_for(job.request.engine)
-    python = settings.runner_python(job.request.engine)
+    python = settings.runner_python(job.request.engine, job.request.base_model)
     if not python.exists():
         # Better here than as a traceback inside a detached child: a box that only
         # trains kraken has no reason to have built the VLM venv, and the fix is
         # one documented command.
+        venv = python.parents[1].name
         raise PreflightError(
-            f"no interpreter at {python} — the {backend.venv} venv has not been "
-            f"built on this box. Run:  bash scripts/make_venvs.sh {backend.venv}"
+            f"no interpreter at {python} — the {venv} venv has not been "
+            f"built on this box. Run:  bash scripts/make_venvs.sh {venv}"
         )
     cmd = [str(python), "-m", backend.runner_module,
            "--root", str(settings.jobs_root), "--job-id", job.id]
@@ -897,13 +898,14 @@ async def submit(request: TrainRequest, response: Response,
     # Same rule as disk below: a venv that was never built will not build itself
     # while the job sits in the queue, so refuse now with the command that fixes
     # it rather than accepting a job that can only fail at spawn.
-    python = settings.runner_python(request.engine)
+    python = settings.runner_python(request.engine, getattr(request, "base_model", None))
     if not python.exists():
-        backend = backend_for(request.engine)
+        venv = python.parents[1].name
         raise HTTPException(
             status_code=503,
-            detail=(f"the {backend.venv} venv is not built on this box, so {request.engine} "
-                    f"jobs cannot run. Build it:  bash scripts/make_venvs.sh {backend.venv}"),
+            detail=(f"the {venv} venv is not built on this box, so {request.engine} "
+                    f"jobs on {getattr(request, 'base_model', None) or 'this base'} "
+                    f"cannot run. Build it:  bash scripts/make_venvs.sh {venv}"),
         )
     # Disk is checked here because it will not fix itself; VRAM is checked when
     # the scheduler starts the job, because a busy GPU is what the queue is for.
