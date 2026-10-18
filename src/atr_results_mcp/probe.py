@@ -1125,14 +1125,43 @@ def draw(paths: Paths, job_id: str) -> Dict[str, Any]:
     answer = {"job_id": job_id, "draw": own, "heldout": mine, "shared_with": shared}
     if mismatched:
         answer["not_comparable"] = mismatched
-        answer["why"] = (
-            "these share the draw but were trained on a different corpus: "
-            "reserved_pages %r here against %s there. A shared draw is scoring, "
-            "not training (#98)." % (
-                mine["reserved_pages"],
-                ", ".join(sorted({repr(o["heldout"]["reserved_pages"])
-                                  for o in shared if o["id"] in mismatched}))))
+        answer["why"] = _why_not_comparable(mine["reserved_pages"], [
+            o for o in shared if o["id"] in mismatched])
     return answer
+
+
+def _why_not_comparable(mine: Any, others: List[Dict[str, Any]]) -> str:
+    """Why rows that share a draw are still not compared — without overclaiming.
+
+    Only two *positive* counts that differ prove a different corpus: a positive
+    count matched the run's manifest in every case the census could check
+    (#247). ``0`` and ``None`` prove no check at all — a run that adopted a
+    compiled corpus records ``0`` without reserving anything — so against them
+    the records can confirm neither the same corpus nor a different one. The
+    September 27B (``0``) and 9B (``None``) shared a draw and, measured, a
+    corpus; "trained on a different corpus" was the wrong reason to refuse them.
+    """
+    def counted(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+    def values(rows: List[Dict[str, Any]]) -> str:
+        return ", ".join(sorted({repr(o["heldout"]["reserved_pages"]) for o in rows}))
+
+    differ = [o for o in others if counted(mine) and counted(o["heldout"]["reserved_pages"])]
+    unsure = [o for o in others if o not in differ]
+    parts = []
+    if differ:
+        parts.append("%s share the draw but were trained on a different corpus: "
+                     "reserved_pages %r here against %s there."
+                     % (", ".join(o["id"] for o in differ), mine, values(differ)))
+    if unsure:
+        parts.append("%s share the draw, and the records cannot confirm the same "
+                     "corpus: reserved_pages %r here against %s there, and 0 or "
+                     "None proves no check (an adopted corpus records 0 without "
+                     "reserving; docs/HELDOUT_BOUNDARY.md has the measured answer)."
+                     % (", ".join(o["id"] for o in unsure), mine, values(unsure)))
+    parts.append("A shared draw is scoring, not training (#98).")
+    return " ".join(parts)
 
 
 def _heldout_of(record: Dict[str, Any]) -> Dict[str, Any]:

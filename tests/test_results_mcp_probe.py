@@ -1291,6 +1291,42 @@ def test_none_reserved_pages_is_not_zero(cluster):
     assert "20260925T045500Z-befragt-leer" in a["not_comparable"]
 
 
+def test_zero_against_none_is_unconfirmed_not_a_different_corpus(cluster):
+    """Der September-27B (`0`) und der September-9B (`None`) teilen die Ziehung
+    `8686f6ad` — und die Erhebung (#247) hat gemessen, dass sie auf **demselben**
+    Korpus trainiert haben: je 3 091 von 11 448 Seiten heute reserviert. `draw`
+    sagte am 18.10.2026 am laufenden Dienst trotzdem „trained on a different
+    corpus". Vorsichtig genug, aber falsch begruendet: `0` und `None` belegen
+    keine Pruefung (eine Uebernahme schreibt `0`, ohne zu reservieren), also kann
+    der Record die Gleichheit nicht bestaetigen — und den Unterschied auch nicht.
+    """
+    write_job(cluster.scratch, "20260925T045500Z-ladder-27b", cer=0.0955,
+              extra={"progress": {"reserved_pages": 0}})
+    write_job(cluster.scratch, "20260930T211455Z-ladder-9b", cer=0.1213)
+
+    answer = probe.draw(cluster, "20260925T045500Z-ladder-27b")
+
+    assert "20260930T211455Z-ladder-9b" in answer["not_comparable"], "vorsichtig bleibt es"
+    assert "different corpus" not in answer["why"]
+    assert "cannot confirm" in answer["why"]
+    assert "scoring, not training" in answer["why"]
+
+
+def test_two_positive_counts_that_differ_are_a_different_corpus(cluster):
+    """Nur hier darf `draw` es behaupten: beide Records tragen eine Zahl, und eine
+    positive Zahl stimmte in jedem pruefbaren Fall mit dem Manifest (#247)."""
+    write_job(cluster.scratch, "20261013T043436Z-medieval", cer=0.1224,
+              extra={"progress": {"reserved_pages": 3173}})
+    write_job(cluster.scratch, "20260916T115939Z-pages-v5", cer=0.5235,
+              extra={"progress": {"reserved_pages": 3187}})
+
+    answer = probe.draw(cluster, "20261013T043436Z-medieval")
+
+    assert answer["not_comparable"] == ["20260916T115939Z-pages-v5"]
+    assert "different corpus" in answer["why"]
+    assert "cannot confirm" not in answer["why"]
+
+
 def test_results_carries_the_corpus_beside_the_cer(cluster):
     """Die CER ohne `reserved_pages` daneben ist die Zahl, die drei Wochen lang
     falsch gelesen wurde — darum steht sie jetzt in jeder Zeile, und die Notiz
