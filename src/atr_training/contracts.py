@@ -917,12 +917,20 @@ class Progress(BaseModel):
     val_accuracy: float | None = None
     pages_written: int | None = None
     lines_written: int | None = None
-    #: Training lines after the split — what the step-count guard divides by.
+    #: Transcribed lines trained on, after the split and the reservation (#256).
     #: Distinct from ``lines_written``, which counts every transcribed line found,
-    #: evaluation included.
+    #: evaluation included. A statement about the corpus, and **not** what the
+    #: step-count guard divides by — that is ``train_samples`` (#264).
     train_lines: int | None = None
+    #: What one training epoch iterates over, in the run's own unit: a line for
+    #: kraken, TrOCR and ``granularity: line``, a page at ``page``, a block at
+    #: ``block``. The step-count guard (#72) divides by this. The two fields agree
+    #: for a line-level run and differ by ~27× on the medieval page corpus
+    #: (221,523 lines, 8,088 pages). None = not counted, which every record
+    #: written before #264 is.
+    train_samples: int | None = None
     #: What the configuration will actually cost, computed once prepare knows the
-    #: line count (#72).
+    #: sample count (#72), and again from the exact count once compile wrote it.
     steps_per_epoch: int | None = None
     total_steps: int | None = None
     #: VLM backend: training examples built in ``compile`` (one per cropped line,

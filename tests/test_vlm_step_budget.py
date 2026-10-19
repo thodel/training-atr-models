@@ -104,7 +104,7 @@ def test_a_cap_above_the_epochs_changes_nothing():
 def test_the_guard_refuses_a_capped_run_below_the_floor_and_says_so():
     """25,000 steps of epochs would pass; 10 of cap do not, and the reason has
     to name the cap or the reader raises epochs and changes nothing."""
-    verdict = check_convergence("vllm", from_scratch=False, train_lines=405_000,
+    verdict = check_convergence("vllm", from_scratch=False, train_samples=405_000,
                                 effective_batch=16, epochs=1, max_steps=10)
     assert verdict.ok is False
     assert verdict.budget.total_steps == 10
@@ -112,7 +112,7 @@ def test_the_guard_refuses_a_capped_run_below_the_floor_and_says_so():
 
 
 def test_the_xix_rung_passes_the_guard_at_its_real_budget():
-    verdict = check_convergence("vllm", from_scratch=False, train_lines=405_000,
+    verdict = check_convergence("vllm", from_scratch=False, train_samples=405_000,
                                 effective_batch=16, epochs=1, max_steps=3000)
     assert verdict.ok is True
     assert verdict.budget.total_steps == 3000

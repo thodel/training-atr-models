@@ -5,8 +5,8 @@ Since ``2ebebb8`` the reservation corrects ``train_lines`` itself
 that still carries the count from **before** the reservation — and the copy
 that matters is not the job record but the artefact-cache payload: a job that
 adopts a compiled corpus copies ``train_lines`` out of the payload into its own
-record, and the step-count guard (#72) and ``check_convergence`` divide by it.
-The cache key did not change with the fix, so those entries stay adoptable and
+record, and for a line-level run the step-count guard (#72) divides by it
+(page and block runs divide by ``train_samples`` since #264). The cache key did not change with the fix, so those entries stay adoptable and
 hand the old number to every new run that uses them.
 
 The correction is the one the fix makes, made after the fact: the transcribed

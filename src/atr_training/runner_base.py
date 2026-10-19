@@ -47,7 +47,7 @@ from atr_training.contracts import (
     TrainJob,
     utcnow,
 )
-from atr_training.convergence import check_convergence
+from atr_training.convergence import check_convergence, plan_steps
 from atr_training.gpu import Peak, PeakSampler
 from atr_training.heldout import load_heldout
 from atr_training.hf_source import (data_files_for, granularity_files,
@@ -784,26 +784,44 @@ class BasePipeline(ABC):
         return train_manifest, val_manifest
 
     # ── the guard between prepare and the expensive part ────────────────────
-    def _guard_convergence(self, job: TrainJob) -> None:
+    def _train_samples(self, job: TrainJob, train_artifact: Any) -> int | None:
+        """How many samples one training epoch iterates over (#264).
+
+        ``train_artifact`` is the train manifest prepare wrote, or the compiled
+        training set of an adopted artefact. The default is right for every
+        backend that trains on lines — kraken, TrOCR — where a sample *is* a
+        line and ``train_lines`` already counts them. A backend whose sample is
+        something else overrides this; None means "could not count", and the
+        guard then has nothing to judge rather than a number in the wrong unit.
+        """
+        return job.progress.train_lines
+
+    def _guard_convergence(self, job: TrainJob, train_artifact: Any = None) -> None:
         """Refuse a configuration that cannot converge (#72).
 
-        Runs after ``prepare``, which is the first moment the line count exists,
+        Runs after ``prepare``, which is the first moment the sample count exists,
         and before ``compile`` — the issue says "before train", but compile costs
         real time and produces nothing worth having if the run is doomed.
 
-        A missing line count is not a refusal: that would block a job for a reason
-        about us rather than about the configuration.
+        It divides by **samples**, not lines (#264): a page run steps once per
+        batch of pages, and dividing its transcribed lines by the batch recorded
+        19,161 steps an epoch for a run that took 506.
+
+        A missing sample count is not a refusal: that would block a job for a
+        reason about us rather than about the configuration.
         """
         params = job.request.params
+        job.progress.train_samples = self._train_samples(job, train_artifact)
         verdict = check_convergence(
             engine=job.request.engine,
             from_scratch=not job.request.base_model,
-            train_lines=job.progress.train_lines,
+            train_samples=job.progress.train_samples,
             effective_batch=params.effective_batch_size,
             epochs=params.epochs,
             max_steps=getattr(params, "max_steps", None),
         )
         if verdict is None:
+            self.store.save(job)
             return
 
         job.progress.steps_per_epoch = verdict.budget.steps_per_epoch
@@ -825,6 +843,27 @@ class BasePipeline(ABC):
             return
 
         raise StageFailed(verdict.reason)
+
+    def _record_step_budget(self, job: TrainJob) -> None:
+        """Rewrite the planned cost from the count compile actually wrote.
+
+        The guard judged an estimate: before compile, a page that is later
+        dropped for being too long to afford still counts. Compile knows the
+        exact number, and the record should say what the trainer will do — 506
+        steps an epoch, not 507. No second verdict: the decision was made on the
+        estimate, and refusing a run after its corpus is built would only waste
+        the build.
+        """
+        samples = job.progress.train_samples
+        if not samples or job.progress.steps_per_epoch is None:
+            return
+        params = job.request.params
+        budget = plan_steps(samples, params.effective_batch_size, params.epochs,
+                            cap=getattr(params, "max_steps", None))
+        job.progress.steps_per_epoch = budget.steps_per_epoch
+        job.progress.total_steps = budget.total_steps
+        self.store.save(job)
+
     #: How many prepared pages to sample when measuring line geometry. The
     #: statistic is a percentile over thousands of lines, so a couple of hundred
     #: pages is ample and keeps the guard well under a second.
@@ -1735,7 +1774,7 @@ class BasePipeline(ABC):
             if reused is not None:
                 self.store.advance(job, "preparing")
                 self._skip_stage(job, "prepare", job.progress.artefact)
-                self._guard_convergence(job)
+                self._guard_convergence(job, reused[0])
                 self._guard_line_geometry(job)
                 self.store.advance(job, "compiling")
                 self._skip_stage(job, "compile", job.progress.artefact)
@@ -1745,13 +1784,14 @@ class BasePipeline(ABC):
                 with self._stage(job, "prepare"):
                     pages_train, pages_val = self._prepare(job)
 
-                self._guard_convergence(job)
+                self._guard_convergence(job, pages_train)
                 self._guard_line_geometry(job)
 
                 self.store.advance(job, "compiling")
                 with self._stage(job, "compile") as rec:
                     train_artifact, val_artifact = self._compile(
                         job, pages_train, pages_val, rec)
+                self._record_step_budget(job)
 
                 # Before the store, not after. The store is minutes to hours on
                 # a network filesystem, and a job that spends them in `compiling`

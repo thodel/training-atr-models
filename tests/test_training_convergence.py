@@ -48,16 +48,16 @@ def test_a_qlora_adapter_is_judged_on_its_own_scale():
 
 # ── the verdicts, against the recorded runs ─────────────────────────────────
 def test_the_run_that_produced_cer_098_is_refused():
-    verdict = check_convergence("kraken", from_scratch=True, train_lines=1898,
+    verdict = check_convergence("kraken", from_scratch=True, train_samples=1898,
                                 effective_batch=256, epochs=50)
     assert verdict.ok is False
-    assert "1,898 training lines" in verdict.reason
+    assert "1,898 training samples" in verdict.reason
     assert "8 step(s) per epoch" in verdict.reason
     assert str(FLOOR_FROM_SCRATCH) in verdict.reason.replace(",", "")
 
 
 def test_the_refusal_names_all_three_ways_out():
-    verdict = check_convergence("kraken", from_scratch=True, train_lines=1898,
+    verdict = check_convergence("kraken", from_scratch=True, train_samples=1898,
                                 effective_batch=256, epochs=50)
     assert "base_model" in verdict.reason          # fine-tune instead
     assert "lower batch_size to ~" in verdict.reason
@@ -67,7 +67,7 @@ def test_the_refusal_names_all_three_ways_out():
 
 def test_the_suggested_batch_actually_clears_the_floor():
     """An actionable remedy has to be one that works, not merely a smaller number."""
-    verdict = check_convergence("kraken", from_scratch=True, train_lines=1898,
+    verdict = check_convergence("kraken", from_scratch=True, train_samples=1898,
                                 effective_batch=256, epochs=50)
     suggested = int(verdict.reason.split("lower batch_size to ~")[1].split(" ")[0])
     assert plan_steps(1898, suggested, 50).total_steps >= verdict.floor
@@ -76,21 +76,21 @@ def test_the_suggested_batch_actually_clears_the_floor():
 def test_the_vlm_smoke_run_is_allowed():
     """38 steps, and it worked — the guard must not refuse the one run that has
     produced a real improvement on this box."""
-    verdict = check_convergence("vllm", from_scratch=False, train_lines=783,
+    verdict = check_convergence("vllm", from_scratch=False, train_samples=783,
                                 effective_batch=16, epochs=1)
     assert verdict.ok is True
 
 
 def test_a_well_configured_finetune_passes():
     """The runbook's corrected example: Thun at batch 16, fine-tuned."""
-    verdict = check_convergence("kraken", from_scratch=False, train_lines=1898,
+    verdict = check_convergence("kraken", from_scratch=False, train_samples=1898,
                                 effective_batch=16, epochs=50)
     assert verdict.ok is True
     assert verdict.budget.total_steps > 5000
 
 
 def test_the_same_config_from_scratch_is_still_refused_at_a_bigger_batch():
-    verdict = check_convergence("kraken", from_scratch=True, train_lines=1898,
+    verdict = check_convergence("kraken", from_scratch=True, train_samples=1898,
                                 effective_batch=64, epochs=50)
     assert verdict.ok is False          # 1,500 steps, still under the 2,000 floor
 
@@ -98,7 +98,7 @@ def test_the_same_config_from_scratch_is_still_refused_at_a_bigger_batch():
 def test_a_large_corpus_passes_at_the_documented_defaults():
     """The defaults are correct for the corpus they were written against; the
     guard must not condemn them."""
-    verdict = check_convergence("kraken", from_scratch=True, train_lines=18_000_000,
+    verdict = check_convergence("kraken", from_scratch=True, train_samples=18_000_000,
                                 effective_batch=256, epochs=50)
     assert verdict.ok is True
 

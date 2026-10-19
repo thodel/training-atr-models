@@ -1206,3 +1206,83 @@ def test_the_split_evaluation_still_happened_before_the_refusal(store, settings)
     run_pipeline(store, settings, source, runner, _benchmark_request())
 
     assert len([c for c in runner.commands if runner._kind(c) == "test"]) == 1
+
+
+
+# ── the step-count guard divides by samples, not lines (#264) ────────────────
+# Every page FakeSource writes carries two transcribed lines, so a corpus of four
+# training pages is eight `train_lines` and four page samples. The guard used to
+# divide the eight; the trainer steps over the four. On the medieval page corpus
+# that was 19,161 recorded steps an epoch against the 506 the trainer took.
+def _sampled_run(store, settings, source=None, *, granularity="page", force=True,
+                 batch_size=1, epochs=1):
+    params = VlmTrainParams(granularity=granularity, batch_size=batch_size,
+                            accumulate_grad_batches=1, epochs=epochs)
+    runner = FakeRunner()
+    job = run_pipeline(store, settings, source or FakeSource({"train": 4, "eval": 2}),
+                       runner, request_with(force=force, params=params))
+    return job, runner
+
+
+def _trained_rows(runner) -> int:
+    """Rows of the train.jsonl the trainer was handed — in the cache, by then."""
+    return sum(1 for _ in read_jsonl(_corpus_of(runner) / "train.jsonl"))
+
+
+def test_a_page_run_is_judged_by_its_pages_not_its_lines(store, settings):
+    """4 pages × 4 epochs at batch 1 is 16 steps, under the VLM floor of 25.
+    Counted in lines it was 32 and went through."""
+    job, runner = _sampled_run(store, settings, force=False, epochs=4)
+
+    assert job.status == "failed"
+    assert "4 training samples" in (job.error or "")
+    assert runner.commands == []                   # refused before train
+    assert job.progress.train_lines == 8           # still lines: the corpus fact
+    assert job.progress.train_samples == 4
+
+
+def test_the_same_corpus_at_line_granularity_still_passes(store, settings):
+    """The counter-test: at `line` a sample is a line, so the eight lines are the
+    eight samples and 32 steps clear the floor exactly as before."""
+    job, runner = _sampled_run(store, settings, granularity="line", force=False, epochs=4)
+
+    assert job.status == "completed", job.error
+    assert job.convergence_override is None
+    assert job.progress.train_samples == _trained_rows(runner) == 8
+
+
+@pytest.mark.parametrize("granularity", ["page", "block"])
+def test_the_recorded_budget_is_what_the_trainer_steps_over(store, settings, granularity):
+    job, runner = _sampled_run(store, settings, granularity=granularity, batch_size=2)
+
+    assert job.status == "completed", job.error
+    assert _trained_rows(runner) == 4              # one sample per page / block
+    assert job.progress.train_samples == 4
+    assert job.progress.steps_per_epoch == 2       # ceil(4 / 2), not ceil(8 / 2)
+    assert job.progress.total_steps == 2
+
+
+def test_the_record_is_rewritten_from_what_compile_kept(store, settings):
+    """The guard counts four pages; compile drops the unaffordable one. The record
+    has to say three — what the trainer will iterate over — not the estimate."""
+    job, runner = _sampled_run(
+        store, settings, FakeSource({"train": 4, "eval": 2}, long_page_chars=32477))
+
+    assert job.status == "completed", job.error
+    assert _trained_rows(runner) == 3
+    assert job.progress.train_samples == 3
+    assert job.progress.steps_per_epoch == 3
+
+
+def test_an_adopted_corpus_is_counted_as_it_stands(store, settings):
+    """Ten of the fifteen affected records adopted their corpus from the cache and
+    copied `train_lines` out of its payload. The adopter counts the compiled
+    `train.jsonl` instead, so it records what the producer recorded."""
+    first, _ = _sampled_run(store, settings)
+    second, runner = _sampled_run(store, settings)
+
+    assert "reused" in (second.progress.artefact or "")
+    assert second.progress.train_lines == 8
+    assert second.progress.train_samples == first.progress.train_samples == 4
+    assert _trained_rows(runner) == 4
+    assert second.progress.steps_per_epoch == first.progress.steps_per_epoch == 4
