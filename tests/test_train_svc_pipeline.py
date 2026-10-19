@@ -815,6 +815,18 @@ class TestConvergenceGuard:
                            request=request_with(force=True))
         assert job.progress.train_lines < job.progress.lines_written
 
+    def test_a_line_trainer_counts_its_samples_in_lines(self, store, settings):
+        """The counter-test to #264: kraken trains on lines, so the sample count
+        the guard divides by is `train_lines` itself and the budget is what it
+        always was."""
+        source = FakeSource({"train": 6, "eval": 2})
+        request = request_with(force=True, params=KrakenTrainParams(batch_size=1, epochs=2))
+        job = run_pipeline(store, settings, source, FakeRunner(), request=request)
+
+        assert job.progress.train_samples == job.progress.train_lines > 0
+        assert job.progress.steps_per_epoch == job.progress.train_lines
+        assert job.progress.total_steps == 2 * job.progress.train_lines
+
 
 # ── chunked prepare → compile → discard (#39) ───────────────────────────────
 class TestChunkedCompile:

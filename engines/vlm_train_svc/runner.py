@@ -53,6 +53,7 @@ from atr_training.vlm_cmd import (
     train_cmd,
 )
 from atr_training.vlm_dataset import (
+    VlmDatasetError,
     drop_long_samples,
     drop_short_samples,
     samples_for,
@@ -76,6 +77,45 @@ class Pipeline(BasePipeline):
     """Executes one VLM QLoRA job."""
 
     engine = "vllm"
+
+    # ── the step-count guard's unit (#264) ──────────────────────────────────
+    def _train_samples(self, job: TrainJob, train_artifact) -> int | None:
+        """A sample is a line only at ``granularity: line``.
+
+        At ``page`` it is a page and at ``block`` a block, and dividing the
+        transcribed lines by the batch instead recorded 19,161 steps an epoch
+        for an olmOCR-2 page run whose trainer took 506. So the samples are
+        counted here, by the **same** function compile builds them with — a
+        count made any other way is a second definition that drifts.
+
+        Before compile this is an estimate by exactly the samples that compile
+        will later drop as too long or too short; :meth:`_compile` writes the
+        exact number. An adopted artefact is compiled already, and its
+        ``train.jsonl`` is counted as it stands.
+        """
+        params = job.request.params
+        if params.granularity == "line":
+            return super()._train_samples(job, train_artifact)
+        if train_artifact is None:
+            return None
+        path = Path(train_artifact)
+        if path.suffix == ".jsonl":
+            with path.open(encoding="utf-8") as rows:
+                return sum(1 for row in rows if row.strip())
+        try:
+            samples = samples_for(read_manifest(path), params.granularity,
+                                  root=self.store.paths(job.id).root,
+                                  block_lines=params.block_lines,
+                                  mix=params.granularity_mix, seed=params.seed)
+        except (OSError, VlmDatasetError) as exc:
+            # Compile reads the same files and will fail with the real reason.
+            # The guard has nothing to judge; a line count in its place would be
+            # a number in the wrong unit, which is what this override exists to
+            # stop.
+            logger.warning("convergence: could not count the {} samples of {} ({})",
+                           params.granularity, path.name, exc)
+            return None
+        return len(samples)
 
     # ── compile: pages → JSONL sample sets ──────────────────────────────────
     def _resume_artifacts(self, job: TrainJob) -> tuple[Path, Path] | None:
@@ -263,6 +303,10 @@ class Pipeline(BasePipeline):
                     "Baseline in its PageXML). There is nothing to train on."
                 )
             logger.info("{}: {} samples -> {}", name, written, jsonl)
+            if name == "train":
+                # Exact, after both filters: what the trainer will iterate over,
+                # and what the step budget is rewritten from (#264).
+                job.progress.train_samples = written
             total += written
             out.append(jsonl)
 

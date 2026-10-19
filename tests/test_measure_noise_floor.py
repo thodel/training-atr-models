@@ -23,7 +23,7 @@ def test_the_epoch_count_comes_from_the_guards_own_formula():
     formula for one quantity is how the first sweep's budget went wrong."""
     from atr_training.convergence import plan_steps
 
-    assert mnf.epochs_for(2000, train_lines=150_000, effective_batch=256) == 4
+    assert mnf.epochs_for(2000, train_samples=150_000, effective_batch=256) == 4
     assert plan_steps(150_000, 256, 4).total_steps >= 2000
 
 

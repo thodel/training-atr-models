@@ -42,6 +42,14 @@ scratch — gets its own, much higher floor.
 
 The floors are judgement calls, not measurements, and are written here rather
 than buried so that raising one is a visible decision.
+
+**What it divides by is samples, not lines** (#264). An optimizer step is a
+batch of whatever the trainer iterates over: a line for kraken and a line-level
+VLM, but a page at ``granularity: page`` and a block at ``block``. The
+olmOCR-2 medieval page run trained on 8,088 pages at effective batch 16 — 506
+steps an epoch — and its record said 19,161, because the runner handed this
+module the page corpus's 306,569 transcribed lines. Nothing here knows which
+unit it is given, so the parameter is named for what it has to be.
 """
 
 from __future__ import annotations
@@ -79,7 +87,8 @@ FLOOR_BY_ENGINE: dict[str, int] = {"vllm": 25}
 class StepBudget:
     """How many optimizer steps a configuration will actually take."""
 
-    train_lines: int
+    #: What one epoch iterates over: lines, pages or blocks, by granularity.
+    train_samples: int
     effective_batch: int
     epochs: int
     #: A step budget that ends the run before the epochs do (``max_steps``,
@@ -88,7 +97,7 @@ class StepBudget:
 
     @property
     def steps_per_epoch(self) -> int:
-        return max(1, math.ceil(self.train_lines / max(1, self.effective_batch)))
+        return max(1, math.ceil(self.train_samples / max(1, self.effective_batch)))
 
     @property
     def total_steps(self) -> int:
@@ -102,7 +111,7 @@ class StepBudget:
         few steps".
         """
         wanted_steps_per_epoch = math.ceil(floor / max(1, self.epochs))
-        return max(1, self.train_lines // max(1, wanted_steps_per_epoch))
+        return max(1, self.train_samples // max(1, wanted_steps_per_epoch))
 
 
 @dataclass(frozen=True)
@@ -113,13 +122,13 @@ class ConvergenceVerdict:
     reason: str = ""
 
 
-def plan_steps(train_lines: int, effective_batch: int, epochs: int,
+def plan_steps(train_samples: int, effective_batch: int, epochs: int,
                cap: int | None = None) -> StepBudget:
-    return StepBudget(train_lines=train_lines, effective_batch=effective_batch,
+    return StepBudget(train_samples=train_samples, effective_batch=effective_batch,
                       epochs=epochs, cap=cap)
 
 
-def epochs_for(steps: int, train_lines: int, effective_batch: int) -> int:
+def epochs_for(steps: int, train_samples: int, effective_batch: int) -> int:
     """The smallest epoch count that buys at least ``steps`` optimizer steps.
 
     ``ketos`` is told epochs; a sweep budgets in steps, because an epoch budget
@@ -131,9 +140,9 @@ def epochs_for(steps: int, train_lines: int, effective_batch: int) -> int:
     """
     if steps < 1:
         raise ValueError(f"a step budget must be at least 1, got {steps}")
-    if train_lines < 1:
-        raise ValueError(f"cannot size a budget against {train_lines} training lines")
-    per_epoch = plan_steps(train_lines, effective_batch, 1).steps_per_epoch
+    if train_samples < 1:
+        raise ValueError(f"cannot size a budget against {train_samples} training samples")
+    per_epoch = plan_steps(train_samples, effective_batch, 1).steps_per_epoch
     return max(1, math.ceil(steps / per_epoch))
 
 
@@ -147,21 +156,21 @@ def floor_for(engine: str, from_scratch: bool) -> int:
 def check_convergence(
     engine: str,
     from_scratch: bool,
-    train_lines: int | None,
+    train_samples: int | None,
     effective_batch: int,
     epochs: int,
     max_steps: int | None = None,
 ) -> ConvergenceVerdict | None:
     """Judge a configuration. ``None`` when there is nothing to judge.
 
-    A missing line count is not a failure: it means ``prepare`` reported no
+    A missing sample count is not a failure: it means ``prepare`` reported no
     number, and refusing on an absence would block runs for a reason that is
     about us rather than about the configuration.
     """
-    if not train_lines or train_lines < 1:
+    if not train_samples or train_samples < 1:
         return None
 
-    budget = plan_steps(train_lines, effective_batch, epochs, cap=max_steps)
+    budget = plan_steps(train_samples, effective_batch, epochs, cap=max_steps)
     floor = floor_for(engine, from_scratch)
     if budget.total_steps >= floor:
         return ConvergenceVerdict(True, budget, floor)
@@ -178,13 +187,13 @@ def check_convergence(
     return ConvergenceVerdict(
         False, budget, floor,
         reason=(
-            f"{budget.train_lines:,} training lines at effective batch "
+            f"{budget.train_samples:,} training samples at effective batch "
             f"{budget.effective_batch} is {budget.steps_per_epoch} step(s) per epoch; "
             f"over {budget.epochs} epochs that is {budget.total_steps:,} optimizer "
             f"steps, {start}, against a floor of {floor:,}. A run this short does not "
             f"converge — it was 400 steps that produced CER 0.98 on the Thun set "
             f"(see serving-atr-inference/docs/TRAINING_PLAN.md §9a). Either {remedy}, lower batch_size to "
-            f"~{suggested_batch} (≈{plan_steps(budget.train_lines, suggested_batch, budget.epochs).total_steps:,} "
+            f"~{suggested_batch} (≈{plan_steps(budget.train_samples, suggested_batch, budget.epochs).total_steps:,} "
             f"steps), or raise epochs to ~{needed_epochs}. Submit with "
             f'"force": true to run it anyway.'
         ),
