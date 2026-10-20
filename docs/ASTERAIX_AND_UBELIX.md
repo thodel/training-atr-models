@@ -191,7 +191,10 @@ moved to `hf_hub/hub/` as well, and the old form held 21 entries again: 8 were
 moved into `hub/` (two LightOnOCR repos, bytellama, yolov9, swin and the first
 page model), 13 were duplicates of what `hub/` already had or stubs of a few
 KB — eight dataset directories with no download in them, written by a host
-that still links to the old level; tei and lassberg are the candidates. The
+that linked to the old level. Which one is not settled: tei is ruled out
+(checked 20.10.2026: no symlink, no HF variable, its downloads stay in a local
+cache), so it was idhefix before 15.10. or asteraix before 11.10. There is no
+fourth host; `lassberg` is the `lassberg/vlm_training` project. The
 duplicates were deleted, and with them, through a mistake in the cleanup
 command, the only full copy of the `qwen3.5-4b-german-xix-v1` adapter (325
 MB); it is a private Hub repo and the next merge fetches it again. The serving
