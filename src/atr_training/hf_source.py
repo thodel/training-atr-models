@@ -514,7 +514,7 @@ def hub_cache_dir(hf_repo: str, hf_home=None):
     ``_repo_cache_dir`` — "same name = same dataset" is answered by the presence
     of that directory. We follow it rather than inventing a parallel copy: on
     asteraix ``~/.cache/huggingface/hub`` is a symlink to
-    ``/mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub``, so a dataset another
+    ``/mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub/hub``, so a dataset another
     project already pulled is simply there.
     """
     if not hf_repo or hf_repo.strip() != hf_repo or hf_repo.count("/") > 1:

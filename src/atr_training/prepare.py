@@ -150,7 +150,7 @@ class HFPageSource:
 
     Same convention as ``lassberg/vlm_training/src/data_prep.py``: the cache lives
     at ``~/.cache/huggingface``, whose ``hub/`` is a symlink to
-    ``/mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub`` on asteraix. Nothing is
+    ``/mnt/wbkolleg_dh_1/Textrecognition_Training/hf_hub/hub`` on asteraix. Nothing is
     overridden here, so a dataset another project already pulled is reused, and
     what we pull is reused by them — "same name = same dataset" is answered by
     ``hub/datasets--owner--name`` existing, exactly as ``_repo_cache_dir`` checks
