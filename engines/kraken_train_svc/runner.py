@@ -45,6 +45,7 @@ from atr_training.heldout import load_heldout
 from atr_training.prepare import materialize, transcribed_lines_of
 from atr_training.promote import PromotionResult, held_out_page, http_recognizer, promote
 from atr_training.registration import RegistrationError, set_enabled, weights_mib
+from atr_training.weights_digest import WeightsUnreadable, digest_weights
 from atr_training.runner_base import (
     BasePipeline,
     Cancelled,
@@ -688,12 +689,21 @@ class Pipeline(BasePipeline):
         )
         if not verdict.promoted:
             return verdict
+        # The gate just proved *these* bytes servable, and this is the last
+        # moment they are in hand: the next rung overwrites them, and #200's
+        # incident was two readings nobody could tell apart afterwards. So the
+        # digest is measured here and written in the same rewrite as
+        # ``enabled`` (#259). Unreadable weights write no digest, and the
+        # promotion stands: a missing field means "not measured", and the gate
+        # has already shown the gateway can serve the file.
+        weights_digest = self._digest_weights(model_path)
         # The model served, but it is advertised only once its file says so. A
         # rewrite that fails is reported as "not promoted", never raised: the
         # gate never fails a run (runner_base._finish), and the record must not
         # claim a promotion the gateway cannot see.
         try:
-            flipped = set_enabled(self.settings.registry_root, model_id, True)
+            flipped = set_enabled(self.settings.registry_root, model_id, True,
+                                  weights_digest=weights_digest)
         except RegistrationError as exc:
             return PromotionResult(
                 False, f"the gate passed, but enabling the registration failed: {exc}",
@@ -703,8 +713,25 @@ class Pipeline(BasePipeline):
                 False, f"the gate passed, but {model_id} has no registration under "
                        f"{self.settings.registry_root} to enable any more",
                 sample=verdict.sample)
-        logger.info("{} promoted: {!r}", model_id, verdict.sample)
+        logger.info("{} promoted: {!r} (weights {})", model_id, verdict.sample,
+                    weights_digest.short() if weights_digest else "not measured")
         return verdict
+
+    def _digest_weights(self, model_path: Path):
+        """The digest of what was just registered, or None with the reason logged.
+
+        None is "not measured", and the registration then carries no field —
+        never an empty digest, which would validate as a hash of nothing on
+        neither side. ``host`` is this trainer's identity, not the hostname:
+        the same bytes under the share must read the same from asteraix and
+        from a UBELIX node.
+        """
+        try:
+            return digest_weights(model_path, host=self.settings.host_id)
+        except (WeightsUnreadable, OSError) as exc:
+            logger.warning("{}: weights not digested, the registration carries none: {}",
+                           model_path, exc)
+            return None
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - process entry point

@@ -478,6 +478,76 @@ def test_a_passed_gate_enables_the_registration(store, settings, monkeypatch):
     assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is True
 
 
+def test_a_passed_gate_records_the_digest_of_the_weights_it_served(
+        store, settings, monkeypatch):
+    """#259: the gate is the last moment the weights are in hand, so the file
+    that says `enabled: true` also says which bytes that was proven for — the
+    digest of the registered copy, with the trainer's host_id and a time."""
+    from atr_training.weights_digest import digest_weights
+
+    _gate_answers(monkeypatch)
+    settings = settings.model_copy(update={"gateway_api_key": "k", "host_id": "asteraix"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.promoted is True, job.promotion_reason
+    written = read_registration(settings.registry_root, "kraken-thun-missiven-v1")
+    assert written.weights_digest is not None, "the gate wrote no digest"
+    assert written.weights_digest.sha256 == digest_weights(written.local_path).sha256, (
+        "the digest is not the registered weights'")
+    assert written.weights_digest.host == "asteraix"
+    assert written.weights_digest.measured_at
+    assert [f.name for f in written.weights_digest.files] == ["kraken-thun-missiven-v1.mlmodel"]
+
+
+def test_weights_rewritten_between_two_promotions_get_two_digests(
+        store, settings, monkeypatch):
+    """The incident behind serving#200: a finetune rewritten under the same id.
+    Two gates over two byte sets must leave two different digests."""
+    import kraken_train_svc.runner as kraken_runner
+
+    settings = _promoted_once(store, settings, monkeypatch)
+    first = read_registration(settings.registry_root, "kraken-thun-missiven-v1").weights_digest
+    real_copy = kraken_runner.shutil.copyfile
+
+    def other_bytes(src, dst):
+        real_copy(src, dst)
+        Path(dst).write_bytes(b"WEIGHTS, retrained")
+
+    monkeypatch.setattr(kraken_runner.shutil, "copyfile", other_bytes)
+    second_job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert second_job.promoted is True, second_job.promotion_reason
+    second = read_registration(settings.registry_root, "kraken-thun-missiven-v1").weights_digest
+    assert first is not None and second is not None
+    assert first.sha256 != second.sha256
+
+
+def test_a_gate_over_unreadable_weights_writes_no_digest_and_still_promotes(
+        store, settings, monkeypatch):
+    """Absent means "not measured". The gate has shown the gateway serves the
+    file; an unmeasurable digest is not a reason to hide a model that works,
+    and an empty digest would validate as a hash of nothing on neither side."""
+    import kraken_train_svc.runner as kraken_runner
+    from atr_training.weights_digest import WeightsUnreadable
+
+    _gate_answers(monkeypatch)
+
+    def nothing_here(path, **kw):
+        raise WeightsUnreadable(f"{path} holds no weights")
+
+    monkeypatch.setattr(kraken_runner, "digest_weights", nothing_here)
+    settings = settings.model_copy(update={"gateway_api_key": "k"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert job.promoted is True, job.promotion_reason
+    written = read_registration(settings.registry_root, "kraken-thun-missiven-v1")
+    assert written.enabled is True
+    assert written.weights_digest is None
+    raw = registration_path(settings.registry_root, "kraken-thun-missiven-v1").read_text()
+    assert "weights_digest" not in raw
+
+
 def test_a_gate_that_cannot_rewrite_the_file_does_not_claim_a_promotion(
         store, settings, monkeypatch):
     """The model served, but the gateway advertises what the file says. A
@@ -488,7 +558,7 @@ def test_a_gate_that_cannot_rewrite_the_file_does_not_claim_a_promotion(
 
     _gate_answers(monkeypatch)
 
-    def share_gone(root, model_id, enabled=True):
+    def share_gone(root, model_id, enabled=True, **kw):
         raise RegistrationError(registration_path(root, model_id), "Host is down")
 
     monkeypatch.setattr(kraken_runner, "set_enabled", share_gone)
@@ -508,9 +578,9 @@ def test_a_gate_whose_registration_vanished_does_not_claim_a_promotion(
     _gate_answers(monkeypatch)
     real = kraken_runner.set_enabled
 
-    def withdrawn_first(root, model_id, enabled=True):
+    def withdrawn_first(root, model_id, enabled=True, **kw):
         registration_path(root, model_id).unlink()
-        return real(root, model_id, enabled)
+        return real(root, model_id, enabled, **kw)
 
     monkeypatch.setattr(kraken_runner, "set_enabled", withdrawn_first)
     settings = settings.model_copy(update={"gateway_api_key": "k"})
@@ -1023,9 +1093,9 @@ def _count_enable_writes(monkeypatch) -> list[tuple]:
     import kraken_train_svc.runner as kraken_runner
     writes: list[tuple] = []
 
-    def recording(root, model_id, enabled=True):
+    def recording(root, model_id, enabled=True, **kw):
         writes.append((model_id, enabled))
-        return registration.set_enabled(root, model_id, enabled)
+        return registration.set_enabled(root, model_id, enabled, **kw)
 
     monkeypatch.setattr(runner_base, "set_enabled", recording)
     monkeypatch.setattr(kraken_runner, "set_enabled", recording)

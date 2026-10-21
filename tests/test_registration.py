@@ -27,6 +27,7 @@ import yaml
 from atr_training import registration
 from atr_training.contracts import DatasetSpec, Metrics, TrainRequest
 from atr_training.jobstore import JobStore
+from atr_training.weights_digest import WeightFile, combined_digest, digest_weights
 from atr_training.registration import (
     Registration,
     RegistrationError,
@@ -62,6 +63,18 @@ EVERY_FIELD = {
     #: tests that use EVERY_FIELD register a vllm model.
     "vllm_venv": "vllm-next", "max_num_seqs": 4,
     "training_datasets": ["10.5281/zenodo.1234567"],
+    "description": "Qwen3-VL fine-tuned on Thun missives",
+    #: Measured on the gateway (serving#130); a runner never writes it.
+    "vram_measured": {"total_mib": 9000, "weights_mib": 8000, "host": "srv",
+                      "measured_at": "2026-10-21T06:00:00+00:00", "gpu": 1},
+    #: An honest one: the combined value follows from its file list, as the
+    #: validator demands on both sides (#259).
+    "weights_digest": {
+        "sha256": combined_digest([WeightFile(name="model.safetensors", sha256="a" * 64,
+                                              size_bytes=4)]),
+        "files": [{"name": "model.safetensors", "sha256": "a" * 64, "size_bytes": 4}],
+        "host": "asteraix", "measured_at": "2026-10-21T06:00:00+00:00",
+    },
 }
 
 
@@ -595,12 +608,18 @@ def test_a_registration_with_a_venv_can_be_written_and_then_enabled(root: Path):
 
 
 def test_the_pinned_field_list_is_the_one_the_gateway_has_today():
-    """Both sides at 22 fields, and the fixture says which commit it was copied
-    from — the failure mode this pin exists for is two stale copies agreeing."""
+    """Both sides at 25 fields, and the fixture says which commit it was copied
+    from — the failure mode this pin exists for is two stale copies agreeing.
+
+    The copy from 21.09. had 22 and was a month behind when #259 refreshed it:
+    ``description`` (serving#101) and ``vram_measured`` (serving#130) had
+    reached the gateway without this repo noticing, exactly the drift the pin
+    is for — nothing here compares a fixture against the gateway, only against
+    :class:`Registration`."""
     fields = gateway_fields()
-    assert len(fields) == 22
+    assert len(fields) == 25
     assert fields[fields.index("prompt") + 1:fields.index("training_datasets")] == [
-        "vllm_venv", "max_num_seqs"]
+        "vllm_venv", "max_num_seqs", "weights_digest"]
 
 
 # ── vram_mb: a number or nothing, never 0 (#225) ────────────────────────────
@@ -898,3 +917,63 @@ def test_the_size_weights_command_reports_a_skipped_file_in_its_exit_code(root, 
 def test_write_without_size_weights_is_refused(root):
     with pytest.raises(SystemExit):
         registration.main(["--root", str(root), "--write"])
+
+
+# ── the weights digest the gate writes (#259) ───────────────────────────────
+def test_the_gate_writes_the_digest_in_the_same_rewrite_as_enabled(root, tmp_path):
+    weights = tmp_path / "kraken-a-v1.mlmodel"
+    weights.write_bytes(b"the bytes the gate served")
+    write_registration(root, spec("kraken-a-v1", local_path=str(weights)))
+    digest = digest_weights(weights, host="asteraix")
+
+    assert set_enabled(root, "kraken-a-v1", True, weights_digest=digest) is True
+
+    written = read_registration(root, "kraken-a-v1")
+    assert written.enabled is True
+    assert written.weights_digest is not None
+    assert written.weights_digest.sha256 == digest.sha256
+    assert written.weights_digest.host == "asteraix"
+    assert [f.name for f in written.weights_digest.files] == ["kraken-a-v1.mlmodel"]
+    assert gateway_problems(registration_path(root, "kraken-a-v1")) == []
+
+
+def test_disabling_keeps_the_digest_of_the_weights_that_were_served(root, tmp_path):
+    """Demotion (a retrain replacing the weights) does not forget what the
+    earlier weights were; the gate's next rewrite replaces the digest."""
+    weights = tmp_path / "w.mlmodel"
+    weights.write_bytes(b"v1")
+    write_registration(root, spec("kraken-a-v1", local_path=str(weights)))
+    set_enabled(root, "kraken-a-v1", True, weights_digest=digest_weights(weights, host="h"))
+
+    set_enabled(root, "kraken-a-v1", False)
+
+    kept = read_registration(root, "kraken-a-v1")
+    assert kept.enabled is False and kept.weights_digest is not None
+
+
+def test_a_digest_that_does_not_follow_from_its_files_is_refused_before_writing(root):
+    """A hand-edited value is worse than none: the gateway refuses to load it,
+    so this side refuses to write it — neither the file nor trained/ appears."""
+    dishonest = {"sha256": "0" * 64,
+                 "files": [{"name": "m.mlmodel", "sha256": "a" * 64, "size_bytes": 1}],
+                 "host": "h", "measured_at": "2026-10-21T06:00:00+00:00"}
+
+    with pytest.raises(RegistrationError, match="does not follow"):
+        write_registration(root, spec("kraken-a-v1", weights_digest=dishonest))
+    assert not trained_dir(root).exists()
+
+
+def test_a_digest_without_provenance_is_refused_before_writing(root):
+    files = [WeightFile(name="m.mlmodel", sha256="a" * 64, size_bytes=1)]
+    anonymous = {"sha256": combined_digest(files),
+                 "files": [f.model_dump() for f in files]}
+
+    with pytest.raises(RegistrationError, match="host|measured_at"):
+        write_registration(root, spec("kraken-a-v1", weights_digest=anonymous))
+
+
+def test_no_digest_is_no_field_not_an_empty_one(root):
+    """Three-valued: absent means nobody measured. ``exclude_none`` keeps the
+    key out of the file, so the gateway's own default applies."""
+    path = write_registration(root, spec("kraken-a-v1"))
+    assert "weights_digest" not in yaml.safe_load(path.read_text(encoding="utf-8"))

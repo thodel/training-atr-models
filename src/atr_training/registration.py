@@ -61,6 +61,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from atr_training.contracts import MODEL_ID_RE
+from atr_training.weights_digest import WeightsDigest
 
 __all__ = [
     "TRAINED_DIRNAME",
@@ -68,6 +69,7 @@ __all__ = [
     "Registration",
     "RegistrationError",
     "Sizing",
+    "VramMeasurement",
     "is_registration_name",
     "manual_registration",
     "read_registration",
@@ -131,11 +133,33 @@ class RegistrationError(RuntimeError):
         self.reason = reason
 
 
+class VramMeasurement(BaseModel):
+    """The gateway's ``VramMeasurement`` (serving#130), field for field.
+
+    Never written by a runner: it is what ``scripts/measure_vram.py`` on the
+    gateway records against a card. It is here so a registration an operator
+    has measured by hand is one ``set_enabled`` can still rewrite — the same
+    reason ``max_pixels`` is here (see :class:`Registration`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_mib: int
+    weights_mib: int | None = None
+    kv_cache_mib: int | None = None
+    max_model_len: int | None = None
+    gpu_memory_utilization: float | None = None
+    host: str
+    measured_at: str
+    gpu: int | None = None
+    note: str | None = None
+
+
 class Registration(BaseModel):
     """One trained model, as the gateway's ``ModelSpec`` reads it.
 
     The field names, types and defaults are the gateway's (``atr_serving/
-    registry.py`` on serving-atr-inference main at 4158bcf, 16.09.2026). Unknown
+    registry.py`` on serving-atr-inference main at 567c125, 21.10.2026). Unknown
     fields are **refused**, the opposite of
     :class:`~atr_training.shared_registry.BaseEntry`: the reader here ignores
     what it does not need, but a writer that emitted a field the gateway does not
@@ -156,6 +180,9 @@ class Registration(BaseModel):
 
     id: str
     engine: Literal["vllm", "trocr", "kraken", "party"]
+    #: One line naming the weights, for ``/models`` (serving#101). Written by
+    #: hand or from a Zenodo title there; no runner here invents one.
+    description: str | None = None
     hf_repo: str | None = None
     zenodo_id: str | None = None
     local_path: str | None = None
@@ -176,6 +203,8 @@ class Registration(BaseModel):
     #: that legacy and becomes None; the writer omits None (``exclude_none``),
     #: and the gateway's own default takes over, as it did for the 0.
     vram_mb: int | None = Field(default=None, gt=0)
+    #: The measurement behind ``vram_mb`` when the gateway took one (serving#130).
+    vram_measured: VramMeasurement | None = None
     max_new_tokens: int | None = None
     #: Pixels one image may carry into the model; None = the level's default on
     #: the gateway. The VLM runner writes the budget the job trained at, because
@@ -191,6 +220,14 @@ class Registration(BaseModel):
     vllm_venv: str | None = None
     #: ``--max-num-seqs`` for that launch: how many sequences the server batches.
     max_num_seqs: int | None = Field(default=None, ge=1)
+    #: The weights' identity (#259, serving#200): sha256 over the hashed files'
+    #: lines, with ``host`` and ``measured_at``. Measured at the promotion gate
+    #: on the file the gate just proved servable, and written in the same
+    #: rewrite as ``enabled: true`` (:func:`set_enabled`). Absent means nobody
+    #: measured — never "unversioned". The gateway recomputes it from ``files``
+    #: on load and refuses one that does not follow, as :class:`WeightsDigest`
+    #: does here first.
+    weights_digest: WeightsDigest | None = None
     training_datasets: list[str] = Field(default_factory=list)
 
     @field_validator("vram_mb", mode="before")
@@ -368,21 +405,30 @@ def _load(path: Path) -> dict[str, Any] | None:
     return raw
 
 
-def set_enabled(root: str | Path, model_id: str, enabled: bool = True) -> bool:
+def set_enabled(root: str | Path, model_id: str, enabled: bool = True, *,
+                weights_digest: WeightsDigest | None = None) -> bool:
     """Rewrite ``enabled`` in one registration. False if ``model_id`` has none.
 
-    The only thing the promotion gate is allowed to write: it proves a model can
-    be served, so it may advertise that model and nothing else. Only this one
-    file is rewritten — every other registration is left byte for byte, and so
-    is every other field of this one (read as it is, not rebuilt from defaults).
+    What the promotion gate is allowed to write, and nothing else: it proves a
+    model can be served, so it may advertise that model — and, since #259, say
+    which bytes it served, the *weights_digest* it measured on the way. One
+    rewrite carries both, so the file never says "enabled" with the digest of
+    an earlier promotion beside it. Only this one file is rewritten — every
+    other registration is left byte for byte, and so is every other field of
+    this one (read as it is, not rebuilt from defaults). A digest already in
+    the file is kept when none is passed: disabling a model does not forget
+    what its weights were.
     """
     path = registration_path(root, model_id)
     raw = _load(path)
     if raw is None:
         return False
     raw["enabled"] = enabled
+    if weights_digest is not None:
+        raw["weights_digest"] = weights_digest.model_dump(mode="json", exclude_none=True)
     _replace_atomically(path, _document(_validate(raw, path)))
-    logger.info("{}: enabled is now {}", path, enabled)
+    logger.info("{}: enabled is now {}{}", path, enabled,
+                f", weights {weights_digest.short()}" if weights_digest else "")
     return True
 
 
