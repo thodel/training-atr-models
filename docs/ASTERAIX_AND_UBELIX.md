@@ -366,6 +366,7 @@ Two CERs are comparable only on the same draw, and the draw is a per-job file.
 | `ssh ubelix-direct` | direct to `submit02` | VPN |
 | `GET /train/gpu`, `/train/jobs` on the gateway, the Discord `/atr_gpu` and `/atr_jobs` commands | idhefix, proxied to asteraix | the gateway's key |
 | the results MCP (`atr-results`) | `https://tei.dh.unibe.ch/mcp/atr-results/mcp` → tunnel `127.0.0.1:8013` → the unit on asteraix → `ssh ubelix-direct` with the probe on stdin; reads both job stores from there | the `auth_basic` key in the client's header; **no VPN** (since 11.10.2026, [#214](https://github.com/thodel/training-atr-models/issues/214)) |
+| `ubelix_queue`, `ubelix_job`, `ubelix_record` in the ATR operations MCP (`atr-ops`) | `https://tei.dh.unibe.ch/mcp/atr/mcp` → the `atr-mcp` service on tei → `ssh th19c587@submit02.unibe.ch` with a key whose forced command is `~/bin/atr-mcp-ro` (`squeue`, `sacct -D`, one `job.json` and its stage-log tail; nothing else) | OAuth, so a **claude.ai cloud session** can add it, which `auth_basic` rules out for the results MCP; since 21.10.2026 ([agentic_historian#674](https://github.com/thodel/agentic_historian/issues/674), its `deploy/ubelix-ro/README.md`) |
 
 Two commands answer "where should the next run go" in a minute, both from
 [WHERE_A_RUN_RUNS.md](WHERE_A_RUN_RUNS.md) §6:

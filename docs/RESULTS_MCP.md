@@ -207,6 +207,15 @@ only `python3 - <cmd> <json>` passes, everything else is refused and logged.
 Update on asteraix: `git -C ~/Repo/atr-results-mcp pull --ff-only &&
 systemctl --user restart atr-results-mcp`. Nothing on UBELIX needs updating.
 
+**Not from a claude.ai cloud session.** The connector dialog there speaks OAuth
+only and cannot send the `auth_basic` header, so a cloud session cannot add this
+server. For that case the ATR operations MCP on tei carries three read-only
+tools, `ubelix_queue`, `ubelix_job` and `ubelix_record` (agentic_historian#674,
+since 21.10.2026), with their own key and forced command on UBELIX
+(`~/bin/atr-mcp-ro`). They answer queued, running, preempted and the log tail;
+the wall verdicts, `live`, `finished`, `deadlines` and the share store stay here.
+An OAuth door on this server would make those three redundant.
+
 ## What it does not do
 
 - **asteraix's hand runs.** `scripts/measure_*.py` write hand-named JSON under
