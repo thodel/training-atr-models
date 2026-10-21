@@ -1718,6 +1718,22 @@ class BasePipeline(ABC):
         relocatable as long as it moves whole.
         """
         job = self.store.load(job_id)
+        if job.is_terminal:
+            # A requeue that lands after the run ended (#153). `--requeue` puts a
+            # Slurm job back whenever the node is taken, and that includes the
+            # hours after the runner wrote `completed`: job 16298912 finished
+            # with CER 11.1 % after sixteen attempts, and a seventeenth then
+            # fell through to `advance(job, "preparing")`, threw
+            # IllegalTransition twice (once more from the failure path, which
+            # tried to set `failed`), and `sacct` recorded a week of work as
+            # FAILED. Nothing here is a failure: the record is the result, it is
+            # left byte for byte, and `run_job` exits 0 on it as it would have
+            # on attempt sixteen. Not even the pid is written — a finished
+            # record that names a live process would read as a running job.
+            logger.info("job {} re-entered in terminal state {!r} — nothing to do, the "
+                        "record stands (a requeue after the run ended, #153)",
+                        job.id, job.status)
+            return job
         job.pid = os.getpid()
         job.queued_reason = None
         self.store.save(job)
@@ -1827,6 +1843,15 @@ class BasePipeline(ABC):
             self._release_artefact(job)
             return self.store.advance(job, "cancelled")
         except BaseException as exc:  # noqa: BLE001 — every failure must land on the record
+            if job.is_terminal:
+                # The record was written and *then* something failed (a release
+                # of the artefact cache, a log tail on a vanished share). The
+                # run's outcome is on disk and true; rewriting it as `failed`
+                # would be a lie, and `advance` refuses it anyway (#153). Said
+                # in the log, kept out of the record.
+                logger.exception("job {} ended {!r} and then failed after the fact; "
+                                 "the record stands", job.id, job.status)
+                return job
             stage = job.stage or "prepare"
             logger.exception("job {} failed in {}", job.id, stage)
             self._release_artefact(job)
@@ -1984,5 +2009,7 @@ def run_job(pipeline_cls: type[BasePipeline], description: str,
 
     logger.info("job {} finished: {}", job.id, job.status)
     if args.stop_after:
-        return 0 if job.status == "training" else 1
+        # `completed` too: a prepare attempt requeued onto a record that a GPU
+        # host has since trained to the end found its corpus — and more (#153).
+        return 0 if job.status in ("training", "completed") else 1
     return 0 if job.status == "completed" else 1
