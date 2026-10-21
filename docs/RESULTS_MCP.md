@@ -106,7 +106,10 @@ train: 56577 s + rest 18052 s (tqdm 10321/13704) + test ≈ 420 s + register ≈
   done` (`method: ratio`). After a resume the HF trainer's bar starts at the
   checkpoint's `global_step`: `done` holds earlier attempts' steps, `elapsed`
   only this one, and the ratio comes out too small. tqdm's estimate is from
-  this attempt's rate and is the one to trust.
+  this attempt's rate and is the one to trust. A counter without a tqdm
+  estimate on a resumed attempt (`attempt` > 1) is marked `lower_bound`: the
+  sum is still written out, but a `fits` from it is reported as `at risk`,
+  because a floor cannot prove a fit.
 - **The stages still ahead in the same wall** (`test` and `register` after
   `train`, `compile` after `prepare`) are added from a measured sibling: the
   most recently completed job of the same granularity in the same store, of

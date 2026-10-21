@@ -401,6 +401,44 @@ def test_a_projection_within_fifteen_percent_of_the_wall_is_at_risk():
     assert probe.judge_wall(100, 3600, None)["verdict"] == "unknown"
 
 
+def test_a_ratio_on_a_resumed_attempt_is_a_lower_bound_and_not_a_fit():
+    """#216, the case tqdm does not cover: a counter without `<remaining` after
+    a requeue. `done` holds earlier attempts' steps, `elapsed` this one — the
+    ratio is a floor, and a floor at 40 % of the wall is not a fit."""
+    resumed = {"state": "found", "done": 1300, "total": 1518, "stage": "train"}
+    floor = probe.judge_wall(3000, 10800, resumed, attempt=2)
+    assert floor["verdict"] == "at risk" and floor["lower_bound"] is True
+    assert floor["method"] == "ratio"
+    assert "a lower bound: attempt 2 resumed" in floor["why"]
+    assert "1300/1518 counts earlier attempts' steps" in floor["why"]
+    # The same counter on a first attempt is what it looks like.
+    first = probe.judge_wall(3000, 10800, resumed, attempt=1)
+    assert first["verdict"] == "fits" and first["lower_bound"] is False
+    assert "lower bound" not in first["why"]
+    # A tqdm estimate on a resumed attempt is this attempt's own number: no floor.
+    with_tqdm = probe.judge_wall(3000, 10800, dict(resumed, remaining_s=600), attempt=2)
+    assert with_tqdm["verdict"] == "fits" and with_tqdm["lower_bound"] is False
+    # Over the wall stays over the wall; the floor never softens a verdict.
+    over = probe.judge_wall(9600, 10800, resumed, attempt=2)  # 9600 + 1610 > 10800
+    assert over["verdict"] == "will hit the wall" and over["lower_bound"] is True
+
+
+def test_queue_hands_the_attempt_to_the_wall(cluster):
+    """The attempt number is read from the log for #226; the wall has to see it."""
+    job_dir = write_job(cluster.scratch, "20261009T174425Z-olmocr2-7b-medieval-page-px4m",
+                        granularity="page", status="training", stage="train", cer=None,
+                        draw=None, finished=None)
+    (job_dir / "logs").mkdir()
+    (job_dir / "logs" / "train.log").write_text("1300/1518\n")
+    (cluster.logs / "fedmin1-17488077.out").write_text(
+        "== attempt 1 — job 20261009T174425Z-olmocr2-7b-medieval-page-px4m (training)\n"
+        "== attempt 2 — job 20261009T174425Z-olmocr2-7b-medieval-page-px4m (training)\n")
+    row = {j["slurm_job_id"]: j for j in
+           probe.queue(canned({"squeue": SQUEUE, "sinfo": SINFO}), cluster)["jobs"]}["17488077"]
+    assert row["attempt"] == 2
+    assert row["wall"]["lower_bound"] is True and row["wall"]["verdict"] == "at risk"
+
+
 # ── queue ───────────────────────────────────────────────────────────────────
 def test_queue_explains_reasons_and_judges_running_jobs(cluster):
     (cluster.logs / "fedmin1-17488077.out").write_text("25/2751\n" + "2350/2751\n")
