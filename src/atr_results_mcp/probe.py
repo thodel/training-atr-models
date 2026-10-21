@@ -224,6 +224,7 @@ _CAUSES = [
     re.compile(r"oom-kill|Out Of Memory|OutOfMemory|Killed process|MemoryError"),
     re.compile(r"already completed — nothing to do"),
     re.compile(r"already \w+ — nothing to do"),
+    re.compile(r"re-entered in terminal state"),  # #153: a requeue after the run ended
     re.compile(r"IllegalTransition"),
     re.compile(r"REFUSING"),
     re.compile(r"^\w*(Error|Exception)\b.*"),
@@ -435,25 +436,53 @@ def slurm_progress(paths: "Paths", edges: Dict[str, Any]) -> Dict[str, Any]:
 def log_notes(head: List[str], tail: List[str]) -> Dict[str, Any]:
     """What a reader scans a log for: the code pin, commit drift, the cause.
 
-    The cause is looked for in the tail first. A requeued job appends every
-    attempt to the same file, so the head holds the preemption of attempt one and
-    the tail holds why the LAST attempt ended; the last attempt is the one sacct
-    reports.
+    A requeued job appends every attempt to the same file, so the log holds
+    the preemption of attempt one *before* the attempt line of attempt two.
+    ``cause`` is therefore the last cause line **after the last attempt line**
+    — how the attempt sacct reports ended, or None while it is still running —
+    and a cause found before it is ``previous_attempt_cause``, with the number
+    of the attempt it belongs to. Taking the last cause-looking line anywhere
+    hung "CANCELLED … DUE to SIGNAL Terminated" of attempt 1 on a running
+    attempt 2 (17890142, 12.10.2026, #231). Lines before the first attempt line
+    (a refusal in the batch script's preamble) belong to that first attempt.
     """
     lines = head + tail
     code = next((m.group(0) for line in lines for m in [_CODE.match(line)] if m), None)
     drift = sorted({m.group(0) for line in lines for m in [_DRIFT.search(line)] if m})
-    cause = _cause_in(tail) or _cause_in(head)
-    return {"code": code, "code_drift": drift, "cause": cause}
+    causes = _causes_by_attempt(lines)
+    last = _attempt_in(lines)
+    previous = None
+    if last is None:
+        cause = causes[-1][1] if causes else None
+    else:
+        own = [line for attempt, line in causes if attempt == last[2]]
+        earlier = [(attempt, line) for attempt, line in causes if attempt < last[2]]
+        cause = own[-1] if own else None
+        if earlier:
+            previous = {"attempt": earlier[-1][0], "cause": earlier[-1][1]}
+    return {"code": code, "code_drift": drift, "cause": cause,
+            "previous_attempt_cause": previous}
 
 
-def _cause_in(lines: List[str]) -> Optional[str]:
-    """The LAST line that looks like a cause: position wins over pattern, because
-    a log holds every attempt and the final line says how the final one ended."""
-    for line in reversed(lines):
+def _causes_by_attempt(lines: List[str]) -> List[Tuple[int, str]]:
+    """Every cause-looking line with the attempt it followed, in log order.
+
+    Lines before the first attempt line get that first attempt's number: the
+    batch script prints its refusals (``set JOB_ID=``, ``usage:``) before it
+    prints the attempt line, and they are that attempt's cause, not an earlier
+    one's. A log without any attempt line numbers everything 0.
+    """
+    first = next((int(m.group(1)) for line in lines for m in [_ATTEMPT.search(line)] if m), 0)
+    current = first
+    out: List[Tuple[int, str]] = []
+    for line in lines:
+        match = _ATTEMPT.search(line)
+        if match:
+            current = int(match.group(1))
+            continue
         if any(pattern.search(line) for pattern in _CAUSES):
-            return line.strip()[:300]
-    return None
+            out.append((current, line.strip()[:300]))
+    return out
 
 
 def find_log(paths: Paths, slurm_job_id: str) -> Optional[Path]:
@@ -794,12 +823,22 @@ def queue(run: Runner, paths: Paths) -> Dict[str, Any]:
             "nodes": row.get("NodeList"), "cpus": row.get("NumCPUs"),
             "tres": row.get("tres-alloc"),
         }
+        # Every row with a log, not only the running ones: a PENDING job whose
+        # log already exists is a requeue waiting to continue, and the attempt
+        # line in that log names the record — which is how a second live
+        # attempt of the same record is seen at all (#231).
+        log = find_log(paths, row.get("JobID", ""))
+        edges = read_log_edges(log) if log is not None else None
+        if edges is not None:
+            entry["log"] = str(log)
+            attempt = _attempt_in(edges["tail"]) or _attempt_in(edges["head"])
+            if attempt is not None:
+                entry["job_id"], entry["attempt"] = attempt[0], attempt[2]
+            entry["pinned_to"] = _pin_in(log_notes(edges["head"], edges["tail"])["code"])
         if row.get("State") == "RUNNING":
-            log = find_log(paths, row.get("JobID", ""))
             progress = None
-            if log is not None:
-                entry["log"] = str(log)
-                found = slurm_progress(paths, read_log_edges(log))
+            if edges is not None:
+                found = slurm_progress(paths, edges)
                 progress = found.pop("progress")
                 entry.update(found)
             entry["progress"] = progress
@@ -820,7 +859,58 @@ def queue(run: Runner, paths: Paths) -> Dict[str, Any]:
                                           entry["unavailable_nodes"]]
     return {"user": paths.user, "jobs": rows,
             "running": sum(1 for r in rows if r["state"] == "RUNNING"),
-            "pending": sum(1 for r in rows if r["state"] == "PENDING")}
+            "pending": sum(1 for r in rows if r["state"] == "PENDING"),
+            "duplicates": _mark_duplicates(rows)}
+
+
+def _pin_in(code_line: Optional[str]) -> Optional[str]:
+    """The commit from ``== code: pinned to <hash> …``, or None."""
+    match = re.search(r"pinned to ([0-9a-f]{7,40})", code_line or "")
+    return match.group(1) if match else None
+
+
+def _mark_duplicates(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Two live Slurm jobs on one record are never right, and the queue has to
+    say so rather than show two healthy jobs (#231, 12.10.2026: 17890142, the
+    requeue, and 17961661, submitted by hand, both RUNNING on
+    ``…-olmocr2-7b-medieval-page-px4m`` with the same progress, because both
+    wrote one ``train.log``).
+
+    Every row of a record with more than one live row gets ``duplicate_of``
+    (the other Slurm ids) and ``duplicate_note``; the answer's ``duplicates``
+    maps the record to its attempts, oldest first. Which one to cancel is a
+    decision and stays with the reader — the note says what is known: which
+    is older, which is a requeue (attempt > 1) and which a fresh submission.
+    """
+    by_record: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in rows:
+        if entry.get("job_id") and entry.get("state") in LIVE_SLURM_STATES:
+            by_record.setdefault(entry["job_id"], []).append(entry)
+    duplicates: Dict[str, List[Dict[str, Any]]] = {}
+    for job_id, group in by_record.items():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda e: (e.get("start") or "", e["slurm_job_id"]))
+        duplicates[job_id] = [{"slurm_job_id": e["slurm_job_id"], "state": e["state"],
+                               "start": e.get("start"), "elapsed": e.get("elapsed"),
+                               "attempt": e.get("attempt"), "pinned_to": e.get("pinned_to")}
+                              for e in group]
+        oldest, newest = group[0], group[-1]
+        how = ("the newer one is a fresh submission (attempt 1), not a requeue"
+               if newest.get("attempt") == 1 else
+               "both carry an attempt number above 1: two requeues of one record")
+        note = ("%d live attempts of one record: %s (attempt %s, since %s) is the oldest, "
+                "%s (attempt %s, since %s) the newest; %s. Both resume from the same "
+                "checkpoint directory and write the same job.json and train.log, and the "
+                "second to finish fails its test stage on a record the first already "
+                "completed (#153): cancel all but one before that (#231)"
+                % (len(group), oldest["slurm_job_id"], oldest.get("attempt"),
+                   oldest.get("start"), newest["slurm_job_id"], newest.get("attempt"),
+                   newest.get("start"), how))
+        for entry in group:
+            entry["duplicate_of"] = [o["slurm_job_id"] for o in group if o is not entry]
+            entry["duplicate_note"] = note
+    return duplicates
 
 
 SACCT_FIELDS = ["JobID", "JobName", "State", "Elapsed", "Timelimit", "Start", "End",
