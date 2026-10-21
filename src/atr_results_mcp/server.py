@@ -94,7 +94,10 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
         does to the job (train.sbatch: SIGTERM 120 s before, the trap requeues,
         the trainer resumes; a scoring job: TIMEOUT ends it), and `attempt` is
         the attempt number from the log, so "attempt 2 running" is read, not
-        guessed."""
+        guessed. `duplicates` maps a record with more than one live Slurm job
+        to those jobs (oldest first), and each such row carries `duplicate_of`
+        and a `duplicate_note`: two attempts of one record are never right, and
+        the queue says so instead of showing two healthy jobs (#231)."""
         return ask("queue")
 
     @server.tool()
@@ -188,7 +191,10 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
     def log(slurm_job_id: str, lines: int = 40) -> dict:
         """Head and tail of a Slurm job's log without DEBUG and progress-bar noise,
         plus notes: the code pin line, commit drift lines, the cause line of a
-        failure, the last progress counter."""
+        failure, the last progress counter. `cause` is the last cause after the
+        last attempt line — how the attempt Slurm reports ended, null while it
+        runs; a cause found before that line is `previous_attempt_cause`, with
+        the attempt it belongs to (#231)."""
         return ask("log", slurm_job_id=slurm_job_id, lines=lines)
 
     @server.tool()

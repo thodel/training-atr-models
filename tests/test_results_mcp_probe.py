@@ -1340,3 +1340,141 @@ def test_results_carries_the_corpus_beside_the_cer(cluster):
     assert row["heldout_fp"] == "6a47d9b94d2ac739"
     assert "reserved_pages" in answer["note"] and "#98" in answer["note"]
     assert "nobody looked" in answer["note"], "None ist nicht 0, und das gehoert hin"
+
+
+# ── #231: two live attempts of one record, and whose cause a cause is ───────
+DUP_JOB = "20261009T174425Z-olmocr2-7b-medieval-page-px4m"
+DUP_SQUEUE = """\
+17890142|train|gpu-invest|job_gpu_preemptable|RUNNING|1:56:20|1-00:00:00|2026-10-12T13:19:59|None|gnode26|16|cpu=16,mem=90G,gres/gpu:h100=1|
+17961661|train|gpu-invest|job_gpu_preemptable|RUNNING|34:16|1-00:00:00|2026-10-12T14:42:03|None|gnode28|16|cpu=16,mem=90G,gres/gpu:h100=1|
+"""
+
+
+def _attempt_log(cluster: Paths, slurm_id: str, job_id: str, attempt: int, *,
+                 pinned: str = "fa02f2d", before: str = "") -> None:
+    (cluster.logs / ("train-%s.out" % slurm_id)).write_text(
+        "== code: pinned to %s 2026-10-10 eval_material (#55)\n%s"
+        "== attempt %d — job %s (training) on gnode26 2026-10-12T13:19:59+02:00\n"
+        % (pinned, before, attempt, job_id))
+
+
+def test_queue_names_two_live_attempts_of_one_record_as_duplicates(cluster):
+    """12.10.2026 15:16 CEST: 17890142 (attempt 2, the requeue) and 17961661
+    (attempt 1, submitted by hand) both RUNNING on one record, both `fits`, both
+    with the same progress — and nothing in the answer said one was too many."""
+    write_job(cluster.scratch, DUP_JOB, status="training", stage="train", cer=None,
+              draw=None, finished=None)
+    _attempt_log(cluster, "17890142", DUP_JOB, 2,
+                 before="[2026-10-12T13:16:10.004] error: *** JOB 17890142 ON gnode26 "
+                        "CANCELLED AT 2026-10-12T13:16:10 DUE to SIGNAL Terminated ***\n")
+    _attempt_log(cluster, "17961661", DUP_JOB, 1, pinned="4de9468")
+
+    answer = probe.queue(canned({"squeue": DUP_SQUEUE}), cluster)
+
+    assert list(answer["duplicates"]) == [DUP_JOB]
+    attempts = answer["duplicates"][DUP_JOB]
+    assert [a["slurm_job_id"] for a in attempts] == ["17890142", "17961661"], "oldest first"
+    assert [a["attempt"] for a in attempts] == [2, 1]
+    assert [a["pinned_to"] for a in attempts] == ["fa02f2d", "4de9468"]
+    by_id = {j["slurm_job_id"]: j for j in answer["jobs"]}
+    assert by_id["17890142"]["duplicate_of"] == ["17961661"]
+    assert by_id["17961661"]["duplicate_of"] == ["17890142"]
+    note = by_id["17961661"]["duplicate_note"]
+    assert "2 live attempts of one record" in note
+    assert "17890142 (attempt 2" in note and "17961661 (attempt 1" in note
+    assert "fresh submission" in note and "cancel all but one" in note
+
+
+def test_a_pending_requeue_beside_a_running_attempt_is_a_duplicate_too(cluster):
+    """The PENDING row has no progress to read, but its log — attempt 1 ran — names
+    the record, and that is enough to see the pair."""
+    _attempt_log(cluster, "17890142", DUP_JOB, 1)
+    _attempt_log(cluster, "17961661", DUP_JOB, 1)
+    squeue = DUP_SQUEUE.replace(
+        "17890142|train|gpu-invest|job_gpu_preemptable|RUNNING|1:56:20|1-00:00:00|2026-10-12T13:19:59|None|gnode26",
+        "17890142|train|gpu-invest|job_gpu_preemptable|PENDING|0:00|1-00:00:00|N/A|Priority|")
+
+    answer = probe.queue(canned({"squeue": squeue}), cluster)
+
+    assert set(a["slurm_job_id"] for a in answer["duplicates"][DUP_JOB]) == {"17890142", "17961661"}
+    pending = {j["slurm_job_id"]: j for j in answer["jobs"]}["17890142"]
+    assert pending["state"] == "PENDING" and pending["job_id"] == DUP_JOB
+    assert "progress" not in pending, "a pending row has nothing to project"
+    assert "both carry an attempt number above 1" not in pending["duplicate_note"]
+
+
+def test_two_live_jobs_of_two_records_are_not_duplicates(cluster):
+    _attempt_log(cluster, "17890142", DUP_JOB, 2)
+    _attempt_log(cluster, "17961661", "20261013T121310Z-olmocr2-7b-medieval-page-px4m-native", 1)
+
+    answer = probe.queue(canned({"squeue": DUP_SQUEUE}), cluster)
+
+    assert answer["duplicates"] == {}
+    assert all("duplicate_of" not in j and "duplicate_note" not in j for j in answer["jobs"])
+
+
+PREEMPTED_THEN_RESUMED = (
+    "== code: pinned to fa02f2d 2026-10-10 eval_material (#55)\n"
+    "== attempt 1 — job %s (training) on gnode26\n"
+    "[2026-10-12T13:16:10.004] error: *** JOB 17890142 ON gnode26 CANCELLED AT "
+    "2026-10-12T13:16:10 DUE to SIGNAL Terminated ***\n"
+    "== SIGTERM at 2026-10-12T13:16:10+02:00 — requeueing 17890142\n"
+    "== attempt 2 — job %s (training) on gnode26\n"
+    " 45%%|████▌| 1228/1518 [5:12:33<1:02:10, 2.18s/it]\n" % (DUP_JOB, DUP_JOB))
+
+
+def test_the_cause_of_attempt_one_is_not_hung_on_a_running_attempt_two():
+    """`log("17890142")` during attempt 2 said `cause: … DUE to SIGNAL Terminated`
+    — attempt 1's wall, read as attempt 2's state."""
+    lines = PREEMPTED_THEN_RESUMED.splitlines()
+
+    notes = probe.log_notes(lines[:3], lines[3:])
+
+    assert notes["cause"] is None
+    assert notes["previous_attempt_cause"]["attempt"] == 1
+    assert "DUE to SIGNAL Terminated" in notes["previous_attempt_cause"]["cause"]
+
+
+def test_the_same_line_after_the_last_attempt_line_is_the_cause():
+    lines = PREEMPTED_THEN_RESUMED.splitlines()
+    ended = lines + ["[2026-10-13T13:19:50.112] error: *** JOB 17890142 ON gnode26 CANCELLED "
+                     "AT 2026-10-13T13:19:50 DUE TO TIME LIMIT ***"]
+
+    notes = probe.log_notes(ended[:3], ended[3:])
+
+    assert "DUE TO TIME LIMIT" in notes["cause"]
+    assert notes["previous_attempt_cause"]["attempt"] == 1
+
+
+def test_a_refusal_before_the_first_attempt_line_belongs_to_that_attempt():
+    """The batch script prints `usage:` / `set JOB_ID=` before the attempt line;
+    that is this attempt's cause, not an earlier attempt's."""
+    lines = ["usage: submit.sh ubelix/train.sbatch — set JOB_ID=",
+             "== attempt 1 — job %s (training) on gnode26" % DUP_JOB]
+
+    notes = probe.log_notes(lines, [])
+
+    assert notes["cause"].startswith("usage:")
+    assert notes["previous_attempt_cause"] is None
+
+
+def test_a_log_without_attempt_lines_keeps_the_last_cause():
+    notes = probe.log_notes(["MemoryError: x", "ValueError: y"], [])
+    assert notes["cause"] == "ValueError: y" and notes["previous_attempt_cause"] is None
+
+
+def test_the_existing_fixture_now_also_names_the_earlier_cause():
+    """TRAIN_LOG_HEAD: PREEMPTION under attempt 1, `already completed` under
+    attempt 4 — `cause` as before, and the preemption no longer silent."""
+    lines = TRAIN_LOG_HEAD.splitlines()
+    notes = probe.log_notes(lines[:4], lines[4:])
+    assert "already completed" in notes["cause"]
+    assert notes["previous_attempt_cause"] == {
+        "attempt": 1, "cause": lines[3].strip()}
+
+
+def test_a_requeue_onto_a_finished_record_reads_as_a_cause():
+    """#153's line, so a 3-second attempt in `finished()` says why it was short."""
+    line = ("2026-10-21 04:09:25.001 | INFO | atr_training.runner_base:execute - job x "
+            "re-entered in terminal state 'completed' — nothing to do, the record stands")
+    assert probe.log_notes([], ["== attempt 17 — job x (training) on gnode26", line])["cause"]
