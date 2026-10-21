@@ -677,7 +677,8 @@ def node_states(run: Runner, nodes: List[str]) -> List[Dict[str, str]]:
 
 def judge_wall(elapsed: Optional[int], limit: Optional[int],
                progress: Optional[Dict[str, Any]],
-               following: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+               following: Optional[Dict[str, Any]] = None,
+               attempt: Optional[int] = None) -> Dict[str, Any]:
     """Will a running job finish inside its wall? The sum is written out in ``why``.
 
     Only a counter in state ``found`` projects. An unattributable one says so in
@@ -686,9 +687,14 @@ def judge_wall(elapsed: Optional[int], limit: Optional[int],
     The rest of the running stage comes from tqdm's own estimate when the line
     carries one (``remaining_s``), else from the ratio ``elapsed × total / done``.
     After a resume the ratio lies: ``done`` counts earlier attempts' steps and
-    ``elapsed`` only this one (#216). The stages still ahead in the same wall
-    (``test`` after ``train``) are added from a measured reference; without one
-    the verdict says the sum is short of them, and a close call is not "fits".
+    ``elapsed`` only this one (#216). When the line has no tqdm estimate and
+    *attempt* says this is a resume, the ratio is therefore a **lower bound**:
+    the sum is still written out, ``lower_bound`` says so, and a "fits" from it
+    becomes "at risk" — a floor cannot prove a fit, and the direction of the
+    error is the one #203 already failed in. The stages still ahead in the same
+    wall (``test`` after ``train``) are added from a measured reference; without
+    one the verdict says the sum is short of them, and a close call is not
+    "fits".
     """
     if progress and progress.get("state") == "unattributable":
         return {"verdict": "unknown",
@@ -715,11 +721,14 @@ def judge_wall(elapsed: Optional[int], limit: Optional[int],
         else:
             uncounted = list(following["stages"])
     fraction = projected / float(limit)
+    lower_bound = method == "ratio" and attempt is not None and attempt > 1
     if fraction > 1.0:
         verdict = "will hit the wall"
     elif fraction > 1.0 - WALL_MARGIN:
         verdict = "at risk"
     elif uncounted and fraction > 1.0 - 2 * WALL_MARGIN:
+        verdict = "at risk"
+    elif lower_bound:
         verdict = "at risk"
     else:
         verdict = "fits"
@@ -727,9 +736,14 @@ def judge_wall(elapsed: Optional[int], limit: Optional[int],
     if uncounted:
         why += "; %s not counted: no completed job of this granularity to measure it" \
                % ", ".join(uncounted)
+    if lower_bound:
+        why += ("; a lower bound: attempt %d resumed from a checkpoint, so %d/%d counts "
+                "earlier attempts' steps while %d s is this attempt alone, and the line "
+                "carries no tqdm estimate — not a fit until a tqdm line says so"
+                % (attempt, progress["done"], progress["total"], elapsed))
     return {"verdict": verdict, "projected_total_s": int(projected), "limit_s": limit,
             "fraction_of_wall": round(fraction, 3), "method": method,
-            "uncounted_stages": uncounted, "why": why}
+            "lower_bound": lower_bound, "uncounted_stages": uncounted, "why": why}
 
 
 _SBATCH_OPTION = re.compile(r"^#SBATCH\s+--([\w-]+)(?:=(\S+))?")
@@ -844,7 +858,7 @@ def queue(run: Runner, paths: Paths) -> Dict[str, Any]:
             entry["progress"] = progress
             entry["wall"] = judge_wall(slurm_seconds(row.get("TimeUsed", "")),
                                        slurm_seconds(row.get("TimeLimit", "")), progress,
-                                       entry.get("following"))
+                                       entry.get("following"), attempt=entry.get("attempt"))
             entry["wall"]["on_timeout"] = on_timeout(paths, row.get("Name", ""))
         match = re.search(r"UnavailableNodes:([\w,\-\[\]]+)", row.get("Reason", ""))
         if match:
