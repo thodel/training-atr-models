@@ -53,6 +53,39 @@ def test_two_cards_raise_the_limit_without_a_second_setting():
     assert both.concurrency_limit() == 2
 
 
+# ── the form an operator actually writes ────────────────────────────────────
+#
+# Every test above passes `gpus` as a Python list. The deployment writes it into
+# `.env`, and pydantic-settings decodes a list field from the environment as
+# JSON — so the form the docstring promised, `ATR_TRAIN_GPUS=0,1`, made
+# TrainerSettings() raise and the service would not have started (measured on
+# asteraix, 22.10.2026, while turning the second card on for #12).
+
+@pytest.mark.parametrize("value", ["0,1", "1,0", " 0 , 1 ", "[0,1]", "[0, 1]"])
+def test_the_cards_can_be_written_the_way_the_docs_say(monkeypatch, value):
+    monkeypatch.setenv("ATR_TRAIN_GPUS", value)
+
+    assert TrainerSettings().usable_gpus == (0, 1)
+    assert TrainerSettings().concurrency_limit() == 2
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_an_empty_value_means_the_single_card_default(monkeypatch, value):
+    monkeypatch.setenv("ATR_TRAIN_GPUS", value)
+
+    fallback = TrainerSettings()
+    assert fallback.usable_gpus == (fallback.gpu,)
+
+
+@pytest.mark.parametrize("value", ["zero,one", "0;1", "0,,1"])
+def test_a_card_list_that_is_not_one_is_refused(monkeypatch, value):
+    """Refused at start, naming the setting — not read as "no second card"."""
+    monkeypatch.setenv("ATR_TRAIN_GPUS", value)
+
+    with pytest.raises(ValueError, match="ATR_TRAIN_GPUS"):
+        TrainerSettings()
+
+
 def test_an_explicit_cap_still_holds():
     """An operator may want one at a time on a two-card box — for a run that
     wants both cards, say."""

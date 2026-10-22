@@ -121,7 +121,7 @@ rule plus the constraints that are not about waiting:
 | a fan-out of one prepared corpus into several arms (base-model ladders) | UBELIX | `ubelix/fanout.py` links the arms by symlink, which works on `/scratch` and not on the CIFS share; up to four H100s on the preemptable QoS |
 | `prepare` and `compile` of a VLM corpus | UBELIX, **CPU node** | hours of streaming and cropping that touch no GPU; the two-stage path leaves the job in `training` and the GPU job resumes it |
 | kraken training and `ketos compile` | **asteraix only** | no `ketos` on UBELIX, no container recipe, no arrows there ([#171](https://github.com/thodel/training-atr-models/issues/171)); at batch 256 a kraken run needs 43.5 GiB of an A40 and the card to itself (07.10.2026) |
-| trocr training | UBELIX by the rule, never run anywhere yet | no measurement of its footprint exists ([#37](https://github.com/thodel/training-atr-models/issues/37)) |
+| trocr training | UBELIX by the rule; so far only two smoke runs on asteraix (`trocr-thun-smoke-v3`, `trocr-thun-smoke-asteraix-v2`, CER 0.96/0.98) | no measurement of its footprint exists ([#37](https://github.com/thodel/training-atr-models/issues/37)) |
 | re-evaluations, rescoring a finished adapter, peak-memory and noise-floor measurements | asteraix | minutes to two hours, wanted the same day, and a walltime guess on UBELIX has already killed two rescorings ([#155](https://github.com/thodel/training-atr-models/issues/155)) |
 | anything a client submits through the gateway (`POST /train/jobs`) | asteraix | the gateway proxies to the service there; nothing of ours submits to Slurm |
 | registering a model, the promotion gate, serving | asteraix and idhefix | the registry has one writer, and a Slurm job never writes it |
@@ -398,5 +398,4 @@ In the order in which closing them changes this page:
 | [#171](https://github.com/thodel/training-atr-models/issues/171) | a `kraken-train.def` and arrows on UBELIX; kraken stops being asteraix-only, and the batch sweep that says where its headroom is can run |
 | [#162](https://github.com/thodel/training-atr-models/issues/162), [#163](https://github.com/thodel/training-atr-models/issues/163) | the A40-to-H100 ratio and the peak-memory table turn the placement rule from a judgement into arithmetic |
 | [#206](https://github.com/thodel/training-atr-models/issues/206) | the record says which container measured a CER, so a number from each place carries its provenance |
-| [#12](https://github.com/thodel/training-atr-models/issues/12) | a card per job on asteraix, two runs at once; and the only path on which asteraix holds something an H100 cannot (80 to 88.8 GiB) |
 | [#150](https://github.com/thodel/training-atr-models/issues/150) | the preemption log line says what actually happens |

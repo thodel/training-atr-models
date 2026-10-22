@@ -5,7 +5,7 @@
 # transformers. They cannot share a tree, so they do not share a venv — and the
 # supervising service imports neither.
 pydantic>=2.6
-pydantic-settings>=2.2
+pydantic-settings>=2.7
 loguru>=0.7
 pyyaml>=6.0
 Pillow>=10.0

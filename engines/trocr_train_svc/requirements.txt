@@ -20,7 +20,7 @@
 # stack. Missing pydantic-settings made `python -m trocr_train_svc.runner` fail
 # at import in a venv that otherwise looked complete.
 pydantic>=2.6
-pydantic-settings>=2.2
+pydantic-settings>=2.7
 pyyaml>=6.0
 Pillow>=10.0
 torch==2.8.0

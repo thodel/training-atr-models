@@ -59,15 +59,23 @@ def main() -> int:
             "--base-model", BASE_MODEL,
             "--train-manifest", str(work / "train.jsonl"),
             "--val-manifest", str(work / "val.jsonl"),
+            # The images in the manifests are relative to this (#117). Required
+            # since the package moved here (#3); this script came later, from
+            # serving-atr-inference (#6), and never passed it — so it had never
+            # run in this repository until 22.10.2026 (#37).
+            "--data-root", str(work),
             "--output-dir", str(work / "out"),
             "--epochs", "1", "--batch-size", "2", "--accumulate-grad-batches", "1",
             "--precision", "fp32", "--device", "cpu", "--workers", "0",
             "--max-new-tokens", "16", "--beam-size", "1",
             "--no-gradient-checkpointing",
         ]
+        # No HF_HOME: the default ~/.cache/huggingface/hub is the shared cache
+        # (on asteraix a symlink to the share), and routing around it downloads
+        # the base model a second time (.env.example, "the HF hub cache").
         env = {"PYTHONPATH": f"{ROOT / 'src'}:{ROOT / 'engines'}",
                "CUDA_VISIBLE_DEVICES": "", "PATH": "/usr/bin:/bin",
-               "HF_HOME": str(Path.home() / "atr-cache" / "hf")}
+               "HOME": str(Path.home())}
         result = subprocess.run(cmd, env=env)
         if result.returncode != 0:
             print("\nSMOKE FEHLGESCHLAGEN — siehe Traceback oben", file=sys.stderr)

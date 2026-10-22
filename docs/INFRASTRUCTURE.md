@@ -72,11 +72,13 @@ flowchart TB
   shared cache `hf_hub/hub/` (the symlink behind `~/.cache/huggingface/hub`),
   so a second job and UBELIX reuse them. Uploads go the other way
   and are always private repos under `dh-unibe`: trained models through the
-  runner's auto-publish (off unless `ATR_TRAIN_AUTO_PUBLISH_MIN_ACCURACY` is set)
-  or by hand with `scripts/publish_to_hub.py`, page datasets built from TEI
-  editions with `scripts/tei_edition_to_hf.py`. Both scripts still live in
-  serving-atr-inference and move here with #6; they run in the `kraken-train`
-  venv, which has `huggingface_hub`.
+  runner's auto-publish (`ATR_TRAIN_AUTO_PUBLISH_MIN_ACCURACY`; on asteraix 79
+  since 22.10.2026, i.e. a CER under 21 %, #33) or by hand with
+  `scripts/publish_to_hub.py`, page datasets built from TEI editions with
+  `scripts/tei_edition_to_hf.py`. Both scripts live here since #6 and run in the
+  `kraken-train` venv, which has `huggingface_hub`; the token is the one
+  `hf auth login` stored, not a variable in `.env`. A repo goes public only by
+  hand, in the Hub's web interface.
 
 ## The host
 
@@ -285,8 +287,9 @@ test keeps the two in step. Terminal statuses have no way out: a `failed` or
 
 **Scheduling.** Every 10 s (`ATR_TRAIN_POLL_INTERVAL_S`), and right after each
 submit, the service reconciles the records. It then starts the **oldest**
-queued job of this host, provided no other job of this host runs
-(`ATR_TRAIN_MAX_CONCURRENT=1`) and card `ATR_TRAIN_GPU` has enough free memory:
+queued job of this host, provided this host runs fewer jobs than it has cards
+(`ATR_TRAIN_GPUS`, both A40s since 22.10.2026, #12; `ATR_TRAIN_MAX_CONCURRENT`
+can cap it lower) and a card no other job holds has enough free memory:
 12000 MB for kraken and TrOCR, 24000 MB for VLM. A smaller job never jumps the
 queue, because that would starve exactly the expensive runs the queue exists
 for. Before spawning, the scheduler creates `jobs/ID/spawn.claim` with
