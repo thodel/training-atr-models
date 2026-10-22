@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -217,3 +218,104 @@ def test_arms_on_two_nodes_starting_together_all_survive(checkout, tmp_path):
     trees = {_repo_of(r) for r in runs}
     assert len(trees) == 3                       # one per node, not one per job
     assert all((t / "code.py").read_text() == "VERSION = 'old'\n" for t in trees)
+
+
+# ── the leftovers of #41 ────────────────────────────────────────────────────
+
+def test_an_untracked_module_in_the_tree_is_refused_a_marker_is_not(checkout, tmp_path):
+    """A stray module.py shadows the one in the tree; a marker a requeued job
+    left is not code and does not block the requeue."""
+    repo, old, _ = checkout
+    tree = _repo_of(_pin(repo, tmp_path / "wt", old))
+    (tree / "note.txt").write_text("left by attempt 1")
+    assert _pin(repo, tmp_path / "wt", old).returncode == 0
+
+    (tree / "code.py.bak").write_text("not a module")
+    assert _pin(repo, tmp_path / "wt", old).returncode == 0
+    (tree / "shadow.py").write_text("VERSION = 'stray'\n")
+    done = _pin(repo, tmp_path / "wt", old)
+    assert done.returncode == 7
+    assert "?? shadow.py" in done.stderr and "not a clean checkout" in done.stderr
+
+
+def test_a_file_marked_assume_unchanged_is_refused(checkout, tmp_path):
+    """`git status` would not show it; `ls-files -v` does."""
+    repo, old, _ = checkout
+    tree = _repo_of(_pin(repo, tmp_path / "wt", old))
+    _git(tree, "update-index", "--assume-unchanged", "code.py")
+    (tree / "code.py").write_text("VERSION = 'edited behind git'\n")
+
+    done = _pin(repo, tmp_path / "wt", old)
+
+    assert done.returncode == 7
+    assert "assume-unchanged: h code.py" in done.stderr
+
+
+def test_a_warning_on_gits_stderr_is_not_a_change(checkout, tmp_path):
+    """The old check read `2>&1`, so a git warning counted as a dirty tree."""
+    repo, old, _ = checkout
+    _repo_of(_pin(repo, tmp_path / "wt", old))
+    noisy = tmp_path / "bin"
+    noisy.mkdir()
+    real = shutil.which("git")
+    (noisy / "git").write_text(f'#!/usr/bin/env bash\necho "warning: something about safe.directory" >&2\nexec "{real}" "$@"\n')
+    (noisy / "git").chmod(0o755)
+    env = {**os.environ, "PATH": f"{noisy}:{os.environ['PATH']}", "ATR_CODE_ROOT": str(tmp_path / "wt"),
+           "ATR_CODE_COMMIT": old}
+    env.pop("SLURMD_NODENAME", None)
+    script = f'set -uo pipefail; REPO="{repo}"; source "{PIN}"; pin_code || exit 7; echo "REPO=$REPO"'
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert "pinned to" in done.stdout
+
+
+def test_a_tree_whose_admin_directory_is_gone_says_what_fixes_it(checkout, tmp_path):
+    """The checkout was re-cloned: the worktree's .git points at nothing."""
+    repo, old, _ = checkout
+    tree = _repo_of(_pin(repo, tmp_path / "wt", old))
+    shutil.rmtree(repo / ".git" / "worktrees")
+
+    done = _pin(repo, tmp_path / "wt", old)
+
+    assert done.returncode == 7
+    assert "admin directory" in done.stderr and "worktree prune" in done.stderr
+    assert f"rm -rf {tree} {tree}.ready" in done.stderr
+
+
+@pytest.mark.parametrize("lock", [None, "python"])
+def test_a_lock_that_is_never_released_is_said_not_swallowed(checkout, tmp_path, lock):
+    """flock -w ended with a bare exit 1 when the wait ran out, and the fcntl
+    fallback waited for ever. Now both wait ATR_PIN_LOCK_WAIT_S and say so."""
+    repo, old, _ = checkout
+    root = tmp_path / "wt"
+    root.mkdir()
+    node = "gnode99"
+    holder = subprocess.Popen(
+        ["python3", "-c", "import fcntl, sys, time\n"
+         "fh = open(sys.argv[1], 'a'); fcntl.flock(fh, fcntl.LOCK_EX); time.sleep(30)",
+         str(root / f".lock.{node}")])
+    try:
+        import time
+        time.sleep(0.5)
+        env_lock = {"ATR_PIN_LOCK_WAIT_S": "1"}
+        env = {k: v for k, v in os.environ.items() if k not in ("ATR_CODE_COMMIT", "ATR_PIN_LOCK")}
+        env.update(ATR_CODE_ROOT=str(root), ATR_CODE_COMMIT=old, SLURMD_NODENAME=node, **env_lock)
+        if lock:
+            env["ATR_PIN_LOCK"] = lock
+        script = f'set -uo pipefail; REPO="{repo}"; source "{PIN}"; pin_code || exit 7; echo "REPO=$REPO"'
+        done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    finally:
+        holder.kill()
+    assert done.returncode == 7
+    assert "waited 1 s for" in done.stderr and "refusing to run" in done.stderr
+
+
+def test_no_batch_file_header_shows_a_bare_sbatch():
+    """A plain `sbatch …` in a header is what someone copies, and such a job
+    runs unpinned (#41). Every documented submission goes through submit.sh."""
+    ubelix = PIN.parent
+    bare = re.compile(r"^#\s+(?:[A-Z_]+=\S+\s+)*sbatch\s")
+    offenders = [f"{path.name}:{n}" for path in sorted(ubelix.glob("*.sbatch"))
+                 for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+                 if bare.match(line)]
+    assert offenders == [], offenders

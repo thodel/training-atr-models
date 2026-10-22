@@ -37,7 +37,7 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 # shellcheck source=pin_code.sh
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 # Overridable so the same job can run under the transformers 5.x image:
-#   sbatch --export=ALL,SIF=$HOME/ubelix/vlm-train-tf5.sif …
+#   ubelix/submit.sh ubelix/train.sbatch -- --export=ALL,SIF=$HOME/ubelix/vlm-train-tf5.sif
 # Die Vorgabe ist tf5, weil das alte Abbild die Modelle nicht laden kann, die
 # wir heute trainieren: vlm-train.sif hat transformers 4.57.6 und kennt
 # `qwen3_5` NICHT, vlm-train-tf5.sif hat 5.17.0 und kennt es. Job 17808414

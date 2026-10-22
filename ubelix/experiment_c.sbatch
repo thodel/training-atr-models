@@ -42,7 +42,7 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 # shellcheck source=pin_code.sh
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 # Overridable so the same job can run under the transformers 5.x image:
-#   sbatch --export=ALL,SIF=$HOME/ubelix/vlm-train-tf5.sif …
+#   ubelix/submit.sh ubelix/experiment_c.sbatch -- --export=ALL,SIF=$HOME/ubelix/vlm-train-tf5.sif
 SIF=${SIF:-$HOME/ubelix/vlm-train.sif}
 
 export HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub

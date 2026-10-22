@@ -1,7 +1,7 @@
 #!/bin/bash
 # Score ONE finished adapter on the Federal Council held-out test set
 # (Hodel & Schoch 2021, doi:10.5281/zenodo.4746342), all 2,751 lines.
-#   sbatch --export=ALL,JOB_ID=<id>,TAG=<tag>[,SIF=...][,QUANT=4bit] score_federal_minutes.sbatch
+#   ubelix/submit.sh ubelix/score_federal_minutes.sbatch -- --export=ALL,JOB_ID=<id>,TAG=<tag>[,SIF=...][,QUANT=4bit]
 #
 # QUANT picks how the base is loaded, and it has to match how the arm was
 # TRAINED: an adapter fitted over a 4-bit base belongs over a 4-bit base when it

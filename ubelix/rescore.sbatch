@@ -9,7 +9,7 @@
 # Writes data/eval_report_v2.json and leaves the original report and the job
 # record untouched, so the broken number stays on disk as evidence of what it was.
 #
-#   sbatch --export=ALL,JOB_ID=<id>,SIF=$HOME/ubelix/vlm-train-tf5.sif ubelix/rescore.sbatch
+#   ubelix/submit.sh ubelix/rescore.sbatch -- --export=ALL,JOB_ID=<id>,SIF=$HOME/ubelix/vlm-train-tf5.sif
 #
 #SBATCH --job-name=rescore
 #SBATCH --account=gratis
