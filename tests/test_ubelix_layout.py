@@ -81,9 +81,11 @@ def test_the_term_trap_requeues_once(name):
     traps = _TERM_TRAP.findall(text)
     assert len(traps) == 1, f"{name}: expected one TERM trap, found {len(traps)}"
     body = traps[0]
-    assert body.count("scontrol requeue") == 1
+    # Since #150 the requeue itself lives in ubelix/requeue_trap.sh; the trap
+    # calls it once, behind the flag.
+    assert body.count("requeue_once") == 1
     guard = body.index('if [ -n "$REQUEUED" ]')
-    assert guard < body.index("REQUEUED=1") < body.index("scontrol requeue")
+    assert guard < body.index("REQUEUED=1") < body.index("requeue_once")
     assert "trap - TERM" not in body
     assert re.search(r"^REQUEUED=\s*$", text, re.M), f"{name}: the flag is not cleared before the trap"
 

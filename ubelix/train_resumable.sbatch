@@ -123,6 +123,9 @@ echo "== node $(hostname) $(date -Is)"
 # tmp-file-then-os.replace, so even a kill mid-write cannot corrupt the record.
 # Once only: the second TERM of the same second (train.sbatch, 17890142, #232)
 # must not requeue again and print "(requeue refused)" into a log that requeued.
+# What the requeue says is in one place for both files (#150): a requeue
+# Slurm does not accept during a preemption is not a job that ends.
+. "$REPO/ubelix/requeue_trap.sh"
 REQUEUED=
 trap '
   if [ -n "$REQUEUED" ]; then
@@ -131,7 +134,7 @@ trap '
     REQUEUED=1
     echo "== SIGTERM at $(date -Is) — requeueing $SLURM_JOB_ID"
     kill -TERM "$PID" 2>/dev/null
-    scontrol requeue "$SLURM_JOB_ID" 2>/dev/null || echo "   (requeue refused; job will end)"
+    requeue_once
   fi
 ' TERM
 
@@ -154,8 +157,8 @@ if [ "$CODE" = 75 ]; then
   # EX_TEMPFAIL from run_job: preempted, record left in `training`. Slurm
   # requeues this job because of --requeue; exiting 0 keeps it from also being
   # recorded as a failure.
-  echo "== preempted at $(date -Is); the record stays resumable. Requeueing."
-  scontrol requeue "$SLURM_JOB_ID" 2>/dev/null || true
+  echo "== preempted at $(date -Is); the record stays resumable."
+  [ -n "$REQUEUED" ] || requeue_once
   exit 0
 fi
 

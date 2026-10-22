@@ -129,6 +129,9 @@ echo "== attempt $((${SLURM_RESTART_COUNT:-0} + 1)) — job $JOB_ID ($STATUS) on
 # requeue itself, since Slurm tears the step down to put the job back. A flag
 # rather than `trap - TERM`: with the trap reset, a TERM between the echo and
 # `scontrol requeue` would end this shell before the requeue.
+# What the requeue says is in one place for both files (#150): a requeue
+# Slurm does not accept during a preemption is not a job that ends.
+. "$REPO/ubelix/requeue_trap.sh"
 REQUEUED=
 trap '
   if [ -n "$REQUEUED" ]; then
@@ -137,7 +140,7 @@ trap '
     REQUEUED=1
     echo "== SIGTERM at $(date -Is) — requeueing $SLURM_JOB_ID"
     kill -TERM "$PID" 2>/dev/null
-    scontrol requeue "$SLURM_JOB_ID" 2>/dev/null || echo "   (requeue refused)"
+    requeue_once
   fi
 ' TERM
 
