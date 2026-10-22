@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator
 
@@ -583,9 +585,72 @@ def read_jsonl(path: str | Path) -> Iterator[Sample]:
 #: by accident of their default. One transcription of one line needs no
 #: reasoning, so it is pinned off everywhere.
 #:
-#: Harmless for Qwen3-VL, whose template never reads the variable; Jinja ignores
-#: an extra name.
+#: Not passed as it stands: :func:`template_kwargs` hands a template only the
+#: names it reads. Under transformers 4 an extra name was ignored by Jinja; under
+#: transformers 5 ``processor.apply_chat_template`` moves every kwarg the
+#: template does not read into its processor kwargs and warns — once per call,
+#: which in a collator is once per sample, and the olmOCR-2 run of 21.10.2026
+#: logged ``Kwargs passed to \`processor.__call__\` have to be in
+#: \`processor_kwargs\` dict`` at every step (#274). olmOCR-2 and Qwen3-VL read
+#: no ``enable_thinking``; Qwen3.5 and Gemma 4 do.
 CHAT_TEMPLATE_KWARGS: dict = {"enable_thinking": False}
+
+
+def chat_template_of(processor) -> str | None:
+    """The Jinja source *processor* renders with, or None when it has none.
+
+    A processor carries its own ``chat_template`` (a string, or a dict whose
+    ``default`` is the one ``apply_chat_template`` picks); an older one keeps it
+    on the tokenizer. Read in that order, as transformers does.
+    """
+    for owner in (processor, getattr(processor, "tokenizer", None)):
+        template = getattr(owner, "chat_template", None)
+        if isinstance(template, dict):
+            template = template.get("default")
+        if isinstance(template, str) and template:
+            return template
+    return None
+
+
+@lru_cache(maxsize=64)
+def template_reads(template: str | None, name: str) -> bool:
+    """Does the Jinja *template* read the variable *name*?
+
+    The same question transformers 5 asks before it warns
+    (``_get_template_variables``: jinja2's ``find_undeclared_variables``), so
+    what this says is what the warning would say. jinja2 ships with
+    transformers and is imported lazily, because this module is also imported
+    where no ML stack is (the service, the tests); without it, or on a template
+    jinja2's plain parser refuses, a word match on the source decides — for
+    ``enable_thinking`` that is the same answer, and it is never "unknown".
+    """
+    if not template:
+        return False
+    try:
+        import jinja2
+        import jinja2.meta
+        tree = jinja2.Environment().parse(template)
+    except ImportError:
+        pass
+    except Exception:  # noqa: BLE001 — a template jinja2 cannot parse here is still a template
+        pass
+    else:
+        return name in jinja2.meta.find_undeclared_variables(tree)
+    return re.search(r"\b%s\b" % re.escape(name), template) is not None
+
+
+def template_kwargs(processor) -> dict:
+    """:data:`CHAT_TEMPLATE_KWARGS`, restricted to what this processor's template reads.
+
+    Pass this, not the constant, to ``apply_chat_template`` (#274). A template
+    that reads ``enable_thinking`` gets it — the Qwen3.5-4B default is *on*, and
+    a reasoning trace in front of every transcription is not a worse CER but a
+    meaningless one — and a template that does not read it gets nothing, so
+    transformers 5 has nothing to move and nothing to warn about.
+    """
+    template = chat_template_of(processor)
+    return {name: value for name, value in CHAT_TEMPLATE_KWARGS.items()
+            if template_reads(template, name)}
 
 
 def chat_example(prompt: str, text: str | None = None,
