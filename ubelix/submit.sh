@@ -92,6 +92,25 @@ for d in req.datasets:
           f"max_pages={d.max_pages} partition={d.partition}")
 PY
   export SPEC
+
+  # 3b. Does the image the job will run in know the base model's architecture?
+  #     17808414 died after 59 seconds on `model type qwen3_5 but Transformers
+  #     does not recognize this architecture`, because it was submitted without
+  #     SIF= into an image with transformers 4 (#206). The image is the one the
+  #     batch file would use: SIF from the environment, else its own default.
+  #     Exit 3 refuses; exit 2 (could not tell) only says so.
+  JOB_SIF=${SIF:-$(sed -n 's/^SIF=${SIF:-\(.*\)}$/\1/p' "$SBATCH_FILE" | head -1)}
+  JOB_SIF=${JOB_SIF/\$HOME/$HOME}
+  if [ -n "$JOB_SIF" ] && [ -f "$JOB_SIF" ]; then
+    KNOWS=$(apptainer exec --bind /storage/research --bind /scratch --bind /rs_scratch \
+        --env PYTHONPATH="$REPO/src:$REPO/engines" --env HF_HOME="${HF_HOME:-}" \
+        "$JOB_SIF" python3 "$REPO/ubelix/image_knows_model.py" "$SPEC"); KNOWS_CODE=$?
+    echo "  $(basename "$JOB_SIF"): $KNOWS"
+    if [ "$KNOWS_CODE" = 3 ]; then
+      echo "refusing to submit: the image cannot load the base model" >&2
+      exit 3
+    fi
+  fi
 fi
 
 # 4. A prepare whose corpus is already compiled only ADOPTS it and is done in

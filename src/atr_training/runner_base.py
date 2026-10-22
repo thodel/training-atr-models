@@ -36,7 +36,7 @@ from loguru import logger
 
 from atr_training.artefact_cache import ArtefactCache, ArtefactCacheError
 from atr_training.chunking import CHUNK_PLAN_FILENAME, is_plan
-from atr_training.codeversion import current_code, describe_drift
+from atr_training.codeversion import current_code, current_runtime, describe_drift
 from atr_training.contracts import (
     DatasetCounts,
     DatasetSelectionError,
@@ -363,7 +363,8 @@ class BasePipeline(ABC):
     @contextmanager
     def _stage(self, job: TrainJob, name: JobStage):
         record = StageRecord(name=name, status="running", started_at=utcnow(),
-                             log=f"logs/{name}.log", code=current_code())
+                             log=f"logs/{name}.log", code=current_code(),
+                             runtime=current_runtime())
         drift = describe_drift(job.code, record.code)
         if drift:
             # Not a failure: a resumed job legitimately runs newer code. It is the

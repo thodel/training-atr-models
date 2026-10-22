@@ -17,9 +17,15 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 
-from atr_training.contracts import CodeVersion
+from atr_training.contracts import CodeVersion, Runtime
 
-__all__ = ["current_code", "describe_drift", "read_code_version"]
+__all__ = ["current_code", "current_runtime", "describe_drift", "read_code_version",
+           "read_runtime"]
+
+#: Set by the container runtime inside an image, to the image's path — the
+#: authoritative answer. ``SIF`` is the batch scripts' own export, kept as the
+#: fallback for a runtime that names itself differently.
+_IMAGE_VARIABLES = ("APPTAINER_CONTAINER", "SINGULARITY_CONTAINER", "SIF")
 
 #: src/atr_training/codeversion.py -> the repository root
 _REPO = Path(__file__).resolve().parents[2]
@@ -52,6 +58,39 @@ def read_code_version(repo: Path) -> CodeVersion:
 def current_code() -> CodeVersion:
     """The code this process is running. Read once, then cached."""
     return read_code_version(_REPO)
+
+
+def read_runtime(environ: "dict[str, str] | None" = None,
+                 version_of=None) -> Runtime:
+    """The image this process runs in and the transformers it would import (#206).
+
+    The version is read from the installed distribution's metadata, not by
+    importing transformers: importing it costs seconds and a GPU context that
+    the stage bookkeeping must not pay, and a venv without it (kraken) answers
+    ``None`` rather than raising. Never raises.
+    """
+    import os
+    environ = os.environ if environ is None else environ
+    image = next((environ[name] for name in _IMAGE_VARIABLES if environ.get(name)), None)
+    if version_of is None:
+        from importlib import metadata
+
+        def version_of(name: str) -> str | None:
+            try:
+                return metadata.version(name)
+            except metadata.PackageNotFoundError:
+                return None
+    try:
+        transformers = version_of("transformers")
+    except Exception:  # noqa: BLE001 — a record must not fail on a metadata quirk
+        transformers = None
+    return Runtime(image=image, transformers=transformers)
+
+
+@lru_cache(maxsize=1)
+def current_runtime() -> Runtime:
+    """The runtime of this process. Read once, then cached, like :func:`current_code`."""
+    return read_runtime()
 
 
 def describe_drift(created: CodeVersion | None, running: CodeVersion | None) -> str | None:
