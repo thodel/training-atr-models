@@ -181,9 +181,10 @@ pin holds across the queue but not across that resume.
   **trocr still has no number, and gets one by sampling rather than by
   plumbing.** Its runner does not read its own `training_summary.json`, so torch
   marks written there would be a number nobody reads; the external sampler covers
-  it through `_run` instead. No trocr model has ever been trained (#37), so the
-  first point arrives with the first run — and until then the tree sends it to
-  UBELIX.
+  it through `_run` instead. Two smoke runs exist (`trocr-thun-smoke-v3`,
+  `trocr-thun-smoke-asteraix-v2`, CER 0.96 and 0.98), no real one (#37), so the
+  first point arrives with the first real run — and until then the tree sends it
+  to UBELIX.
 
   `scripts/measure_vlm_arms.py --worst-case` is the other half: it replaces the
   head of the file with the longest transcriptions and the largest crops, which

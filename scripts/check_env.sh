@@ -226,7 +226,7 @@ else
   UNIT_VARS=$(systemctl --user show atr-train -p Environment --no-pager 2>/dev/null || echo "")
 fi
 if [ -z "$UNIT_VARS" ]; then
-  warn "cannot read atr-train.service environment (systemctl failed — probably not on idhefix)"
+  warn "cannot read atr-train.service environment (systemctl failed — probably not on the training box, asteraix)"
   info "  run this script on the box where the service is installed"
 else
   # Secrets are shown as a fingerprint, never a value. Reading the process

@@ -5,8 +5,9 @@ These limits were written for the shared box, where a training run competed with
 the serving engines for one card. Since 16.09.2026 training has its own machine,
 and what they guard against on asteraix (``docs/INFRASTRUCTURE.md``) is this:
 
-* **The card.** Both A40s (46068 MiB each) are free for training and a job runs
-  on the one ``ATR_TRAIN_GPU`` names. The two machines share no card, and the
+* **The card.** Both A40s (46068 MiB each) are free for training, and a job runs
+  on the card the scheduler hands it from ``ATR_TRAIN_GPUS`` (both since
+  22.10.2026, #12; only ``ATR_TRAIN_GPU`` where that is unset). The two machines share no card, and the
   coordination between them was removed on both sides
   (serving-atr-inference#139) — so this check is the only thing between a queued
   job and an OOM. What it finds is one of ours: another run, or a process a

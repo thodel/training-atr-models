@@ -20,10 +20,10 @@ import re
 import socket
 from functools import lru_cache
 from pathlib import Path
-from typing import Sequence
+from typing import Annotated, Any, Sequence
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from atr_training.backends import runner_python
 from atr_training.jobstore import LEGACY_JOB_HOST, SLURM_HOST
@@ -334,14 +334,41 @@ class TrainerSettings(BaseSettings):
     #: Every PHYSICAL card this box may train on (#12). ``None`` means "only
     #: ``gpu``", which is what every deployment did before this existed — so the
     #: default changes nothing and opening the second card is one setting:
-    #: ``ATR_TRAIN_GPUS=0,1``.
+    #: ``ATR_TRAIN_GPUS=0,1``. A JSON list (``[0,1]``) is read too.
+    #:
+    #: ``NoDecode`` because pydantic-settings otherwise decodes a list field from
+    #: the environment as JSON, and the form written here made TrainerSettings()
+    #: raise — the service would not have started (22.10.2026, #12).
     #:
     #: Kept beside ``gpu`` rather than replacing it because ``gpu`` is still the
     #: card a job takes when nothing allocates one (a hand-run script, a
     #: single-card box) and the name is in ``GET /host`` and in deployments. What
     #: must not happen is the two drifting apart, so nothing reads ``gpu``
     #: directly for scheduling: :attr:`usable_gpus` is the one answer.
-    gpus: list[int] | None = None
+    gpus: Annotated[list[int] | None, NoDecode] = None
+
+    @field_validator("gpus", mode="before")
+    @classmethod
+    def _card_list(cls, value: Any) -> Any:
+        """``0,1``, ``[0,1]`` or nothing; anything else is refused by name.
+
+        A value that does not parse must not read as "only the default card": an
+        operator who wrote ``0;1`` meant two cards, and silently getting one is
+        the failure that looks like a slow box rather than a typo.
+        """
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return None
+        if text.startswith("["):
+            text = text[1:-1] if text.endswith("]") else text
+        parts = [part.strip() for part in text.split(",")]
+        if not all(part.isdigit() for part in parts):
+            raise ValueError(
+                f"ATR_TRAIN_GPUS={value!r} is not a list of card indices; "
+                "write 0,1 (or [0,1])")
+        return [int(part) for part in parts]
     #: Headroom a kraken run needs (batch 256 through 3× Lbx256).
     min_free_vram_mb: int = 12000
     #: A QLoRA fine-tune of an 8B Qwen3-VL is a different order of appetite: ~6 GB
