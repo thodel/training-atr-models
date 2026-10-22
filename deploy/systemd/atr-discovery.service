@@ -1,0 +1,26 @@
+# User unit (systemctl --user) on asteraix — run by atr-discovery.timer.
+# Install: bash scripts/install_discovery_timer.sh
+#
+# One pass over dh-unibe's datasets: what changed since the last pass, and what it
+# would do to the corpus plan (#32). Reports land in ~/atr-cache/discovery/reports,
+# only on days something changed; runs.jsonl has a line for every run.
+#
+# The token is the one `hf auth login` stored (~/.cache/huggingface/token) — the
+# gated dh-unibe datasets need it, and it is why this runs here and not in GitHub
+# Actions. Do NOT set HF_HOME: ~/.cache/huggingface/hub is the shared cache.
+#
+# Exit 1 means the run did not trust its own listing (an outage looks like a mass
+# deletion) and kept the old memory. It shows in `systemctl --user --failed`.
+[Unit]
+Description=ATR dataset discovery: what changed in dh-unibe's training material (#32)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Repo/training-atr-models
+Environment=PYTHONPATH=%h/Repo/training-atr-models/src
+ExecStart=%h/Repo/training-atr-models/.venvs/kraken-train/bin/python scripts/discover_datasets.py --state-dir %h/atr-cache/discovery
+Nice=10
+# 29 s on 22.10.2026 for 49 datasets; the margin is for a slow Hub, not for work.
+TimeoutStartSec=30min
