@@ -177,6 +177,19 @@ allowlist entry therefore still reads as reachable there; only an authenticated
 | `GET /gpu` | this machine's cards, every process on them, and which job it belongs to |
 | `GET /health` | liveness, which engines have a venv, the cards, job counts over the whole store; the only route without a key |
 
+## The timer: atr-discovery
+
+| Unit | Port | Runs | venv | When |
+|---|---|---|---|---|
+| `atr-discovery.service` | none | `scripts/discover_datasets.py`, `Type=oneshot` | `kraken-train` | from `atr-discovery.timer`, daily 06:40 Europe/Zurich |
+
+A second user unit, a timer since #32: one pass over dh-unibe's datasets that
+reports what changed since the last pass and what it would do to the corpus plan.
+It binds nothing. State and reports live in `~/atr-cache/discovery/` on local
+disk; the token is the one `hf auth login` stored. `bash
+scripts/install_discovery_timer.sh` installs both files. What it reports and what
+it refuses is in [`DATASET_DISCOVERY.md`](DATASET_DISCOVERY.md).
+
 ## The venvs
 
 The engines need dependency trees that cannot be combined. kraken 7.0.2 needs

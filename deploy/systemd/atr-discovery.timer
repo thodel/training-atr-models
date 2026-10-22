@@ -1,0 +1,13 @@
+# Daily, before the 07:05 storage check, so a morning report can mention it.
+# Persistent: a pass missed while the box was down runs at the next boot.
+[Unit]
+Description=Daily dataset discovery for training-atr-models (#32)
+
+[Timer]
+OnCalendar=*-*-* 06:40:00 Europe/Zurich
+RandomizedDelaySec=10min
+Persistent=true
+Unit=atr-discovery.service
+
+[Install]
+WantedBy=timers.target

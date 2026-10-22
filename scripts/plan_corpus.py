@@ -38,39 +38,15 @@ from atr_training.corpus_plan import (  # noqa: E402
     Target,
     job_request,
     parse_card,
-    parse_projects,
     plan_corpus,
     score_candidate,
 )
 
 def fetch_catalogue(org: str) -> list[dict]:
-    """Every dataset of ``org``, with its card text, page count and size."""
-    from huggingface_hub import HfApi, hf_hub_download
+    """Every dataset of ``org`` whose card could be read (``atr_training.hub_catalogue``)."""
+    from atr_training.hub_catalogue import fetch_catalogue as fetch  # noqa: PLC0415
 
-    api = HfApi()
-    rows = []
-    for info in api.list_datasets(author=org):
-        try:
-            path = hf_hub_download(info.id, "README.md", repo_type="dataset")
-            card = Path(path).read_text(encoding="utf-8", errors="replace")
-        except Exception as exc:                       # gated, missing, offline
-            print(f"  skip {info.id}: {exc}", file=sys.stderr)
-            continue
-        detail = api.dataset_info(info.id, files_metadata=False)
-        card_data = getattr(detail, "cardData", None) or {}
-        dataset_info = card_data.get("dataset_info") or {}
-        if isinstance(dataset_info, list):
-            dataset_info = dataset_info[0] if dataset_info else {}
-        splits = dataset_info.get("splits") or []
-        projects = list(parse_projects(card))
-        rows.append({
-            "repo": info.id,
-            "card": card,
-            "pages": sum(s.get("num_examples") or 0 for s in splits),
-            "gb": round(sum(s.get("num_bytes") or 0 for s in splits) / 1024**3, 1),
-            "projects": projects,
-        })
-    return rows
+    return fetch(org).rows
 
 
 def to_candidates(rows: list[dict]) -> list[Candidate]:
