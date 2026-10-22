@@ -98,14 +98,23 @@ PY
   #     does not recognize this architecture`, because it was submitted without
   #     SIF= into an image with transformers 4 (#206). The image is the one the
   #     batch file would use: SIF from the environment, else its own default.
-  #     Exit 3 refuses; exit 2 (could not tell) only says so.
+  #     Exit 3 refuses; exit 2 (could not tell) only says so. A file that stops
+  #     after compile (prepare.sbatch) loads no model and is not asked (#282).
+  #
+  #     `KNOWS=$(…); KNOWS_CODE=$?` under `set -e` ended this script on the
+  #     refusal, before the refusal was printed: a failing command substitution
+  #     in an assignment is a failing command. Exit 3 with no word, 22.10.2026
+  #     (#282). The `|| KNOWS_CODE=$?` form is the one `set -e` leaves alone.
   JOB_SIF=${SIF:-$(sed -n 's/^SIF=${SIF:-\(.*\)}$/\1/p' "$SBATCH_FILE" | head -1)}
   JOB_SIF=${JOB_SIF/\$HOME/$HOME}
-  if [ -n "$JOB_SIF" ] && [ -f "$JOB_SIF" ]; then
+  if grep -q -- '--stop-after compile' "$SBATCH_FILE"; then
+    echo "  image check skipped: $SBATCH_FILE stops after compile and loads no model"
+  elif [ -n "$JOB_SIF" ] && [ -f "$JOB_SIF" ]; then
+    KNOWS_CODE=0
     KNOWS=$(apptainer exec --bind /storage/research --bind /scratch --bind /rs_scratch \
         --env PYTHONPATH="$REPO/src:$REPO/engines" --env HF_HOME="${HF_HOME:-}" \
-        "$JOB_SIF" python3 "$REPO/ubelix/image_knows_model.py" "$SPEC"); KNOWS_CODE=$?
-    echo "  $(basename "$JOB_SIF"): $KNOWS"
+        "$JOB_SIF" python3 "$REPO/ubelix/image_knows_model.py" "$SPEC") || KNOWS_CODE=$?
+    echo "  $(basename "$JOB_SIF"): ${KNOWS:-no answer (exit $KNOWS_CODE)}"
     if [ "$KNOWS_CODE" = 3 ]; then
       echo "refusing to submit: the image cannot load the base model" >&2
       exit 3
