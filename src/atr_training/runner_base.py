@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 import signal
 import threading
 import subprocess
@@ -163,19 +164,9 @@ class SubprocessRunner:
         self.share_root = share_root
 
     def _local_path(self, share_log: Path) -> Path | None:
-        """Where the authoritative copy goes, or ``None`` for "same file".
-
-        ``None`` whenever the two would be the same path or the share log lies
-        outside the share root — mirroring a file onto itself would write every
-        chunk twice.
-        """
-        if self.local_root is None or self.share_root is None:
-            return None
-        try:
-            local = self.local_root / share_log.relative_to(self.share_root)
-        except ValueError:
-            return None
-        return None if local == share_log else local
+        """Where the authoritative copy goes, or ``None`` for "same file" —
+        :func:`local_log_path`, the one rule both logs follow (#21)."""
+        return local_log_path(share_log, self.local_root, self.share_root)
 
     def run(self, cmd: list[str], share_log: Path, env: dict[str, str] | None = None,
             on_start: Callable[[int], None] | None = None) -> int:
@@ -226,6 +217,67 @@ class SubprocessRunner:
 #: How long a stage waits for the mirror thread after the child has exited. The
 #: thread is a daemon, so a share that never returns costs this much and no more.
 MIRROR_JOIN_TIMEOUT_S = 5.0
+
+
+def local_log_path(share_log: Path, local_root: Path | None,
+                   share_root: Path | None) -> Path | None:
+    """Where the authoritative copy of *share_log* goes, or ``None`` for "same file".
+
+    The rule the stage log has followed since #52 and ``runner.log`` since #21:
+    the local file mirrors the share file's place under the share root. ``None``
+    whenever the two would be the same path, or the share log lies outside the
+    share root — mirroring a file onto itself would write every line twice,
+    which is the mistake the first cut of the stage log made.
+    """
+    if local_root is None or share_root is None:
+        return None
+    try:
+        local = Path(local_root) / Path(share_log).relative_to(share_root)
+    except ValueError:
+        return None
+    return None if local == Path(share_log) else local
+
+
+@dataclass(frozen=True)
+class RunnerLog:
+    """Where ``runner.log`` is written: the file that has to survive, and the mirror."""
+
+    #: The authoritative file — local when there is a distinct local root.
+    path: Path
+    #: The best-effort copy on the share, or None when there is none: the paths
+    #: coincide, or the share could not be opened when the sinks were set up.
+    mirror: Path | None
+    #: loguru's handler ids, so a caller (a test) can remove the sinks again.
+    sink_ids: tuple[int, ...]
+
+
+def install_runner_log_sinks(store: JobStore, job_id: str, settings: TrainerSettings,
+                             level: str = "INFO") -> RunnerLog:
+    """Attach ``runner.log`` as two loguru sinks: local first, the share best effort (#21).
+
+    ``prepare`` and the VLM ``compile`` run in-process and write nothing but
+    ``runner.log``; on asteraix that file sat on the share, so the network
+    failure that killed an 11½-hour prepare was the one that could not keep its
+    reason. The local sink beside the checkpoint root is the one that has to
+    survive; the share sink is a convenience for ``tail`` and the API, and a
+    share that is already gone at start must not keep the run from starting
+    — loguru opens the file in ``add``, so that is where the ``except`` sits.
+    Where the two paths coincide (a box whose jobs root is local) there is one
+    file and one sink: the rule in :func:`local_log_path`.
+    """
+    share = store.paths(job_id).logs / "runner.log"
+    local = local_log_path(share, settings.checkpoint_root, store.root)
+    if local is None:
+        return RunnerLog(path=share, mirror=None, sink_ids=(logger.add(share, level=level),))
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local_id = logger.add(local, level=level)
+    try:
+        mirror_id = logger.add(share, level=level)
+    except OSError as exc:
+        logger.warning("runner.log mirror on the share could not be opened ({}): {} — "
+                       "the local copy at {} is the only one", share, exc, local)
+        return RunnerLog(path=local, mirror=None, sink_ids=(local_id,))
+    return RunnerLog(path=local, mirror=share, sink_ids=(local_id, mirror_id))
 
 
 
@@ -1950,7 +2002,18 @@ class BasePipeline(ABC):
                 return stage_log
         except OSError:
             pass
-        return paths.logs / "runner.log"
+        share = paths.logs / "runner.log"
+        # The share copy when it is there and readable; else the local one,
+        # which is the file that was written when the share was not (#21).
+        local = local_log_path(share, self.settings.checkpoint_root, self.store.root)
+        if local is not None:
+            try:
+                share_usable = share.is_file() and share.stat().st_size > 0
+            except OSError:
+                share_usable = False
+            if not share_usable and local.is_file():
+                return local
+        return share
 
 
 def install_cancel_handler(preemptable: bool = False) -> None:
@@ -1992,7 +2055,7 @@ def run_job(pipeline_cls: type[BasePipeline], description: str,
 
     settings = TrainerSettings()
     store = JobStore(args.root)
-    logger.add(store.paths(args.job_id).logs / "runner.log", level="INFO")
+    install_runner_log_sinks(store, args.job_id, settings)
 
     # Set by the batch script on a preemptable queue. Off by default, so the
     # asteraix service keeps treating SIGTERM as "stop this job".
