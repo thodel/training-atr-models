@@ -13,6 +13,8 @@ prepare stage with kraken.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import re
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -1066,6 +1068,34 @@ class CodeVersion(BaseModel):
         return self.commit[:12] + ("+dirty" if self.dirty else "")
 
 
+class Runtime(BaseModel):
+    """Where a stage ran: the container image and the transformers it imported (#206).
+
+    Two images run VLM stages on UBELIX, and they differ by a transformers
+    major version — ``vlm-train.sif`` (4.57) cannot load ``qwen3_5`` at all,
+    ``vlm-train-tf5.sif`` (5.17) can — and a major version changes tokenisation,
+    generation defaults and the attention implementation, which is to say the
+    CER. Until 10.10.2026 nothing recorded which image a number came from; from
+    then on the batch script printed it into the Slurm log, and from this field
+    on the record carries it, per stage, beside ``code``.
+
+    ``image`` is what the container runtime says (``APPTAINER_CONTAINER``, the
+    path of the image that is running this process), or the ``SIF`` the batch
+    script exported; ``None`` means **no container** — asteraix runs its engine
+    venvs bare — which is a measured fact, not an unknown. ``transformers`` is
+    the installed distribution's version, ``None`` where none is installed
+    (kraken's venv). A stage recorded before this field existed has no
+    ``runtime`` at all, and readers say "unknown" for it, never "no container".
+    """
+
+    image: str | None = None
+    transformers: str | None = None
+
+    def short(self) -> str:
+        where = Path(self.image).name if self.image else "no container"
+        return f"{where} / transformers {self.transformers or 'none'}"
+
+
 class StageRecord(BaseModel):
     name: JobStage
     status: Literal["pending", "running", "completed", "failed", "cancelled"] = "pending"
@@ -1076,6 +1106,9 @@ class StageRecord(BaseModel):
     #: The code this stage actually ran with, which on a resumed or requeued job
     #: need not be the code the job was created with (#147).
     code: CodeVersion | None = None
+    #: The image and transformers this stage ran in (#206); absent on records
+    #: from before the field, which readers report as unknown.
+    runtime: Runtime | None = None
     #: Peak GPU memory sampled from outside while this stage's subprocess ran,
     #: per card: ``{"gpu0": {"own_mib": …, "card_mib": …}}``. Per stage rather
     #: than per job because the two peaks differ and the smaller one is not the

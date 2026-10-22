@@ -579,6 +579,37 @@ def _slurm_ids(record: Dict[str, Any]) -> List[str]:
     return sorted(set(re.findall(r"Slurm job (\d+)", text)))
 
 
+#: The stages whose runtime decides what a CER means: the test stage measured
+#: it, the train stage made the weights it measured. In that order of relevance.
+RUNTIME_STAGES = ("test", "train")
+
+
+def runtime_of(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Which image and transformers produced this record's number (#206).
+
+    Three answers, never two. ``known`` is True when a GPU stage carries the
+    ``runtime`` field the runner writes since #206; then ``image`` is the
+    image's file name or None for **no container** (asteraix runs its venvs
+    bare — a measured fact). ``known`` is False on every record from before the
+    field, with ``image`` and ``transformers`` None and ``why`` saying so: that
+    is "nobody recorded it", which must not read like "no container".
+    """
+    for name in RUNTIME_STAGES:
+        for stage in record.get("stages") or []:
+            if stage.get("name") != name or "runtime" not in stage:
+                continue
+            runtime = stage.get("runtime") or {}
+            image = runtime.get("image")
+            return {"known": True, "stage": name,
+                    "image": Path(image).name if image else None,
+                    "transformers": runtime.get("transformers"),
+                    "text": "%s / transformers %s" % (Path(image).name if image else "no container",
+                                                      runtime.get("transformers") or "none")}
+    return {"known": False, "stage": None, "image": None, "transformers": None,
+            "text": "unknown", "why": "no GPU stage of this record carries a runtime: "
+                                     "recorded before #206, or the stage never ran"}
+
+
 def summarise_job(job_dir: Path, record: Dict[str, Any], with_draw: bool = True) -> Dict[str, Any]:
     request = record.get("request") or {}
     params = _params(record)
@@ -588,11 +619,16 @@ def summarise_job(job_dir: Path, record: Dict[str, Any], with_draw: bool = True)
     drift = []
     for stage in record.get("stages") or []:
         commit = (stage.get("code") or {}).get("commit")
+        runtime = stage.get("runtime") if "runtime" in stage else None
         stages.append({
             "name": stage.get("name"), "status": stage.get("status"),
             "started_cest": utc_to_cest(stage.get("started_at")),
             "finished_cest": utc_to_cest(stage.get("finished_at")),
             "exit_code": stage.get("exit_code"), "commit": (commit or "")[:12] or None,
+            # Absent (not None) when the record predates the field: a reader
+            # that sees the key missing knows nobody looked.
+            **({"image": Path(runtime["image"]).name if runtime.get("image") else None,
+                "transformers": runtime.get("transformers")} if runtime is not None else {}),
         })
         if commit and created and commit != created:
             drift.append("stage %s: running %s, but the job was created with %s"
@@ -612,6 +648,10 @@ def summarise_job(job_dir: Path, record: Dict[str, Any], with_draw: bool = True)
         "started_cest": utc_to_cest(record.get("started_at")),
         "finished_cest": utc_to_cest(record.get("finished_at")),
         "host": record.get("host"),
+        # Dieselbe Frage wie der Host, eine Ebene tiefer: zwei Abbilder, eine
+        # transformers-Hauptversion Unterschied, und bis #206 stand in keinem
+        # Datensatz, welches den Wert erzeugt hat.
+        "runtime": runtime_of(record),
         # Der Held-out-Zustand ist die zweite Bedingung der Vergleichbarkeit neben
         # der Ziehung, und er lag schon im Datensatz, ohne je gelesen zu werden:
         # das September-Korpus der medieval-Leiter hatte `reserved_pages: 0`, das
@@ -1188,6 +1228,7 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
             "code_drift": bool(summary["code_drift"]),
             "reserved_pages": summary["heldout"]["reserved_pages"],
             "heldout_fp": summary["heldout"]["fingerprint"],
+            "runtime": summary["runtime"]["text"],
         })
     rows.sort(key=lambda r: (r["finished_cest"] or "", r["id"]))
     return {"jobs_root": str(paths.jobs_root), "stores": store_states(paths), "rows": rows,
@@ -1198,9 +1239,10 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
                     "None and its October rows 3173 — 28 % fewer training lines from "
                     "the same spec, so they do not compare in either direction. "
                     "reserved_pages None means nobody looked, which is not 0. Host "
-                    "says which machine trained the row, and a kraken CER was "
-                    "measured on asteraix's venv, a VLM CER in a UBELIX container "
-                    "(#206)"}
+                    "says which machine trained the row; runtime says in which "
+                    "image and transformers the number was measured — 'unknown' "
+                    "on every record from before 22.10.2026, which is not 'no "
+                    "container' (#206)"}
 
 
 def draw(paths: Paths, job_id: str) -> Dict[str, Any]:

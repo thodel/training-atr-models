@@ -487,6 +487,18 @@ before anything loads:
 
     == SIF: /storage/homefs/th19c587/ubelix/vlm-train-tf5.sif (transformers 5.17.0)
 
+Since 22.10.2026 the record carries it as well: every stage the runner opens
+gets a `runtime` — the image the container runtime names (`APPTAINER_CONTAINER`,
+else the batch script's `SIF`) and the installed transformers version — beside
+its `code`, and `atr-results job` / `results` print it (`runtime`, from the
+test stage, else train). Three answers: an image, **no container** (asteraix's
+bare venvs, a measured fact), or **unknown** for every record from before the
+field. **Every number in the tables above is of the third kind** — the
+container that produced it is not in its record; `scripts/runtime_provenance.py`
+recovers it from the `== SIF:` line of a Slurm log where one exists, and says
+`unknown` where none does. Treat the ladder's rows as container-unattributed
+until a row says otherwise.
+
 For every CER measured before that line existed, the container is not
 recoverable from the record. For `17653688`, submitted 08.10. and still running
 when the fix landed, it was recoverable only from the live process (`ps` on
