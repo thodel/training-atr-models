@@ -31,7 +31,7 @@ from atr_training.churro_xml import (
 )
 from atr_training.textmetrics import score_pairs
 from atr_training.vlm_dataset import (
-    CHAT_TEMPLATE_KWARGS,
+    template_kwargs,
     apply_visual_budget,
     has_stepped_budget,
     fit_pixels,
@@ -233,7 +233,7 @@ def turn_end_ids(processor, tokenizer) -> list[int]:
     try:
         rendered = processor.apply_chat_template(
             chat_example("Transcribe.", _ANSWER_SENTINEL), tokenize=False,
-            add_generation_prompt=False, **CHAT_TEMPLATE_KWARGS)
+            add_generation_prompt=False, **template_kwargs(processor))
         cut = rendered.find(_ANSWER_SENTINEL)
         if cut < 0:
             return []
@@ -350,13 +350,14 @@ def generation_prompt(processor, prompt: str, system: str | None,
     ``--prompt-from-generation-prompt`` restores the old behaviour for reproducing
     a report made before that date.
     """
+    kwargs = template_kwargs(processor)
     if not from_training_render:
         return processor.apply_chat_template(
             chat_example(prompt, system=system), tokenize=False,
-            add_generation_prompt=True, **CHAT_TEMPLATE_KWARGS)
+            add_generation_prompt=True, **kwargs)
     rendered = processor.apply_chat_template(
         chat_example(prompt, _ANSWER_SENTINEL, system=system), tokenize=False,
-        add_generation_prompt=False, **CHAT_TEMPLATE_KWARGS)
+        add_generation_prompt=False, **kwargs)
     cut = rendered.find(_ANSWER_SENTINEL)
     if cut < 0:
         raise SystemExit(

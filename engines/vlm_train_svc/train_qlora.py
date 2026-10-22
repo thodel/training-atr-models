@@ -25,7 +25,7 @@ from pathlib import Path
 
 from atr_training.continuation import ContinuationPolicy, should_stop
 from atr_training.vlm_dataset import (
-    CHAT_TEMPLATE_KWARGS,
+    template_kwargs,
     apply_visual_budget,
     fit_pixels,
     chat_example,
@@ -184,12 +184,12 @@ def assistant_header_ids(processor, prompt: str) -> list[int]:
     left is exactly the tokens the sequence carries before the answer.
     """
     tokenizer = processor.tokenizer
+    kwargs = template_kwargs(processor)
     without = processor.apply_chat_template(
-        chat_example(prompt), tokenize=False, add_generation_prompt=False,
-        **CHAT_TEMPLATE_KWARGS)
+        chat_example(prompt), tokenize=False, add_generation_prompt=False, **kwargs)
     with_answer = processor.apply_chat_template(
         chat_example(prompt, _ANSWER_SENTINEL), tokenize=False,
-        add_generation_prompt=False, **CHAT_TEMPLATE_KWARGS)
+        add_generation_prompt=False, **kwargs)
     cut = with_answer.find(_ANSWER_SENTINEL)
     if cut < 0:
         raise SystemExit(
@@ -243,6 +243,9 @@ class HTRCollator:
         self.kind_pixels = dict(kind_pixels or {})
 
         self.header_ids = assistant_header_ids(processor, prompt)
+        # Decided once per collator, not once per sample: the template does not
+        # change between batches, and the decision is a Jinja parse (#274).
+        self.template_kwargs = template_kwargs(processor)
 
     def _answer_start(self, ids: list[int]) -> int:
         """Index just past the last assistant header in ``ids``."""
@@ -262,7 +265,7 @@ class HTRCollator:
             images.append(fit_pixels(image, budget) if budget else image)
             texts.append(self.processor.apply_chat_template(
                 chat_example(self.prompt, sample["text"]), tokenize=False,
-                add_generation_prompt=False, **CHAT_TEMPLATE_KWARGS,
+                add_generation_prompt=False, **self.template_kwargs,
             ))
 
         # No ``truncation``/``max_length``. On a text-only sequence truncation

@@ -39,7 +39,10 @@ dependencies = [
 # a tree that was clean locally reported 125 errors in CI. A linter whose rule set
 # changes between the machine you fix it on and the machine that judges it cannot
 # be a gate. Bumping the pin is a deliberate commit.
-dev = ["pytest>=8.0", "ruff==0.15.20"]
+dev = ["pytest>=8.0", "ruff==0.15.20",
+       # What transformers renders chat templates with; the tests ask the
+       # vendored templates what they read (tests/fixtures/chat_templates, #274).
+       "jinja2>=3.1"]
 # The reading MCP over the UBELIX job store (#156, #174). Its server half needs
 # the mcp SDK; its probe half runs on the cluster with python 3.9 and nothing
 # else, which is why mcp is an extra and not a dependency. Pinned to the 1.x
