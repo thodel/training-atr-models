@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import signal
 import sys
-import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 from loguru import logger
 
@@ -49,6 +52,64 @@ from atr_training.hf_source import (
 )
 from atr_training.prepare import HFPageSource, materialize
 from atr_training.vlm_dataset import samples_for
+
+
+# ── the working directory: named after the job, removed on the way out (#183) ──
+#
+# A materialised corpus is a third of a terabyte (zh: 300 GB for 147'617 pages),
+# and on this queue a job ends by SIGKILL more often than not — TIMEOUT, scancel,
+# the OOM killer, a preemption. ``tempfile.TemporaryDirectory`` cleans up on none
+# of those, and nine such leftovers were 1.1 TB on 08.10.2026. So:
+#
+# * the directory is ``job-<SLURM_JOB_ID>`` rather than ``line-ds-<random>``, so
+#   a leftover can be matched to ``sacct``'s verdict on its job instead of to a
+#   timestamp — the mtime of the top directory does not move while
+#   ``materialize`` writes below it, and a cleaner reading it would have deleted
+#   a running job's 300 GB (the issue measured exactly that);
+# * SIGTERM, which Slurm sends before the SIGKILL (``--signal=TERM@120`` in the
+#   sbatch), is turned into a SystemExit so the ``finally`` below runs — that
+#   covers TIMEOUT and scancel. The sbatch's own EXIT trap covers the OOM killer,
+#   which kills only this process. What neither reaches, ``clean_line_workdirs.py``
+#   does, by asking sacct.
+
+#: Without a job id (a run by hand on the login node) the pid does the same job.
+def workdir_for(base: Path, slurm_job_id: str | None, pid: int) -> Path:
+    """``<base>/job-<id>`` under Slurm, ``<base>/pid-<pid>`` otherwise."""
+    if slurm_job_id and slurm_job_id.strip():
+        return base / f"job-{slurm_job_id.strip()}"
+    return base / f"pid-{pid}"
+
+
+def _terminated(signum, _frame):
+    """Slurm's TERM before the KILL: leave through the ``finally``, not past it."""
+    raise SystemExit(128 + signum)
+
+
+@contextmanager
+def working_directory(base: Path) -> Iterator[Path]:
+    """A fresh ``workdir_for`` under *base*, removed on every exit this process sees.
+
+    A directory already there under this job's name is a previous attempt of
+    the same job (a requeue, a restart by hand) and is replaced, with a line
+    saying so: the crops in it are from a run that did not finish.
+    """
+    path = workdir_for(base, os.environ.get("SLURM_JOB_ID"), os.getpid())
+    if path.exists():
+        logger.warning("{} exists — a previous attempt of this job; replacing it", path)
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    logger.info("working in {} (removed when this process ends, signal or not)", path)
+    previous = signal.signal(signal.SIGTERM, _terminated)
+    try:
+        yield path
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        shutil.rmtree(path, ignore_errors=True)
+        if path.exists():
+            logger.warning("{} could not be removed entirely; ubelix/clean_line_workdirs.py "
+                           "lists it against sacct", path)
+        else:
+            logger.info("removed {}", path)
 
 
 def source_body(repo: str, revision: str) -> str:
@@ -385,7 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     # The pages and crops land here before they are packed. /tmp on the login node
     # has ~18 GB and `materialize` wants 50 free, so the default is scratch.
     p.add_argument("--workdir", default=None,
-                   help="where to materialize (default: $ATR_TRAIN_SCRATCH or "
+                   help="where to materialize, in a job-<SLURM_JOB_ID> directory of "
+                        "its own (default: $ATR_TRAIN_SCRATCH or "
                         "/scratch/network/users/$USER/line-datasets)")
     args = p.parse_args(argv)
 
@@ -399,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
     base = Path(args.workdir or os.environ.get("ATR_TRAIN_SCRATCH")
                 or "/scratch/network/users/%s/line-datasets" % os.environ.get("USER", "unknown"))
     base.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="line-ds-", dir=str(base)) as tmp:
+    with working_directory(base) as tmp:
         chosen = [x.strip() for x in args.projects.split(",") if x.strip()] if args.projects else None
         built = build(args.repo, args.revision, args.max_pages, Path(tmp), chosen)
         if not built.lines:

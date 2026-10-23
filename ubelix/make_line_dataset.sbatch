@@ -26,10 +26,23 @@
 #SBATCH --mem=48G
 #SBATCH --time=12:00:00
 #SBATCH --output=/storage/homefs/%u/ubelix/logs/%x-%j.out
+# TERM to every process of the step 120 s before the wall, so python can remove
+# its working directory (a third of a terabyte, #183) before the KILL. Not B:,
+# on purpose: the python inside the container must get it, not only this shell.
+#SBATCH --signal=TERM@120
 set -euo pipefail
 REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 # shellcheck source=pin_code.sh
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
+# The working directory is job-$SLURM_JOB_ID under this base (#183): python
+# removes it on its way out, TERM included; the EXIT trap here removes what an
+# OOM kill of the python process leaves. A leftover then means the step itself
+# was killed, and clean_line_workdirs.py matches it to sacct's verdict.
+WORKDIR_BASE=${ATR_TRAIN_SCRATCH:-/scratch/network/users/$USER/line-datasets}
+# shellcheck source=line_workdir.sh
+source "$REPO/ubelix/line_workdir.sh"
+WORKDIR=$(line_dataset_workdir "$WORKDIR_BASE")
+trap 'cleanup_line_workdir "$WORKDIR"' EXIT
 export HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub
 # Arrow to scratch, downloads on the share — see prepare.sbatch for why. This
 # stage reads whole corpora too: job 17328122 died here with `Errno 122` because
@@ -43,8 +56,8 @@ if [ -s "$HOME/.hf_token" ]; then HF_TOKEN=$(tr -d '[:space:]' < "$HOME/.hf_toke
 apptainer exec --bind /storage --bind /scratch --bind /rs_scratch \
   --env PYTHONPATH="$REPO/src:$REPO/engines" --env HF_HOME="$HF_HOME" \
   --env HF_DATASETS_CACHE="$HF_DATASETS_CACHE" \
-  --env HF_TOKEN="${HF_TOKEN:-}" --env USER="$USER" \
+  --env HF_TOKEN="${HF_TOKEN:-}" --env USER="$USER" --env SLURM_JOB_ID="$SLURM_JOB_ID" \
   "$HOME/ubelix/vlm-train-tf5.sif" /opt/vlm-train/bin/python \
   "$REPO/ubelix/make_line_dataset.py" --repo "$REPO_ID" --revision "$REV" \
   --out "$OUT" --max-pages "${MAX_PAGES:-200000}" ${PROJECTS:+--projects "$PROJECTS"} \
-  ${PRIVATE:+--private}
+  ${PRIVATE:+--private} --workdir "$WORKDIR_BASE"

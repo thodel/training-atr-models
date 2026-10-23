@@ -304,6 +304,34 @@ Verify a resume by three lines: `resuming from …/checkpoint-N` (trainer log),
 `re-entered while \`training\`` (runner log), and the same job id on both
 attempts (batch log).
 
+## Working directories of line-dataset jobs (#183)
+
+`make_line_dataset.sbatch` materialises a corpus under
+`/scratch/network/users/$USER/line-datasets/` — a third of a terabyte for the
+large ones — and on this queue a job ends by SIGKILL more often than not.
+`tempfile.TemporaryDirectory` cleaned up on none of TIMEOUT, scancel, OOM or
+preemption: nine leftovers were 1.1 TB on 08.10.2026. Since #183:
+
+* the directory is **`job-<SLURM_JOB_ID>`**, so a leftover can be matched to
+  `sacct`'s verdict on its job rather than to a timestamp (the top directory's
+  mtime does not move while `materialize` writes below it);
+* `--signal=TERM@120` reaches the python inside the container, which removes
+  the directory on its way out (TIMEOUT, scancel); the sbatch's EXIT trap
+  (`ubelix/line_workdir.sh`) removes what an OOM kill of the python leaves;
+* what neither reaches, the cleaner does — on a login node, by asking sacct:
+
+      python ubelix/clean_line_workdirs.py            # list, delete nothing
+      python ubelix/clean_line_workdirs.py --apply    # delete what sacct calls dead
+      python ubelix/clean_line_workdirs.py --apply --unattributed
+                                                      # also line-ds-<random> and
+                                                      # job-<id> sacct no longer knows,
+                                                      # only while no line-dataset job
+                                                      # of yours is queued or running
+
+  Three verdicts, never two: a job sacct reports terminal is dead, RUNNING or
+  PENDING is alive, anything else is **unknown** — kept unless `--unattributed`
+  says so and `squeue` shows nothing that could be writing. Never by mtime.
+
 ## Four things that differ from asterAIx
 
 All of them are set in `smoke.sbatch`; copy that header for any new job.
