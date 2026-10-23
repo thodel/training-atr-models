@@ -653,7 +653,7 @@ class Pipeline(BasePipeline):
             # The weights as the gateway understands vram_mb — the .mlmodel
             # file, ~16 MiB — never the training peak, and never 0 (#225).
             "vram_mb": weights_mib(dest),
-        }, dest_dir) is not None:
+        }, dest_dir, metrics=metrics) is not None:
             logger.info(
                 "registered {} -> {} (disabled until promoted)", model_id, dest)
         return dest

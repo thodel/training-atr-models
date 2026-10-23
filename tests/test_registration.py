@@ -10,7 +10,9 @@ again: the contract tests below say what else has to follow.
 
 The example uses a subset of the fields, so it cannot notice a field the gateway
 gained — ``max_pixels`` did, twelve minutes before the schema here was written.
-``fixtures/registry/modelspec_fields.txt`` pins the whole list.
+``fixtures/registry/modelspec_fields.txt`` pins the whole list — written by
+``scripts/refresh_gateway_fixtures.py`` and compared with the gateway's main by
+``tests/test_gateway_drift.py`` wherever the network allows (#151).
 """
 
 from __future__ import annotations
@@ -527,11 +529,88 @@ def test_what_each_runner_writes_is_what_the_gateway_reads(engine, tmp_path):
         assert type(written[key]) is type(example[key]), key
 
     assert written["engine"] == engine
+    # #151: every trained model says what it is, the way every curated one does.
+    assert written["description"].startswith(
+        {"kraken": "kraken model trained from scratch", "trocr": "TrOCR fine-tune",
+         "vllm": "LoRA"}[engine]), written["description"]
+    assert "dh-unibe/x (1 project)" in written["description"]
+    assert written["description"].endswith("held-out CER 10.0\u202f%")
     assert written["enabled"] is False, "registered is not proven: the gate flips it"
     assert "disabled_reason" not in written, "the gate may ask only for a model without one"
     assert Path(written["local_path"]).is_absolute()
     assert written["local_path"] == str(weights)
     assert Path(written["local_path"]).exists()
+
+
+# ── the description a runner writes (#151) ──────────────────────────────────
+from atr_training.registration import CorpusCount, describe_training  # noqa: E402
+
+
+def test_a_description_names_base_corpus_counts_level_and_cer():
+    line = describe_training(
+        engine="vllm", base_model="Qwen/Qwen3.5-4B",
+        corpora=[CorpusCount("dh-unibe/image-text_kurrent-xix-lines", 3, 412, 13870)],
+        granularity="line", cer=0.0312)
+    assert line == ("LoRA on Qwen/Qwen3.5-4B, trained on dh-unibe/image-text_kurrent-xix-lines "
+                    "(3 projects, 412 pages, 13\u202f870 lines), line level; held-out CER 3.1\u202f%")
+
+
+def test_a_kraken_model_without_a_base_is_trained_from_scratch():
+    line = describe_training(engine="kraken", base_model=None,
+                             corpora=[CorpusCount("dh-unibe/x", 1, 9, 1)],
+                             granularity="page", cer=0.2)
+    assert line.startswith("kraken model trained from scratch, trained on dh-unibe/x (1 project, 9 pages, 1 line)")
+    fine = describe_training(engine="kraken", base_model="kraken-prima",
+                             corpora=[CorpusCount("dh-unibe/x", 1)], granularity=None, cer=0.2)
+    assert fine == "kraken fine-tune of kraken-prima, trained on dh-unibe/x (1 project); held-out CER 20.0\u202f%"
+
+
+def test_an_unmeasured_cer_is_said_not_numbered_and_uncounted_pages_are_omitted():
+    line = describe_training(engine="trocr", base_model="microsoft/trocr-base-handwritten",
+                             corpora=[CorpusCount("dh-unibe/x", None)], granularity="line", cer=None)
+    assert line.endswith("; CER not measured")
+    assert "all projects" in line and "pages" not in line and "0" not in line
+
+
+def test_several_corpora_are_all_named():
+    line = describe_training(engine="vllm", base_model="b",
+                             corpora=[CorpusCount("dh-unibe/a", 2, 10, 100),
+                                      CorpusCount("dh-unibe/b", 5, 20, 200)],
+                             granularity="mixed", cer=0.05)
+    assert "dh-unibe/a (2 projects, 10 pages, 100 lines) + dh-unibe/b (5 projects, 20 pages, 200 lines)" in line
+    with pytest.raises(ValueError, match="at least one corpus"):
+        describe_training(engine="vllm", base_model="b", corpora=[], granularity=None, cer=None)
+
+
+def test_a_runner_s_spec_may_carry_its_own_description(tmp_path):
+    """``setdefault``: a backend that writes a better line keeps it."""
+    from vlm_train_svc.runner import Pipeline
+    registry_root = tmp_path / "registry"
+    registry_root.mkdir()
+    settings = TrainerSettings(
+        _env_file=None, jobs_root=tmp_path / "jobs", trained_root=tmp_path / "trained",
+        registry_root=registry_root, checkpoint_root=tmp_path / "ckpt")
+    store = JobStore(settings.jobs_root, host_id=settings.host_id)
+    pipeline = Pipeline(store, settings)
+    job = store.create(TrainRequest(
+        engine="vllm", model_id="vllm-own-words", force=True, base_model="Qwen/Qwen3.5-4B",
+        dataset=DatasetSpec(hf_repo="dh-unibe/x", train_projects=["p", "q"])))
+    weights = tmp_path / "trained" / "vllm-own-words"
+    weights.mkdir(parents=True)
+    pipeline._write_registration(job, {"id": "vllm-own-words", "engine": "vllm",
+                                       "local_path": str(weights), "enabled": False,
+                                       "description": "my own words"}, weights,
+                                 metrics=Metrics(cer=0.5))
+    assert read_registration(registry_root, "vllm-own-words").description == "my own words"
+    # and the derived one, from the job alone, when the spec has none
+    derived = pipeline._describe(job, Metrics(cer=0.5))
+    assert derived == ("LoRA on Qwen/Qwen3.5-4B, trained on dh-unibe/x (2 projects), "
+                       "line level; held-out CER 50.0\u202f%")
+    whole = store.create(TrainRequest(
+        engine="vllm", model_id="vllm-all", force=True, base_model="b",
+        dataset=DatasetSpec(hf_repo="dh-unibe/y", all_projects=True, max_pages=50)))
+    assert "dh-unibe/y (all projects)" in pipeline._describe(whole, None)
+    assert pipeline._describe(whole, None).endswith("CER not measured")
 
 
 # ── the deployment example ──────────────────────────────────────────────────

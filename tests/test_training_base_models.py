@@ -228,7 +228,7 @@ def test_the_published_registry_resolves_the_id_that_failed():
     from atr_training.shared_registry import load_shared_registry
 
     snapshot = Path(__file__).resolve().parent / "fixtures" / "registry" / "models.yaml"
-    resolved = resolve_base_model("kraken-medieval_generic_b", "kraken",
+    resolved = resolve_base_model("kraken-prima", "kraken",   # medieval_generic_b, renamed (serving#198)
                                   load_shared_registry(snapshot),
                                   path_exists=never_exists)
     assert resolved.ref.startswith("10.5281/zenodo.")

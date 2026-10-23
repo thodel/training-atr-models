@@ -35,10 +35,13 @@ def test_the_snapshot_parses_without_the_gateways_classes():
 
 
 @pytest.mark.parametrize("model_id", [
-    # The two ids real jobs actually named, as of 16.09.2026:
-    # 11 jobs with the first, 1 with the second.
-    "kraken-early_modern_german",
-    "kraken-medieval_generic_b",
+    # The two ids real jobs actually named, as of 16.09.2026 (11 jobs with the
+    # first, 1 with the second) — under the names the gateway gave them in
+    # serving#198: kraken-early_modern_german is kraken-catmus_medieval,
+    # kraken-medieval_generic_b is kraken-prima. The old ids are gone from the
+    # published file, so a job record naming them no longer resolves (#151).
+    "kraken-catmus_medieval",
+    "kraken-prima",
 ])
 def test_the_ids_real_jobs_used_still_resolve(model_id):
     resolved = resolve_base_model(model_id, "kraken", load_shared_registry(SNAPSHOT),

@@ -67,7 +67,9 @@ from atr_training.prepare import (
 from atr_training.pagexml import line_boxes
 from atr_training.promote import PromotionResult
 from atr_training.registration import (
+    CorpusCount,
     RegistrationError,
+    describe_training,
     manual_registration,
     read_registration,
     set_enabled,
@@ -1412,9 +1414,38 @@ class BasePipeline(ABC):
                 "run would train and then leave the registry alone. Unset SLURM_JOB_ID in "
                 "the trainer's environment, or submit the job to UBELIX.")
 
+    @staticmethod
+    def _describe(job: TrainJob, metrics: "Metrics | None") -> str:
+        """The one-line ``description`` a registration carries (#151).
+
+        From the job record alone: the request names the corpora and the base,
+        ``progress.dataset_counts`` says how much of each arrived, the params
+        say the granularity, and *metrics* is what the test stage measured.
+        """
+        counts = {c.hf_repo: c for c in job.progress.dataset_counts}
+        corpora = []
+        for dataset in job.request.datasets:
+            count = counts.get(dataset.hf_repo)
+            corpora.append(CorpusCount(
+                hf_repo=dataset.hf_repo,
+                projects=None if dataset.all_projects else len(dataset.train_projects),
+                pages=None if count is None else count.pages_written,
+                lines=None if count is None else count.lines,
+            ))
+        granularity = getattr(job.request.params, "granularity", None) \
+            or job.request.datasets[0].granularity
+        return describe_training(
+            engine=job.request.engine, base_model=job.request.base_model,
+            corpora=corpora, granularity=granularity,
+            cer=None if metrics is None else metrics.cer)
+
     def _write_registration(self, job: TrainJob, spec: dict[str, Any],
-                            weights_dir: Path) -> Path | None:
+                            weights_dir: Path, metrics: "Metrics | None" = None) -> Path | None:
         """Write ``trained/<id>.yaml``; a failure fails the job, and says so usefully.
+
+        ``description`` is filled in here from the job when the runner did not
+        write one (#151): every trained model then says in ``/models`` what it
+        is, the way every curated one does.
 
         Called last in ``_register``, after the weights and ``metadata.json``
         are in place — so the weights survive the startup cleanup, which removes
@@ -1427,6 +1458,7 @@ class BasePipeline(ABC):
         says where it is and how to finish by hand instead of suggesting a rerun.
         """
         root = self.settings.registry_root
+        spec.setdefault("description", self._describe(job, metrics))
         # Before the write, so a failed job's record points at the weights too.
         job.model_path = spec.get("local_path") or str(weights_dir)
         slurm_job = self._slurm_job_id
