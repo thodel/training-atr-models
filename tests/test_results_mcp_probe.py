@@ -1516,3 +1516,94 @@ def test_a_requeue_onto_a_finished_record_reads_as_a_cause():
     line = ("2026-10-21 04:09:25.001 | INFO | atr_training.runner_base:execute - job x "
             "re-entered in terminal state 'completed' — nothing to do, the record stands")
     assert probe.log_notes([], ["== attempt 17 — job x (training) on gnode26", line])["cause"]
+
+
+# ── #165: a failed look is a third state, never a zero ───────────────────────
+def test_a_failed_squeue_is_an_error_not_an_empty_queue(cluster):
+    """The night of 06.10.2026: a failed look printed `0 of 16 settled`. The
+    probe must raise — main() then answers `{"error": …}` — and never hand back
+    `jobs: []` with `running: 0` as if it had looked."""
+    def squeue_down(argv):
+        raise ProbeError("squeue: exit 1: slurm_load_jobs error: Unable to contact slurm controller")
+    with pytest.raises(ProbeError, match="Unable to contact"):
+        probe.queue(squeue_down, cluster)
+    with pytest.raises(ProbeError):
+        probe.finished(squeue_down, cluster)
+
+
+def test_a_node_sinfo_cannot_describe_is_unknown_and_the_queue_still_answers(cluster):
+    """The pending row names gnode20 as unavailable; sinfo fails. The queue is
+    still the queue, and the node reads `unknown` with the reason — not a node
+    without a problem, and not a dead answer."""
+    def run(argv):
+        if argv[0] == "squeue":
+            return SQUEUE
+        raise ProbeError("sinfo: exit 1: slurm_load_partitions: Unable to contact slurm controller")
+    answer = probe.queue(run, cluster)
+    pending = next(j for j in answer["jobs"] if j["slurm_job_id"] == "17520966")
+    (node,) = pending["unavailable_nodes"]
+    assert node["node"] == "gnode20" and node["state"] == "unknown"
+    assert "sinfo could not be asked" in node["why"] and "Unable to contact" in node["why"]
+    assert answer["running"] == 2 and answer["pending"] == 2, "what squeue said still counts"
+
+    answered = canned({"squeue": SQUEUE, "sinfo": "gnode21|drained*|x|gpu:8\n"})
+    (node,) = next(j for j in probe.queue(answered, cluster)["jobs"]
+                   if j["slurm_job_id"] == "17520966")["unavailable_nodes"]
+    assert node["state"] == "unknown" and "not for this node" in node["why"], \
+        "sinfo answered about another node: still unknown for this one"
+
+
+def test_an_unreadable_batch_file_is_named_not_folded_into_none_is_named(cluster):
+    write_checkout(cluster)
+    (cluster.checkout / "ubelix" / "broken.sbatch").mkdir()      # a directory: unreadable
+    answer = probe.on_timeout(cluster, "fedmin1")
+    assert answer["file"] is None
+    assert answer["unreadable"] == ["ubelix/broken.sbatch: IsADirectoryError"]
+    assert "could not be read" in answer["meaning"] and "broken.sbatch" in answer["meaning"]
+    assert probe.on_timeout(cluster, "train")["file"] == "ubelix/train.sbatch", \
+        "a readable match still wins"
+
+
+def test_an_unreadable_log_blocks_the_resubmission_and_is_named(cluster):
+    """A log written since the record was created that nobody can read may be
+    this record's live attempt. The command is withheld and the reason says so."""
+    fx = resubmit_cluster(cluster)
+    (cluster.logs / "train-17999999.out").mkdir()                 # a directory: unreadable
+    run = canned({"sacct": fx["sacct"], "squeue": fx["squeue"], "git": fx["git"]})
+    answer = probe.job(cluster, fx["job_id"], run=run)["resubmit"]
+    assert answer["command"] is None
+    assert answer["unreadable_logs"] == ["train-17999999.out: IsADirectoryError"]
+    assert "could not be read" in answer["why"] and "not known from here" in answer["why"]
+    assert answer["attempts"][0]["slurm_job_id"] == "17890142", "the readable one is still there"
+
+
+def test_an_attempt_sacct_does_not_list_is_unknown_with_a_reason(cluster):
+    fx = resubmit_cluster(cluster)
+    run = canned({"sacct": "", "squeue": fx["squeue"], "git": fx["git"]})
+    answer = probe.job(cluster, fx["job_id"], run=run)["resubmit"]
+    (attempt,) = answer["attempts"]
+    assert attempt["state"] is None
+    assert "sacct did not list job 17890142" in attempt["state_why"]
+    assert "unknown" in attempt["state_why"] and "did not run" in attempt["state_why"]
+    assert answer["command"] is None and "ended unknown" in answer["why"]
+
+
+def test_checkout_behind_unknown_says_why(cluster):
+    fx = resubmit_cluster(cluster)
+    run = canned({"sacct": fx["sacct"], "squeue": fx["squeue"]})          # git not canned: fails
+    answer = probe.job(cluster, fx["job_id"], run=run)["resubmit"]
+    assert answer["command"] is not None
+    assert answer["checkout_behind"] is None
+    assert "git could not be asked" in answer["checkout_behind_why"]
+    assert "not known from here" in answer["checkout_behind_why"]
+    odd = canned({"sacct": fx["sacct"], "squeue": fx["squeue"], "git": "nonsense\n"})
+    answer = probe.job(cluster, fx["job_id"], run=odd)["resubmit"]
+    assert answer["checkout_behind"] is None and "not two counts" in answer["checkout_behind_why"]
+
+
+def test_home_usage_that_could_not_be_measured_says_why(cluster):
+    answer = probe.deadlines(canned({}), cluster)
+    assert answer["home"] is None
+    assert "df could not be read" in answer["home_why"] and "not canned" in answer["home_why"]
+    measured = probe.deadlines(canned({"df": "fs 1 1 1 1% /\n"}), cluster)
+    assert measured["home"]["use_percent"] == "1%" and measured["home_why"] is None

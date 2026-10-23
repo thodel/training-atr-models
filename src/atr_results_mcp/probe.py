@@ -703,15 +703,26 @@ def _reason_key(reason: str) -> str:
 
 
 def node_states(run: Runner, nodes: List[str]) -> List[Dict[str, str]]:
+    """The state of each named node from sinfo — or ``unknown`` with the reason
+    when sinfo could not be asked (#165): the queue answer is still the queue,
+    and a node nobody could look at is not a node without a problem."""
     if not nodes:
         return []
-    out = run(["sinfo", "-n", ",".join(nodes), "-h", "-N", "-o", "%N|%T|%E|%G"])
+    try:
+        out = run(["sinfo", "-n", ",".join(nodes), "-h", "-N", "-o", "%N|%T|%E|%G"])
+    except ProbeError as exc:
+        return [{"node": n, "state": "unknown", "reason": "", "gres": "",
+                 "why": "sinfo could not be asked: %s" % exc} for n in nodes]
     seen = {}
     for line in out.splitlines():
         parts = line.split("|")
         if len(parts) >= 3 and parts[0] not in seen:
             seen[parts[0]] = {"node": parts[0], "state": parts[1], "reason": parts[2],
                               "gres": parts[3] if len(parts) > 3 else ""}
+    for node in nodes:
+        if node not in seen:
+            seen[node] = {"node": node, "state": "unknown", "reason": "", "gres": "",
+                          "why": "sinfo answered, but not for this node"}
     return list(seen.values())
 
 
@@ -798,18 +809,29 @@ def batch_file_for(paths: Paths, job_name: str) -> Optional[Path]:
     commit the job pinned: the requeue settings do not move between commits
     the way the code does, and the answer names the file so it can be checked.
     """
+    return _batch_files(paths, job_name)[0]
+
+
+def _batch_files(paths: Paths, job_name: str) -> Tuple[Optional[Path], List[str]]:
+    """``(the batch file named job_name, the ones that could not be read)``.
+
+    A file that could not be read is reported, not skipped: "no batch file is
+    named X" and "one of them could not be opened" are different findings, and
+    the second must not wear the first's words (#165).
+    """
     root = paths.checkout / "ubelix"
     if not root.is_dir():
-        return None
+        return None, []
+    unreadable: List[str] = []
     for path in sorted(root.glob("*.sbatch")):
         try:
             for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
                 match = _SBATCH_OPTION.match(line)
                 if match and match.group(1) == "job-name" and match.group(2) == job_name:
-                    return path
-        except OSError:
-            continue
-    return None
+                    return path, unreadable
+        except OSError as exc:
+            unreadable.append("ubelix/%s: %s" % (path.name, exc.__class__.__name__))
+    return None, unreadable
 
 
 def on_timeout(paths: Paths, job_name: str) -> Dict[str, Any]:
@@ -822,8 +844,12 @@ def on_timeout(paths: Paths, job_name: str) -> Dict[str, Any]:
     ``train.sbatch`` does both; the scoring and rescoring files do neither, and
     for them TIMEOUT is the end. ``meaning`` is the sentence a report can print.
     """
-    path = batch_file_for(paths, job_name)
+    path, unreadable = _batch_files(paths, job_name)
     if path is None:
+        if unreadable:
+            return {"file": None, "unreadable": unreadable,
+                    "meaning": "unknown: no readable ubelix/*.sbatch is named %r, and %s "
+                               "could not be read" % (job_name, ", ".join(unreadable))}
         return {"file": None, "meaning": "unknown: no ubelix/*.sbatch in the checkout is "
                                          "named %r" % job_name}
     options: Dict[str, Optional[str]] = {}
@@ -1015,7 +1041,8 @@ LIVE_SLURM_STATES = ("RUNNING", "PENDING", "REQUEUED", "SUSPENDED", "COMPLETING"
 RESUMABLE_END_STATES = ("TIMEOUT", "CANCELLED", "NODE_FAIL", "PREEMPTED", "DEADLINE")
 
 
-def slurm_attempts(run: Runner, paths: Paths, record: Dict[str, Any]) -> List[Dict[str, Any]]:
+def slurm_attempts(run: Runner, paths: Paths, record: Dict[str, Any],
+                   unreadable: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Every Slurm job that ran this record, from the attempt line in the Slurm
     logs, with its accounting state.
 
@@ -1023,6 +1050,12 @@ def slurm_attempts(run: Runner, paths: Paths, record: Dict[str, Any]) -> List[Di
     broken one has to be found the other way round: each ``~/ubelix/logs/*.out``
     written since the record was created whose attempt line names it. The
     accounting state comes from one ``sacct -j`` over those ids.
+
+    Three states, never two (#165): a log that could not be read is appended to
+    *unreadable* when the caller passes a list — it may be this record's live
+    attempt, and nobody could look; an id sacct does not list keeps
+    ``state: None`` and says in ``state_why`` that accounting did not answer
+    for it, which is "unknown", not "did not run".
     """
     created = (record.get("created_at") or "").replace("Z", "+00:00")
     try:
@@ -1038,7 +1071,9 @@ def slurm_attempts(run: Runner, paths: Paths, record: Dict[str, Any]) -> List[Di
             if path.stat().st_mtime < since:
                 continue
             edges = read_log_edges(path)
-        except OSError:
+        except OSError as exc:
+            if unreadable is not None:
+                unreadable.append("%s: %s" % (path.name, exc.__class__.__name__))
             continue
         attempt = _attempt_in(edges["tail"]) or _attempt_in(edges["head"])
         if attempt is None or attempt[0] != record.get("id"):
@@ -1057,6 +1092,11 @@ def slurm_attempts(run: Runner, paths: Paths, record: Dict[str, Any]) -> List[Di
         if len(parts) >= 5 and parts[0] in found:
             found[parts[0]].update({"name": parts[1], "state": parts[2], "elapsed": parts[3],
                                     "end": parts[4]})
+    for entry in found.values():
+        if entry["state"] is None:
+            entry["state_why"] = ("sacct did not list job %s: outside its window, or "
+                                  "accounting did not answer — unknown, not \"did not run\""
+                                  % entry["slurm_job_id"])
     return sorted(found.values(), key=lambda a: (a.get("end") or "", a["slurm_job_id"]))
 
 
@@ -1095,16 +1135,28 @@ def resubmit_for(run: Runner, paths: Paths, record: Dict[str, Any]) -> Dict[str,
                        % record.get("host")}
     if status not in ("training", "queued"):
         return {"command": None, "why": "status %s: nothing to resubmit" % status}
-    attempts = slurm_attempts(run, paths, record)
+    unreadable: List[str] = []
+    attempts = slurm_attempts(run, paths, record, unreadable=unreadable)
     live = [a for a in attempts if (a.get("state") or "").split(" ")[0] in LIVE_SLURM_STATES]
     answer: Dict[str, Any] = {"attempts": [{k: a.get(k) for k in
-                                            ("slurm_job_id", "attempt", "state", "end", "cause")}
+                                            ("slurm_job_id", "attempt", "state", "end", "cause",
+                                             "state_why") if k in a}
                                            for a in attempts]}
+    if unreadable:
+        answer["unreadable_logs"] = unreadable
     if live:
         answer["command"] = None
         answer["why"] = "Slurm job %s is %s for this record: a second submission would run " \
                         "two attempts on one checkpoint directory" \
                         % (live[-1]["slurm_job_id"], live[-1]["state"])
+        return answer
+    if unreadable:
+        # One of those logs may be this record's live attempt, and nobody could
+        # look. "Could not look" is not "nothing there" (#165).
+        answer["command"] = None
+        answer["why"] = "%d Slurm log(s) since this record was created could not be read " \
+                        "(%s): whether an attempt of this record is still live is not known " \
+                        "from here" % (len(unreadable), ", ".join(unreadable))
         return answer
     last = attempts[-1] if attempts else None
     last_state = (last.get("state") or "").split(" ")[0] if last else None
@@ -1154,13 +1206,20 @@ def resubmit_for(run: Runner, paths: Paths, record: Dict[str, Any]) -> Dict[str,
         if len(cols) >= 3 and cols[2] == "PENDING" and find_log(paths, cols[0]) is None:
             pending_without_log.append("%s (%s)" % (cols[0], cols[1]))
     answer["unattributed_pending"] = pending_without_log
+    behind_why = None
     try:
         counts = run(["git", "-C", str(paths.checkout), "rev-list", "--left-right", "--count",
                       "HEAD...origin/main"]).split()
         behind = int(counts[1]) if len(counts) == 2 else None
-    except (ProbeError, ValueError):
+        if behind is None:
+            behind_why = "git rev-list answered %r, not two counts" % " ".join(counts)
+    except (ProbeError, ValueError) as exc:
         behind = None
+        behind_why = "git could not be asked: %s" % exc
     answer["checkout_behind"] = behind
+    if behind_why:
+        answer["checkout_behind_why"] = behind_why + " — whether submit.sh would refuse " \
+                                        "this checkout is not known from here"
     why = []
     if last is None and checkpoint:
         # Seen 12.10.2026 on throughput-qwen35-4b: checkpoint-400 on disk, no Slurm
@@ -1477,14 +1536,16 @@ def deadlines(run: Runner, paths: Paths) -> Dict[str, Any]:
                           "scratch_purge_cest": row["scratch_purge_cest"],
                           "superseded_by": row["superseded_by"]})
     disk = None
+    disk_why = None
     try:
         line = run(["df", "-P", str(paths.home)]).splitlines()[-1].split()
         disk = {"filesystem": line[0], "use_percent": line[4],
                 "avail_gib": round(int(line[3]) / 2 ** 20, 1), "mounted_on": line[5]}
-    except (ProbeError, IndexError, ValueError):
-        pass
+    except (ProbeError, IndexError, ValueError) as exc:
+        # Not measured is not "fine": the answer carries the reason (#165).
+        disk_why = "df could not be read: %s" % (exc or exc.__class__.__name__)
     return {"now_cest": _label(now), "artefacts": artefacts, "scratch_purge": purge,
-            "home": disk,
+            "home": disk, "home_why": disk_why,
             "note": "at_risk: an unpinned artefact within 2 days of expiry whose claimant "
                     "is still preparing/training/queued and not superseded"}
 
