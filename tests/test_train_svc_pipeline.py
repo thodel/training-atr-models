@@ -972,6 +972,28 @@ class TestChunkedCompile:
         assert job.status == "completed"
         assert not (store.paths(job.id).data / "train_plan.json").exists()
 
+    def test_the_request_s_chunk_size_chunks_on_a_trainer_that_does_not(self, store, settings):
+        """#25, acceptance 3: ATR_TRAIN_CHUNK_PAGES=0 and chunk_size=2 in the
+        request → three chunks of two from six pages, and the plan says 2."""
+        assert settings.chunk_pages == 0
+        source = FakeSource({"train": 6, "eval": 2})
+        request = request_with(force=True, dataset=DatasetSpec(
+            hf_repo=REPO, train_projects=[THUN_TRAIN], eval_projects=[THUN_TEST], chunk_size=2))
+        job = run_pipeline(store, settings, source, FakeRunner(), request=request)
+
+        assert job.status == "completed"
+        arrows = (store.paths(job.id).data / "train_bin.lst").read_text().split()
+        assert len(arrows) == 3
+
+    def test_the_request_s_chunk_size_outranks_the_setting(self, store, settings):
+        settings = self.chunking_settings(settings, chunk_pages=3)
+        source = FakeSource({"train": 6, "eval": 2})
+        request = request_with(force=True, dataset=DatasetSpec(
+            hf_repo=REPO, train_projects=[THUN_TRAIN], eval_projects=[THUN_TEST], chunk_size=2))
+        job = run_pipeline(store, settings, source, FakeRunner(), request=request)
+        arrows = (store.paths(job.id).data / "train_bin.lst").read_text().split()
+        assert len(arrows) == 3, "chunks of 2, not of 3"
+
     def test_chunking_off_is_the_old_single_compile(self, store, settings):
         source = FakeSource({"train": 6, "eval": 2})
         job = run_pipeline(store, settings, source, FakeRunner(),

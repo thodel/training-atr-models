@@ -222,7 +222,14 @@ class DatasetSpec(BaseModel):
     all_projects: bool = False
     #: When set, pages are materialized in chunks of this many pages each:
     #: materialize → compile → discard → next chunk. Keeps peak disk bounded.
-    #: Must be ≥ 1. None (default) disables chunking.
+    #: Must be ≥ 1. The rank (#25): this value when set, else the trainer's
+    #: ``ATR_TRAIN_CHUNK_PAGES`` (``TrainerSettings.chunk_pages``); None here
+    #: with 0 there means unchunked. Only the kraken backend chunks, only the
+    #: page path of a **single** dataset chunks, and chunking needs explicit
+    #: ``eval_projects``: a request that sets this where it cannot act — a vllm
+    #: or trocr engine, ``granularity: line``, several datasets — is refused at
+    #: submit (``verify_dataset_spec``, ``app.request_problems``), because the
+    #: alternative was a job that took the value and ignored it.
     chunk_size: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")

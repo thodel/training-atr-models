@@ -219,6 +219,29 @@ since 21.10.2026), with their own key and forced command on UBELIX
 the wall verdicts, `live`, `finished`, `deadlines` and the share store stay here.
 An OAuth door on this server would make those three redundant.
 
+## The third state: a failed look is never a zero (#165)
+
+In the night of 06.10.2026 two watchers printed measurements that were none:
+`0 of 16 settled` from a `grep -c` over the empty output of a failed `ssh`, and
+an exit 0 with no line about a job that had finished. Both turned "could not
+look" into "nothing there". Every answer here keeps the two apart:
+
+| where a look can fail | what the answer says |
+|---|---|
+| the ssh, or the probe itself (`squeue`, `sacct` not answering) | `{"error": …, "cmd": …}` — never `jobs: []`; `main()` exits 1 |
+| a job store that is not mounted | `stores.<name>.mounted: false` with a note; its rows are absent, not zero (`results`, `live`, `prepared`) |
+| `sinfo` about a node a pending job names | the node reads `state: "unknown"` with `why`; the queue is still the queue |
+| a `~/ubelix/logs/*.out` that cannot be read | `resubmit.unreadable_logs` names it and `command` is withheld: it may be the live attempt |
+| an id `sacct` does not list | `state: null` with `state_why` — unknown, not "did not run" |
+| `git rev-list` in `resubmit` | `checkout_behind: null` with `checkout_behind_why` |
+| `df` in `deadlines` | `home: null` with `home_why` |
+| a `ubelix/*.sbatch` that cannot be read | `wall.on_timeout.unreadable` names it; `meaning` says unknown, not "none is named" |
+| a counter that is not progress | `progress.state: "unattributable"`, verdict `unknown` (#203) |
+| no GPU stage carries a runtime | `runtime.known: false` with `why` (#206), which is not "no container" |
+
+A reader that sums or counts over these answers has to read the field beside
+the number first. `None` is "nobody looked"; `0` is a count.
+
 ## What it does not do
 
 - **asteraix's hand runs.** `scripts/measure_*.py` write hand-named JSON under

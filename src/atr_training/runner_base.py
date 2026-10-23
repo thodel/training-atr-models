@@ -679,6 +679,18 @@ class BasePipeline(ABC):
         logger.info("train_lines: {} → {} after removing {} held-out line(s) (#256)",
                     before, job.progress.train_lines, removed)
 
+    def _chunk_pages(self, spec) -> int:
+        """The chunk size this run uses: the spec's ``chunk_size``, else the box's.
+
+        ``DatasetSpec.chunk_size`` outranks ``TrainerSettings.chunk_pages`` (#25):
+        a value written into the request is a decision about this run, the
+        setting is the trainer's default. 0 means unchunked. The size guard
+        (``hf_source.chunk_pages_for``) applies the same rule at submit.
+        """
+        if spec.chunk_size is not None:
+            return int(spec.chunk_size)
+        return int(self.settings.chunk_pages or 0)
+
     def _chunked(self, spec) -> bool:
         """Should this run materialize a chunk at a time?
 
@@ -690,13 +702,14 @@ class BasePipeline(ABC):
         spec without them falls back to materializing everything, and says so
         rather than silently ignoring the setting.
         """
-        if self.settings.chunk_pages <= 0 or not self.supports_chunked_prepare:
+        chunk_pages = self._chunk_pages(spec)
+        if chunk_pages <= 0 or not self.supports_chunked_prepare:
             return False
         if not spec.eval_projects:
             logger.warning(
                 "chunk_pages={} is set but this spec has no eval_projects, so the "
                 "validation set can only come from splitting the train stream — "
-                "materializing everything instead", self.settings.chunk_pages)
+                "materializing everything instead", chunk_pages)
             return False
         return True
 
@@ -725,14 +738,14 @@ class BasePipeline(ABC):
             "data_files": files["train"],
             "revision": spec.revision,
             "max_pages": spec.max_pages,
-            "chunk_pages": self.settings.chunk_pages,
+            "chunk_pages": self._chunk_pages(spec),
         }, indent=2), encoding="utf-8")
 
         job.progress.pages_written = eval_set.pages_written
         job.progress.lines_written = eval_set.lines
         self.store.save(job)
         logger.info("prepared {} val pages; train side deferred to compile in "
-                    "chunks of {}", eval_set.pages_written, self.settings.chunk_pages)
+                    "chunks of {}", eval_set.pages_written, self._chunk_pages(spec))
         return plan, val_manifest
 
     def _prepare_pages_single(self, job: TrainJob, spec, paths) -> tuple[Path, Path]:

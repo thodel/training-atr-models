@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from atr_training.settings import TrainerSettings
 
 __all__ = [
+    "chunk_pages_for",
     "DatasetNotOnHub",
     "DatasetSelectionError",
     "LineRow",
@@ -742,10 +743,26 @@ def free_disk_gb(path) -> float | None:
         return None
 
 
+def chunk_pages_for(spec, settings) -> int:
+    """The chunk size this spec would run at: its own, else the trainer's (#25).
+
+    ``DatasetSpec.chunk_size`` outranks ``TrainerSettings.chunk_pages`` — a value
+    a caller wrote into the request is a decision about this run, the setting is
+    the box's default. 0 means unchunked. The same rule the runner applies
+    (``runner_base._chunk_pages``), restated here so the size guard judges the
+    run that will happen.
+    """
+    own = getattr(spec, "chunk_size", None)
+    if own is not None:
+        return int(own)
+    return int(getattr(settings, "chunk_pages", 0) or 0)
+
+
 def _oversize_error(needed_gb: float, shard_count: int, settings,
                     *, has_eval_projects: bool,
                     chunk_capable: bool = True,
-                    free_gb: float | None = None) -> str | None:
+                    free_gb: float | None = None,
+                    chunk_pages: int | None = None) -> str | None:
     """Refuse an oversized selection — or allow it, when the pipeline streams it (#85).
 
     This guard used to size the parquet selection and refuse on it unconditionally.
@@ -791,7 +808,9 @@ def _oversize_error(needed_gb: float, shard_count: int, settings,
     # supports_chunked_prepare; the VLM and TrOCR backends compile by cropping and
     # ignore the setting. Judging the size by ATR_TRAIN_CHUNK_PAGES alone therefore
     # cleared a 293 GB vllm corpus that would have materialized every page at once.
-    chunked = getattr(settings, "chunk_pages", 0) > 0 and chunk_capable and has_eval_projects
+    if chunk_pages is None:
+        chunk_pages = int(getattr(settings, "chunk_pages", 0) or 0)
+    chunked = chunk_pages > 0 and chunk_capable and has_eval_projects
     if chunked:
         return None
 
@@ -804,13 +823,13 @@ def _oversize_error(needed_gb: float, shard_count: int, settings,
             f"does not hold them and the reserve." if free_gb is not None
             else " Free space at the jobs root could not be measured.")
 
-    if getattr(settings, "chunk_pages", 0) > 0 and not chunk_capable:
+    if chunk_pages > 0 and not chunk_capable:
         return (f"{head}. ATR_TRAIN_CHUNK_PAGES is set, but this engine does not "
                 "chunk — only the kraken backend implements it, so every page "
                 f"would be materialized before compile runs.{room} Lower max_pages, "
                 "select fewer projects, or train this corpus with kraken.")
 
-    if getattr(settings, "chunk_pages", 0) > 0:
+    if chunk_pages > 0:
         return (f"{head}. ATR_TRAIN_CHUNK_PAGES is set, but chunking needs explicit "
                 "eval_projects — the validation set cannot come from splitting a "
                 f"stream that is discarded as it is read.{room} Add eval_projects, "
@@ -867,6 +886,23 @@ def verify_dataset_spec(
     # refused here as "selects no train_projects" and never reached the queue.
     if spec.all_projects:
         spec = expand_all_projects(spec)
+
+    # ``chunk_size`` where it cannot act is a refusal, not a silence (#25). Both
+    # are errors — a 400 at submit — because the alternative was a job that took
+    # the value, ignored it, and materialized every page.
+    if spec.chunk_size is not None and not chunk_capable:
+        errors.append(
+            f"chunk_size={spec.chunk_size} is set, but this engine does not chunk — "
+            "only the kraken backend implements chunked prepare; the VLM and TrOCR "
+            "backends compile by cropping and would materialize every page at once. "
+            "Drop chunk_size, or train this corpus with kraken.")
+    if spec.chunk_size is not None and spec.granularity == "line":
+        errors.append(
+            f"chunk_size={spec.chunk_size} is set on a granularity 'line' dataset, "
+            "but the line path reads crops as they come and does not chunk pages. "
+            "Drop chunk_size.")
+    if errors:
+        return errors
 
     # Structural validation for page-level (line-level skips train_projects check)
     if spec.granularity == "page":
@@ -951,6 +987,7 @@ def verify_dataset_spec(
                     has_eval_projects=bool(spec.eval_projects),
                     chunk_capable=chunk_capable,
                     free_gb=free_disk_gb_fn(jobs_root) if jobs_root else None,
+                    chunk_pages=chunk_pages_for(spec, settings),
                 )
                 if oversize:
                     errors.append(oversize)

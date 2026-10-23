@@ -44,6 +44,9 @@ ALIVE = ("RUNNING", "PENDING", "REQUEUED", "SUSPENDED", "COMPLETING", "CONFIGURI
 JOB_DIR = re.compile(r"^job-(\d+)$")
 #: The batch job's name in make_line_dataset.sbatch; what squeue is asked for.
 JOB_NAME = "line-dataset"
+#: du over a 300 GB tree on GPFS takes minutes; measured 23.10.2026: two of three
+#: leftovers read "?" at the old 60 s. Unmeasured is still "?", never 0.
+DU_TIMEOUT_S = 900
 
 
 @dataclass(frozen=True)
@@ -68,10 +71,10 @@ class Entry:
         return "unknown"
 
 
-def run(argv: list[str]) -> str:
-    """stdout of a Slurm command; empty when it is missing or fails."""
+def run(argv: list[str], timeout: float = 60) -> str:
+    """stdout of a command; empty when it is missing, fails or does not answer in time."""
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=60,
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                               check=False).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -99,7 +102,7 @@ def line_dataset_jobs_queued(user: str) -> list[str]:
 
 
 def du_bytes(path: Path) -> int | None:
-    out = run(["du", "-sb", str(path)])
+    out = run(["du", "-sb", str(path)], timeout=DU_TIMEOUT_S)
     try:
         return int(out.split()[0])
     except (IndexError, ValueError):

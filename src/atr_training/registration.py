@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import math
 import os
 import re
@@ -65,6 +66,8 @@ from atr_training.weights_digest import WeightsDigest
 
 __all__ = [
     "CorpusCount",
+    "Describing",
+    "describe_registrations",
     "describe_training",
     "TRAINED_DIRNAME",
     "WEIGHT_SUFFIXES",
@@ -624,6 +627,128 @@ def _size_one(path: Path, raw: dict[str, Any], *, write: bool) -> Sizing:
     return Sizing(model_id, engine, before, after, action, reason, written=True)
 
 
+# ── descriptions for the registrations written before #151 ─────────────────
+@dataclass(frozen=True)
+class Describing:
+    """What one pass over a registration did, or would do, to ``description``."""
+
+    model_id: str
+    engine: str
+    before: str | None
+    after: str | None
+    #: ``kept`` (has one), ``described`` (from metadata.json), ``unchanged`` (no
+    #: metadata to describe from), ``skipped`` (unreadable or unwritable).
+    action: str
+    reason: str
+    written: bool = False
+
+    def line(self) -> str:
+        mark = "" if self.written or self.action != "described" else " (dry run)"
+        after = "-" if self.after is None else self.after
+        return f"{self.model_id:40s} {self.engine:7s} {self.action:10s} {after}{mark}\n" \
+               f"{'':40s} {'':7s} {'':10s} {self.reason}"
+
+
+def _metadata_beside(local_path: str | None) -> Path | None:
+    """``metadata.json`` as the runners write it: in the weights' directory."""
+    if not local_path:
+        return None
+    path = Path(local_path)
+    directory = path if path.is_dir() else path.parent
+    candidate = directory / "metadata.json"
+    return candidate if candidate.is_file() else None
+
+
+def description_from_metadata(metadata: dict[str, Any]) -> str:
+    """The line :func:`describe_training` writes, from a run's ``metadata.json``.
+
+    The runners record ``engine``, ``base_model``, ``request`` (with its
+    ``datasets``, or the older single ``dataset``), ``progress`` (with
+    ``dataset_counts``) and ``metrics`` there — the same facts
+    ``runner_base._describe`` reads off the live job (#151).
+    """
+    request = metadata.get("request") or {}
+    datasets = request.get("datasets") or ([request["dataset"]] if request.get("dataset") else [])
+    if not datasets:
+        raise ValueError("metadata.json names no dataset")
+    counts = {c.get("hf_repo"): c for c in (metadata.get("progress") or {}).get("dataset_counts") or []}
+    corpora = []
+    for dataset in datasets:
+        count = counts.get(dataset.get("hf_repo"))
+        corpora.append(CorpusCount(
+            hf_repo=str(dataset.get("hf_repo")),
+            projects=None if dataset.get("all_projects") else len(dataset.get("train_projects") or []),
+            pages=None if count is None else count.get("pages_written"),
+            lines=None if count is None else count.get("lines"),
+        ))
+    params = request.get("params") or {}
+    granularity = params.get("granularity") or datasets[0].get("granularity")
+    cer = (metadata.get("metrics") or {}).get("cer")
+    return describe_training(
+        engine=str(metadata.get("engine") or request.get("engine") or "?"),
+        base_model=metadata.get("base_model") or request.get("base_model"),
+        corpora=corpora, granularity=granularity, cer=cer)
+
+
+def describe_registrations(root: str | Path, *, write: bool = False) -> list[Describing]:
+    """One pass over ``trained/``: give every registration without a
+    ``description`` the line its ``metadata.json`` supports (#151).
+
+    A description already there is **kept**, whoever wrote it. A registration
+    whose weights carry no ``metadata.json`` on this host (the share not
+    mounted, weights moved) is **unchanged** and says so — "could not describe"
+    is not "nothing to say". The one field changes through the same read,
+    validation and atomic write as :func:`set_enabled`; with ``write`` False
+    nothing is touched.
+    """
+    directory = trained_dir(root)
+    try:
+        names = sorted(n for n in os.listdir(directory) if is_registration_name(n))
+    except FileNotFoundError:
+        return []
+    results = []
+    for name in names:
+        path = directory / name
+        try:
+            raw = _load(path)
+        except RegistrationError as exc:
+            results.append(Describing(name.removesuffix(SUFFIX), "?", None, None, "skipped",
+                                      exc.reason))
+            continue
+        if raw is None:
+            continue
+        model_id, engine = str(raw.get("id")), str(raw.get("engine"))
+        before = raw.get("description")
+        if before:
+            results.append(Describing(model_id, engine, before, before, "kept", "has one"))
+            continue
+        metadata_path = _metadata_beside(raw.get("local_path"))
+        if metadata_path is None:
+            results.append(Describing(model_id, engine, None, None, "unchanged",
+                                      f"no metadata.json beside {raw.get('local_path')} on "
+                                      f"{socket.gethostname()} — nothing to describe from"))
+            continue
+        try:
+            after = description_from_metadata(json.loads(metadata_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            results.append(Describing(model_id, engine, None, None, "skipped",
+                                      f"{metadata_path}: {exc}"))
+            continue
+        reason = f"from {metadata_path}"
+        if not write:
+            results.append(Describing(model_id, engine, None, after, "described", reason))
+            continue
+        raw["description"] = after
+        try:
+            _replace_atomically(path, _document(_validate(raw, path)))
+        except RegistrationError as exc:
+            results.append(Describing(model_id, engine, None, None, "skipped", exc.reason))
+            continue
+        logger.info("{}: description written ({})", path, reason)
+        results.append(Describing(model_id, engine, None, after, "described", reason, written=True))
+    return results
+
+
 # ── by hand ─────────────────────────────────────────────────────────────────
 def manual_registration(root: str | Path, spec: dict[str, Any]) -> str:
     """A shell command that registers ``spec`` — for the message of a failed register.
@@ -659,11 +784,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--size-weights", action="store_true",
                         help="list every registration with what sizing would do to its "
                              "vram_mb; nothing is written without --write")
+    parser.add_argument("--describe", action="store_true",
+                        help="list every registration without a description with the line "
+                             "its metadata.json supports (#151); nothing is written without "
+                             "--write")
     parser.add_argument("--write", action="store_true",
-                        help="with --size-weights: rewrite the registrations that change")
+                        help="with --size-weights or --describe: rewrite the registrations "
+                             "that change")
     args = parser.parse_args(argv)
-    if args.write and not args.size_weights:
-        parser.error("--write goes with --size-weights")
+    if args.write and not (args.size_weights or args.describe):
+        parser.error("--write goes with --size-weights or --describe")
+    if args.describe:
+        results = describe_registrations(args.root, write=args.write)
+        if not results:
+            print(f"nothing registered under {trained_dir(args.root)}")
+            return 0
+        for result in results:
+            print(result.line())
+        changed = sum(1 for r in results if r.action == "described")
+        skipped = sum(1 for r in results if r.action == "skipped")
+        if args.write:
+            print(f"{changed} described, {skipped} skipped, {len(results)} read")
+        else:
+            print(f"{changed} would be described, {skipped} skipped, {len(results)} read "
+                  "— nothing written; re-run with --write")
+        return 1 if skipped else 0
     if args.size_weights:
         results = size_weights(args.root, write=args.write)
         if not results:

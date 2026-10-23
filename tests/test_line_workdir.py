@@ -337,6 +337,11 @@ def test_du_is_read_as_bytes_and_a_bad_answer_is_none_not_zero(tmp_path, monkeyp
     assert cleaner.du_bytes(tmp_path) == 380_000_000_000
     du.write_text('#!/usr/bin/env bash\necho "du: cannot read" >&2\n', encoding="utf-8")
     assert cleaner.du_bytes(tmp_path) is None, "unmeasured is not 0"
+    # On GPFS a 300 GB tree takes minutes: the field run of 23.10.2026 read "?"
+    # for two of three leftovers at 60 s. du gets its own, longer limit.
+    seen: list[float] = []
+    monkeypatch.setattr(cleaner, "run", lambda argv, timeout=60: seen.append(timeout) or "7\tx\n")
+    assert cleaner.du_bytes(tmp_path) == 7 and seen == [cleaner.DU_TIMEOUT_S] and cleaner.DU_TIMEOUT_S >= 600
 
 
 def test_a_missing_base_is_nothing_to_clean_not_an_error(tmp_path, capsys):

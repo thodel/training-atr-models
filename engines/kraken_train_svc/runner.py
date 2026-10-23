@@ -146,8 +146,9 @@ class Pipeline(BasePipeline):
             # Chunked and unchunked compile write different numbers of arrows from
             # the same selection, and the chunk size decides where the boundaries
             # fall. Everything else ketos compile is given is derived from the
-            # manifest, not from the request.
-            "chunk_pages": self.settings.chunk_pages,
+            # manifest, not from the request. The request's own chunk_size
+            # outranks the setting (#25); a multi-dataset request has none.
+            "chunk_pages": self._chunk_pages(job.request.datasets[0]),
         })
 
     def _adopt_cached(self, job: TrainJob, entry) -> tuple[Path, Path]:

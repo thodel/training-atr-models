@@ -1006,3 +1006,60 @@ def test_has_flat_shards_sees_push_to_hub_layout():
     assert not has_flat_shards("dh-unibe/flat", "validation", "a" * 40,
                                list_repo_files_fn=lambda repo, rev, kind: flat)
     assert flat_split_glob("train") == "data/train-*.parquet"
+
+
+# ── DatasetSpec.chunk_size has a consumer, and a refusal where it has none (#25) ──
+from atr_training.hf_source import chunk_pages_for  # noqa: E402
+
+
+def _listed(repo, **kw):
+    return [f"data/train/{THUN_TRAIN}/s{i}.parquet" for i in range(5)] + \
+           [f"data/train/{THUN_TEST}/s.parquet"]
+
+
+def _hundred_gb(repo, paths, revision=None, repo_type="dataset"):
+    return 20 * 1024**3 * len(paths)
+
+
+def test_the_request_s_chunk_size_outranks_the_trainer_s_setting():
+    assert chunk_pages_for(DatasetSpec(hf_repo=REPO, train_projects=["a"], chunk_size=5000),
+                           FakeSettings(chunk_pages=0)) == 5000
+    assert chunk_pages_for(DatasetSpec(hf_repo=REPO, train_projects=["a"], chunk_size=3),
+                           FakeSettings(chunk_pages=5000)) == 3
+    assert chunk_pages_for(DatasetSpec(hf_repo=REPO, train_projects=["a"]),
+                           FakeSettings(chunk_pages=5000)) == 5000
+    assert chunk_pages_for(DatasetSpec(hf_repo=REPO, train_projects=["a"]), FakeSettings()) == 0
+
+
+def test_an_oversized_kraken_selection_passes_the_guard_on_its_own_chunk_size():
+    """ATR_TRAIN_CHUNK_PAGES=0 and chunk_size=5000 in the request: the run will
+    chunk, so the guard must judge the run that will happen."""
+    spec = DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN], eval_projects=[THUN_TEST],
+                       chunk_size=5000)
+    assert verify_dataset_spec(spec, FakeSettings(chunk_pages=0), list_repo_files_fn=_listed,
+                               paths_size_fn=_hundred_gb) == []
+    without = DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN], eval_projects=[THUN_TEST])
+    assert len(verify_dataset_spec(without, FakeSettings(chunk_pages=0),
+                                   list_repo_files_fn=_listed, paths_size_fn=_hundred_gb)) == 1
+
+
+def test_chunk_size_on_an_engine_that_cannot_chunk_is_an_error_before_the_hub_is_asked():
+    asked = []
+
+    def listing(repo, **kw):
+        asked.append(repo)
+        return _listed(repo)
+    spec = DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN], chunk_size=5000)
+    errors = verify_dataset_spec(spec, FakeSettings(), chunk_capable=False, list_repo_files_fn=listing)
+    assert len(errors) == 1 and "this engine does not chunk" in errors[0] and "5000" in errors[0]
+    assert asked == [], "a structural refusal costs no network"
+    assert verify_dataset_spec(spec, FakeSettings(min_free_disk_gb=0), chunk_capable=True,
+                               list_repo_files_fn=listing) == []
+
+
+def test_chunk_size_on_a_line_dataset_is_an_error():
+    spec = DatasetSpec(hf_repo=REPO, granularity="line", chunk_size=5000)
+    errors = verify_dataset_spec(spec, FakeSettings(), list_repo_files_fn=_listed)
+    assert len(errors) == 1 and "granularity 'line'" in errors[0]
+    assert verify_dataset_spec(DatasetSpec(hf_repo=REPO, granularity="line"),
+                               FakeSettings(min_free_disk_gb=0), list_repo_files_fn=_listed) == []
