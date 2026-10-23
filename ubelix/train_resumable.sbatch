@@ -67,6 +67,8 @@ export ATR_TRAIN_TRAINED_ROOT=$S/runs/trained
 export ATR_TRAIN_ARTEFACT_CACHE_ROOT=$S/expA/artefacts
 export PYTHONPATH=$REPO/src:$REPO/engines
 export ATR_TRAIN_VENVS_ROOT=/opt
+# The image is the venv: one interpreter, chosen with SIF for the base (#162).
+export ATR_TRAIN_IMAGE_PYTHON=/opt/vlm-train/bin/python
 export ATR_TRAIN_GPU=0
 export ATR_TRAIN_PREEMPTABLE=1
 mkdir -p "$ATR_TRAIN_JOBS_ROOT" "$ATR_TRAIN_CHECKPOINT_ROOT" "$ATR_TRAIN_TRAINED_ROOT" "$S/runs"
@@ -80,7 +82,7 @@ run() {
     --env ATR_TRAIN_CHECKPOINT_ROOT="$ATR_TRAIN_CHECKPOINT_ROOT" \
     --env ATR_TRAIN_TRAINED_ROOT="$ATR_TRAIN_TRAINED_ROOT" \
     --env ATR_TRAIN_ARTEFACT_CACHE_ROOT="$ATR_TRAIN_ARTEFACT_CACHE_ROOT" \
-    --env PYTHONPATH="$PYTHONPATH" --env ATR_TRAIN_VENVS_ROOT=/opt \
+    --env PYTHONPATH="$PYTHONPATH" --env ATR_TRAIN_VENVS_ROOT=/opt --env ATR_TRAIN_IMAGE_PYTHON="$ATR_TRAIN_IMAGE_PYTHON" \
     --env ATR_TRAIN_GPU=0 --env ATR_TRAIN_PREEMPTABLE=1 \
     "$SIF" "$@"
 }

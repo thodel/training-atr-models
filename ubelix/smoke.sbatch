@@ -57,6 +57,8 @@ export PYTHONPATH=$REPO/src:$REPO/engines
 # The runner spawns the trainer with the engine venv interpreter. On asterAIx that
 # is $REPO/.venvs/vlm-train; in the container it is /opt/vlm-train.
 export ATR_TRAIN_VENVS_ROOT=/opt
+# The image is the venv: one interpreter, chosen with SIF for the base (#162).
+export ATR_TRAIN_IMAGE_PYTHON=/opt/vlm-train/bin/python
 # Slurm hands us one GPU and nvidia-smi inside the job sees it as index 0.
 # The asterAIx default of 1 (avoiding the shared RAG card) is wrong here.
 export ATR_TRAIN_GPU=0
@@ -72,7 +74,7 @@ run() {
     --env ATR_TRAIN_CHECKPOINT_ROOT="$ATR_TRAIN_CHECKPOINT_ROOT" \
     --env ATR_TRAIN_TRAINED_ROOT="$ATR_TRAIN_TRAINED_ROOT" \
     --env PYTHONPATH="$PYTHONPATH" \
-    --env ATR_TRAIN_VENVS_ROOT="$ATR_TRAIN_VENVS_ROOT" \
+    --env ATR_TRAIN_VENVS_ROOT="$ATR_TRAIN_VENVS_ROOT" --env ATR_TRAIN_IMAGE_PYTHON="$ATR_TRAIN_IMAGE_PYTHON" \
     --env ATR_TRAIN_GPU="$ATR_TRAIN_GPU" \
     "$SIF" "$@"
 }
