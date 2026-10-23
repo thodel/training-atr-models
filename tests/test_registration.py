@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import json
 import os
 import threading
 from pathlib import Path
@@ -611,6 +612,86 @@ def test_a_runner_s_spec_may_carry_its_own_description(tmp_path):
         dataset=DatasetSpec(hf_repo="dh-unibe/y", all_projects=True, max_pages=50)))
     assert "dh-unibe/y (all projects)" in pipeline._describe(whole, None)
     assert pipeline._describe(whole, None).endswith("CER not measured")
+
+
+# ── the registrations written before #151 get their line from metadata.json ──
+def _registered(root: Path, tmp_path: Path, model_id: str, engine: str, *, metadata: dict | None,
+                description: str | None = None, as_file: bool = False) -> Path:
+    weights_dir = tmp_path / "trained" / model_id
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    local = weights_dir / f"{model_id}.mlmodel" if as_file else weights_dir
+    if as_file:
+        local.write_bytes(b"W")
+    if metadata is not None:
+        (weights_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    spec = {"id": model_id, "engine": engine, "local_path": str(local), "enabled": False}
+    if description:
+        spec["description"] = description
+    return write_registration(root, spec)
+
+
+META = {
+    "engine": "vllm", "base_model": "Qwen/Qwen3.5-4B",
+    "request": {"datasets": [{"hf_repo": "dh-unibe/image-text_kurrent-xix-lines",
+                              "train_projects": ["a", "b", "c"]}],
+                "params": {"granularity": "line"}},
+    "progress": {"dataset_counts": [{"hf_repo": "dh-unibe/image-text_kurrent-xix-lines",
+                                     "pages_written": 412, "lines": 13870}]},
+    "metrics": {"cer": 0.0312},
+}
+
+
+def test_description_from_metadata_reads_what_the_runners_wrote():
+    assert registration.description_from_metadata(META) == (
+        "LoRA on Qwen/Qwen3.5-4B, trained on dh-unibe/image-text_kurrent-xix-lines "
+        "(3 projects, 412 pages, 13\u202f870 lines), line level; held-out CER 3.1\u202f%")
+    legacy = {"engine": "kraken", "request": {"dataset": {"hf_repo": "dh-unibe/x",
+                                                         "train_projects": ["p"], "granularity": "page"}},
+              "metrics": {}}
+    assert registration.description_from_metadata(legacy) == (
+        "kraken model trained from scratch, trained on dh-unibe/x (1 project), page level; "
+        "CER not measured")
+    with pytest.raises(ValueError, match="names no dataset"):
+        registration.description_from_metadata({"engine": "kraken", "request": {}})
+
+
+def test_describing_fills_only_what_is_missing_and_says_why_it_cannot(root, tmp_path):
+    _registered(root, tmp_path, "vllm-old", "vllm", metadata=META)
+    _registered(root, tmp_path, "kraken-old", "kraken",
+                metadata={**META, "engine": "kraken", "base_model": None}, as_file=True)
+    _registered(root, tmp_path, "kraken-by-hand", "kraken", metadata=META, description="my words")
+    _registered(root, tmp_path, "kraken-moved", "kraken", metadata=None)
+
+    dry = {r.model_id: r for r in registration.describe_registrations(root)}
+    assert dry["vllm-old"].action == "described" and dry["vllm-old"].after.startswith("LoRA on")
+    assert dry["kraken-old"].action == "described" and "metadata.json" in dry["kraken-old"].reason, \
+        "a kraken local_path is the file; metadata.json sits beside it"
+    assert dry["kraken-by-hand"].action == "kept" and dry["kraken-by-hand"].after == "my words"
+    assert dry["kraken-moved"].action == "unchanged" and "no metadata.json" in dry["kraken-moved"].reason
+    assert not any(r.written for r in dry.values())
+    assert read_registration(root, "vllm-old").description is None, "a dry run writes nothing"
+
+    wet = {r.model_id: r for r in registration.describe_registrations(root, write=True)}
+    assert wet["vllm-old"].written and wet["kraken-old"].written
+    assert read_registration(root, "vllm-old").description.startswith("LoRA on Qwen/Qwen3.5-4B")
+    assert read_registration(root, "kraken-old").description.startswith("kraken model trained from scratch")
+    assert read_registration(root, "kraken-by-hand").description == "my words"
+    assert read_registration(root, "kraken-moved").description is None
+    again = {r.model_id: r for r in registration.describe_registrations(root, write=True)}
+    assert again["vllm-old"].action == "kept"
+
+
+def test_the_describe_command_lists_then_writes(root, tmp_path, monkeypatch, capsys):
+    _registered(root, tmp_path, "vllm-old", "vllm", metadata=META)
+    assert registration.main(["--root", str(root), "--describe"]) == 0
+    out = capsys.readouterr().out
+    assert "1 would be described" in out and "re-run with --write" in out and "(dry run)" in out
+    assert read_registration(root, "vllm-old").description is None
+    assert registration.main(["--root", str(root), "--describe", "--write"]) == 0
+    assert "1 described" in capsys.readouterr().out
+    assert read_registration(root, "vllm-old").description.startswith("LoRA on")
+    with pytest.raises(SystemExit):
+        registration.main(["--root", str(root), "--write"])
 
 
 # ── the deployment example ──────────────────────────────────────────────────
