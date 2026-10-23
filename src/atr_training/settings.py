@@ -247,6 +247,14 @@ class TrainerSettings(BaseSettings):
     #: engine's interpreter (see runner_python) — this service never imports an
     #: engine package, so it does not matter which venv it happens to run in.
     venvs_root: Path = REPO_ROOT / ".venvs"
+    #: The one interpreter of a container image (ATR_TRAIN_IMAGE_PYTHON). When
+    #: set, every job runs in it and ``venvs_root`` is not consulted for the
+    #: interpreter: in a UBELIX container the image is the venv, and the image
+    #: was chosen for the base model (SIF; submit.sh refuses an image that
+    #: cannot load it). The venv switch of #162 is for a box with two venvs side
+    #: by side — on UBELIX it sent Qwen3.5 jobs to /opt/vlm-train-tf5, which no
+    #: image has, and the train stage died 25 s in (19562346, 22.10.2026).
+    image_python: Path | None = None
     #: ``ketos`` from the kraken-train venv. Derived from ``venvs_root`` unless set
     #: explicitly (ATR_TRAIN_KETOS).
     #:
@@ -294,7 +302,13 @@ class TrainerSettings(BaseSettings):
         return self
 
     def runner_python(self, engine: str, base_model: str | None = None) -> Path:
-        """Interpreter for ``engine``'s detached runner, on ``base_model``."""
+        """Interpreter for ``engine``'s detached runner, on ``base_model``.
+
+        The container image's own interpreter when ``image_python`` is set,
+        otherwise the engine's venv under ``venvs_root``.
+        """
+        if self.image_python is not None:
+            return self.image_python
         return runner_python(engine, self.venvs_root, base_model)
 
     # ── the promotion gate (#36) ──────────────────────────────────────────
