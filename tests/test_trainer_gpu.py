@@ -288,7 +288,7 @@ def test_a_leftover_of_a_finished_run_is_unaccounted(client, procs, monkeypatch)
 def test_gpu_asks_the_probe_with_this_store_s_live_pids_only(client, monkeypatch):
     """The seam itself: what the route hands to the inspection."""
     seen = []
-    monkeypatch.setattr(gpu, "inspect", lambda job_pids: seen.append(job_pids) or [])
+    monkeypatch.setattr(gpu, "inspect_all", lambda job_pids: seen.append(job_pids) or ([], []))
     store = client.app.state.store
     _job(store, V5, "training", 4242)
     _job(store, "20260916T070000Z-queued-spawned", "queued", 4343)
@@ -301,7 +301,7 @@ def test_gpu_asks_the_probe_with_this_store_s_live_pids_only(client, monkeypatch
 def test_gpu_without_nvidia_smi_says_so(client, monkeypatch):
     def missing(job_pids):
         raise FileNotFoundError("nvidia-smi is not on PATH")
-    monkeypatch.setattr(gpu, "inspect", missing)
+    monkeypatch.setattr(gpu, "inspect_all", missing)
     answer = client.get("/gpu")
     assert answer.status_code == 503 and "nvidia-smi" in answer.json()["detail"]
 
@@ -309,7 +309,7 @@ def test_gpu_without_nvidia_smi_says_so(client, monkeypatch):
 def test_a_failing_nvidia_smi_is_a_502(client, monkeypatch):
     def wedged(job_pids):
         raise subprocess.TimeoutExpired(["nvidia-smi"], gpu.TIMEOUT_S)
-    monkeypatch.setattr(gpu, "inspect", wedged)
+    monkeypatch.setattr(gpu, "inspect_all", wedged)
     answer = client.get("/gpu")
     assert answer.status_code == 502
     assert answer.json()["detail"].startswith("nvidia-smi failed: TimeoutExpired")
@@ -359,6 +359,135 @@ def test_the_inspection_is_the_gateway_s(procs, monkeypatch):
     _, trainer_busy = gpu.card_rows(cards, services_expected=False)
     assert trainer_busy["unaccounted_mib"] == 6000 + 1600
     assert trainer_busy["service_mib"] == 1600
+
+
+# ── #24: what nvidia-smi cannot say is not a 0 ──────────────────────────────
+def _warnings():
+    """Every WARNING the probe logs, as text, for the duration of a test."""
+    from loguru import logger
+    seen: list[str] = []
+    sink = logger.add(lambda message: seen.append(message.record["message"]), level="WARNING")
+    return seen, lambda: logger.remove(sink)
+
+
+def test_memory_nvidia_smi_cannot_read_is_unmeasured_not_zero(client, procs, monkeypatch):
+    """``[N/A]`` in the memory column — WSL, some containers, a driver that will
+    not say — used to become 0, summed into the totals: a card that may be full
+    reporting ``unaccounted_mib: 0``, the silent zero (#24)."""
+    monkeypatch.setattr(gpu, "_smi", _smi_stub([["7777", "[N/A]", "GPU-aaa"],
+                                                ["7778", "[Not Supported]", "GPU-aaa"],
+                                                ["1843", "24570", "GPU-bbb"]]))
+    procs[7777] = ("tobias", 108000.0, "ketos train -f page", 1)
+    procs[7778] = ("tobias", 100.0, "trocr engine", 1, "atr-trocr.service")
+    procs[1843] = ("tobias", 30512.4, "python -m vlm_train_svc.runner train", 1,
+                   "atr-train.service")
+    _job(client.app.state.store, V5, "training", 1843)
+    seen, stop = _warnings()
+    try:
+        body = client.get("/gpu").json()
+    finally:
+        stop()
+
+    unknown, engine = body["cards"][0]["processes"]
+    assert unknown["pid"] == 7777 and unknown["used_mib"] is None
+    assert unknown["orphaned"] is False, "the pid is known and in /proc"
+    assert engine["used_mib"] is None and engine["own_service"] is True
+    card = body["cards"][0]
+    assert card["unaccounted_mib"] is None, "a sum with an unmeasured term is not a sum"
+    assert card["service_mib"] is None
+    assert card["orphaned_mib"] == 0, "no row is orphaned; that much is measured"
+    live = body["cards"][1]
+    assert (live["unaccounted_mib"], live["service_mib"], live["orphaned_mib"]) == (0, 24570, 0)
+    assert_same_keys(body, GPU)
+    assert any("'7777', '[N/A]'" in line and "used_mib=None" in line for line in seen), seen
+    assert not any("'1843'" in line for line in seen), "a fully described row is not news"
+
+
+def test_a_pid_nvidia_smi_cannot_name_is_not_an_orphan(client, procs, monkeypatch):
+    """``[N/A]`` in the pid column used to become pid 0, which /proc does not
+    have, so the row was reported *orphaned* — the alarm this endpoint exists
+    for, raised for a process nvidia-smi merely could not name. Now the pid is
+    None, nothing is looked up, and the orphan state is unknown, not true."""
+    looked_up: list = []
+
+    def info(pid):
+        looked_up.append(pid)
+        return (None, None, None)
+    monkeypatch.setattr(gpu, "_proc_info", info)
+    monkeypatch.setattr(gpu, "_smi", _smi_stub([["[N/A]", "27530", "GPU-aaa"]]))
+    seen, stop = _warnings()
+    try:
+        body = client.get("/gpu").json()
+    finally:
+        stop()
+
+    row = body["cards"][0]["processes"][0]
+    assert row["pid"] is None and row["used_mib"] == 27530
+    assert row["orphaned"] is None, "unknown, not True and not False"
+    assert (row["registered"], row["job_id"], row["service"], row["own_service"]) == \
+        (False, None, None, False)
+    assert looked_up == [], "None is not a pid to look up"
+    card = body["cards"][0]
+    assert card["unaccounted_mib"] == 27530, "the memory is measured and nobody explains it"
+    assert card["orphaned_mib"] is None, "whether it is an orphan's is not known"
+    assert card["service_mib"] == 0
+    assert_same_keys(body, GPU)
+    assert any("'[N/A]', '27530'" in line and "orphaned=None" in line for line in seen), seen
+
+
+def test_the_recorded_orphan_row_is_read_as_one(procs, monkeypatch):
+    """docs/TRAINING.md records the only real such line: ``2743851, 27530 MiB,
+    [Not Found]`` from nvidia-smi's own table, where ``[Not Found]`` is the
+    process *name*. Under ``--query-compute-apps=pid,used_gpu_memory,gpu_uuid``
+    that row has a numeric pid and memory, and /proc has no such pid: this is
+    the one case the probe was built for, and it is logged verbatim so the next
+    real one is written down (#24)."""
+    monkeypatch.setattr(gpu, "_smi", _smi_stub([["2743851", "27530", "GPU-aaa"]]))
+    seen, stop = _warnings()
+    try:
+        cards, unplaced = gpu.inspect_all({})
+    finally:
+        stop()
+    idle, = gpu.card_rows(cards[:1], services_expected=False)
+    orphan = idle["processes"][0]
+    assert (orphan["pid"], orphan["used_mib"], orphan["orphaned"]) == (2743851, 27530, True)
+    assert idle["orphaned_mib"] == idle["unaccounted_mib"] == 27530
+    assert unplaced == []
+    assert len(seen) == 1 and "['2743851', '27530', 'GPU-aaa']" in seen[0] and "card=0" in seen[0]
+
+
+def test_a_row_on_a_card_nvidia_smi_does_not_list_is_reported_not_dropped(client, procs,
+                                                                             monkeypatch):
+    """A ``gpu_uuid`` no ``--query-gpu`` row has (a MIG instance, a ``[N/A]``)
+    used to drop the row on the floor: 27 GB held, and every card reading 0
+    unaccounted. The issue asks whether the memory figure is attributed to a
+    card at all; when it is not, that now has a place and a log line (#24)."""
+    monkeypatch.setattr(gpu, "_smi", _smi_stub([["2743851", "27530", "MIG-dead-beef"],
+                                                ["1843", "24570", "GPU-bbb"]]))
+    procs[1843] = ("tobias", 30512.4, "python -m vlm_train_svc.runner train", 1,
+                   "atr-train.service")
+    _job(client.app.state.store, V5, "training", 1843)
+    seen, stop = _warnings()
+    try:
+        body = client.get("/gpu").json()
+    finally:
+        stop()
+
+    assert [c["processes"] for c in body["cards"]] == [[], [body["cards"][1]["processes"][0]]]
+    assert [c["unaccounted_mib"] for c in body["cards"]] == [0, 0]
+    stray, = body["unplaced_processes"]
+    assert (stray["pid"], stray["used_mib"], stray["orphaned"]) == (2743851, 27530, True)
+    assert set(stray) == set(body["cards"][1]["processes"][0]), "the same row shape"
+    assert_same_keys(body, GPU)
+    assert any("MIG-dead-beef" in line and "unplaced" in line for line in seen), seen
+
+
+def test_a_total_with_an_unmeasured_term_is_none_and_one_without_is_a_number():
+    assert gpu._total([1, 2, 3]) == 6
+    assert gpu._total([]) == 0
+    assert gpu._total([1, None, 3]) is None
+    assert gpu._int_or_none("[N/A]") is None and gpu._int_or_none("27530") == 27530
+    assert gpu._int_or_none("[Not Found]") is None and gpu._int_or_none("0") == 0
 
 
 def test_the_contract_fixtures_carry_no_secret(trainer_key):
