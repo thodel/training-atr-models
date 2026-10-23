@@ -57,6 +57,19 @@ def corpus_root_of(store: JobStore, settings, job_id: str) -> Path | None:
     return hits[0] if len(hits) == 1 and (hits[0] / "data").is_dir() else None
 
 
+def params_for_draw_file(params, draw: Path):
+    """The run's params, with the sample cap lifted to the whole draw file.
+
+    A ``--draw-file`` *is* the selection — every line of a page draw (#74) — so
+    the run's own ``eval_samples`` must not cap it. With the cap, the evaluator
+    drew 200 of 3,890 lines at random (19709423, 23.10.2026), and the per-page
+    comparison had nothing to join for most pages.
+    """
+    with draw.open(encoding="utf-8") as handle:
+        rows = sum(1 for line in handle if line.strip())
+    return params.model_copy(update={"eval_samples": max(rows, 1)})
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--job", required=True, help="the run whose adapter is scored")
@@ -85,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.draw_file is not None:
         draw, data_root, label = args.draw_file, args.data_root, args.label
+        if draw.is_file():
+            params = params_for_draw_file(params, draw)
     else:
         draw = Path(settings.jobs_root) / args.draw_from / "data" / "val_eval.jsonl"
         data_root, label = corpus_root_of(store, settings, args.draw_from), args.draw_from

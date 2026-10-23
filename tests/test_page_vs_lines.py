@@ -134,3 +134,20 @@ def test_the_interval_is_reproducible():
 def test_a_draw_file_comes_with_its_root_and_a_name_and_never_with_draw_from(argv):
     """Refused before the job store is read, so a typo costs no allocation."""
     assert rescore.main(argv) == 2
+
+
+def test_a_draw_file_is_scored_whole_not_capped_at_the_runs_eval_samples(tmp_path):
+    """19709423 scored 200 of 3,890 lines: the run's eval_samples capped a draw
+    that already was the selection."""
+    from atr_training.contracts import VlmTrainParams
+    from atr_training.vlm_cmd import evaluate_cmd
+
+    draw = tmp_path / "lines.jsonl"
+    draw.write_text("".join(json.dumps({"image": f"data/crops/val/{i:07d}.jpg",
+                                        "text": "x"}) + "\n" for i in range(3890)))
+    params = rescore.params_for_draw_file(VlmTrainParams(eval_samples=200), draw)
+
+    cmd = evaluate_cmd("python", params=params, base_model="Qwen/Qwen3.5-4B",
+                       adapter_dir=tmp_path, val_jsonl=draw, data_root=tmp_path,
+                       report=tmp_path / "r.json")
+    assert cmd[cmd.index("--max-samples") + 1] == "3890"
