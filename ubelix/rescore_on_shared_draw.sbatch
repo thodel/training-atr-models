@@ -8,8 +8,8 @@
 # page arm: 164 pages of roughly 1 200 reference characters each ran past 40
 # minutes with the generation loop still going. Pass TIME for those.
 #
-#   JOB=<id> DRAW_FROM=<id> sbatch ubelix/rescore_on_shared_draw.sbatch
-#   JOB=<id> DRAW_FROM=<id> sbatch --time=04:00:00 ubelix/rescore_on_shared_draw.sbatch
+#   JOB=<id> DRAW_FROM=<id> ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch
+#   JOB=<id> DRAW_FROM=<id> ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=04:00:00
 #
 # Run from the checkout: ~/ubelix holds the container images, the logs and the
 # specs, and a helper copied there goes stale (tests/test_ubelix_layout.py).

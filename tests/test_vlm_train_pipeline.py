@@ -872,6 +872,25 @@ def test_a_service_job_with_a_leaked_slurm_job_id_fails_before_training(
     assert "SLURM_JOB_ID=15450030" in job.error and "'test-trainer'" in job.error
     assert [s.name for s in job.stages] == []          # nothing ran, not even prepare
     assert not settings.trained_root.exists() or not any(settings.trained_root.iterdir())
+    # The label says so: "StageFailed in prepare" named a stage that never ran (#41).
+    assert job.error.startswith("StageFailed in preflight:"), job.error
+
+
+def test_the_slurm_job_id_is_read_once_per_run(store, settings, monkeypatch):
+    """Two guards, the register stage and the progress record all ask the same
+    question; four reads invited four answers (#41). One read, in execute()."""
+    import atr_training.runner_base as runner_base
+    reads: list[int] = []
+
+    def counting():
+        reads.append(1)
+        return None
+
+    monkeypatch.setattr(runner_base, "slurm_job_id", counting)
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner())
+
+    assert job.status == "completed", job.error
+    assert len(reads) == 1, f"slurm_job_id() was read {len(reads)} times in one run"
 
 
 # ── a held-out benchmark beside the split (#23) ─────────────────────────────

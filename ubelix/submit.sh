@@ -57,15 +57,28 @@ else
 fi
 
 # An --export without ALL would drop ATR_CODE_COMMIT and SPEC from the job's
-# environment, and with them the pin and the validated spec.
+# environment, and with them the pin and the validated spec. Slurm reads ALL in
+# any case, so does this; and an --export that SETS one of the two would
+# override what was just resolved and validated (#41).
 for opt in ${EXTRA[@]+"${EXTRA[@]}"}; do
   case "$opt" in
-    --export=ALL|--export=ALL,*) ;;
+    --export=*,ATR_CODE_COMMIT=*|--export=*,SPEC=*)
+      echo "refusing $opt: it would override the pin or the spec this script resolves — set ATR_CODE_COMMIT or pass the spec as an argument instead" >&2
+      exit 2 ;;
+    --export=[Aa][Ll][Ll]|--export=[Aa][Ll][Ll],*) ;;
     --export|--export=*)
       echo "refusing $opt: use --export=ALL,NAME=value so the job keeps ATR_CODE_COMMIT and SPEC" >&2
       exit 2 ;;
   esac
 done
+# SBATCH_EXPORT in the environment is sbatch's --export by another name: NONE or
+# a list would drop the pin and the spec just as silently (#41).
+case "${SBATCH_EXPORT:-}" in
+  ""|[Aa][Ll][Ll]|[Aa][Ll][Ll],*) ;;
+  *)
+    echo "refusing to submit with SBATCH_EXPORT=$SBATCH_EXPORT: the job would not see ATR_CODE_COMMIT and SPEC — unset it, or set it to ALL" >&2
+    exit 2 ;;
+esac
 
 # Which spec: the one given, else the default the file names. A file whose SPEC is
 # mandatory (${SPEC:?}) needs one; a file that names no SPEC takes none.

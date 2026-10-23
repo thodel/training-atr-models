@@ -6,7 +6,7 @@
 # goes to epyc2 like the prepare stage rather than competing for a card.
 #
 #   REPO_ID=dh-unibe/image-text_x REV=<40-hex> OUT=dh-unibe/image-text_x-lines \
-#     sbatch ubelix/make_line_dataset.sbatch
+#     ubelix/submit.sh ubelix/make_line_dataset.sbatch
 #
 # PROJECTS, comma-separated, reads only those project directories — needed where
 # one dataset holds the same material in two shapes.

@@ -6,7 +6,7 @@
 # und sie gehört deshalb nicht in eine tägliche Prüfung, sondern hierher. Die
 # tägliche Prüfung liest das Ergebnis und sagt, wie alt es ist.
 #
-#   sbatch ubelix/storage_inventory.sbatch
+#   ubelix/submit.sh ubelix/storage_inventory.sbatch
 #
 # Gemessen am 09./10.10.2026, und beides hat diese Datei geformt:
 #

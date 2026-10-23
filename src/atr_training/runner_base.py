@@ -410,6 +410,9 @@ class BasePipeline(ABC):
         self.runner = runner or SubprocessRunner(
             local_root=settings.checkpoint_root, share_root=settings.jobs_root)
         self.source = source or HFPageSource(settings.cache_datasets)
+        #: ``SLURM_JOB_ID`` as read once at the start of :meth:`execute` (#41);
+        #: None until then.
+        self._slurm_job_id: str | None = None
 
     # ── stage bookkeeping ───────────────────────────────────────────────────
     @contextmanager
@@ -509,7 +512,7 @@ class BasePipeline(ABC):
                     job.progress.energy_wh + peak.total_energy_wh, 2)
                 job.progress.gpu_shared = job.progress.gpu_shared or peak.cards_shared
             if job.progress.slurm_job_id is None:
-                job.progress.slurm_job_id = slurm_job_id()
+                job.progress.slurm_job_id = self._slurm_job_id
         except Exception as exc:  # noqa: BLE001 — a measurement must not fail a stage
             logger.warning("could not record the GPU peak for {}: {}", record.name, exc)
 
@@ -1383,7 +1386,7 @@ class BasePipeline(ABC):
         :meth:`_finish` checks again, for a registration enabled while this job
         ran.
         """
-        if not slurm_job_id():
+        if not self._slurm_job_id:
             return
         clash = self._enabled_weights_clash(job.request.model_id)
         if clash:
@@ -1395,10 +1398,13 @@ class BasePipeline(ABC):
         ``SLURM_JOB_ID`` is what switches the register stage to leave the registry
         alone (#17). On a job that belongs to asteraix or idhefix it can only be a
         leak — a trainer started from inside an allocation — and following it
-        would train for hours and then never register. Legacy records without a
-        host are UBELIX jobs from before #15 and pass.
+        would train for hours and then never register. A record without a host
+        passes here: who it belongs to is the store's ``legacy_host`` — ``ubelix``
+        on the scratch store, ``idhefix`` (``LEGACY_JOB_HOST``) on the shared one,
+        where every host-less record came from the old trainer (#15) — and that
+        answer is read through :meth:`JobStore.host_of`, not guessed here.
         """
-        slurm = slurm_job_id()
+        slurm = self._slurm_job_id
         if slurm and job.host and job.host != SLURM_HOST:
             raise StageFailed(
                 f"SLURM_JOB_ID={slurm} is set, but job {job.id} belongs to host {job.host!r}, "
@@ -1423,7 +1429,7 @@ class BasePipeline(ABC):
         root = self.settings.registry_root
         # Before the write, so a failed job's record points at the weights too.
         job.model_path = spec.get("local_path") or str(weights_dir)
-        slurm_job = slurm_job_id()
+        slurm_job = self._slurm_job_id
         if slurm_job:
             # A Slurm job never writes the registry (#17). Its weights sit on
             # UBELIX scratch, a path idhefix cannot open, and the registry's
@@ -1790,6 +1796,10 @@ class BasePipeline(ABC):
         job.pid = os.getpid()
         job.queued_reason = None
         self.store.save(job)
+        # Read once for the whole run (#41): the two guards, the register stage
+        # and the progress record all ask the same question of the same
+        # environment, and four reads invited four answers.
+        self._slurm_job_id = slurm_job_id()
 
         # A job found already in `training` was interrupted, not started: the
         # scheduler requeued it and this is the same attempt continuing. Its
@@ -1905,7 +1915,9 @@ class BasePipeline(ABC):
                 logger.exception("job {} ended {!r} and then failed after the fact; "
                                  "the record stands", job.id, job.status)
                 return job
-            stage = job.stage or "prepare"
+            # Before any stage has started (a guard refused), the label says so:
+            # "StageFailed in prepare" named a stage that never ran (#41).
+            stage = job.stage or "preflight"
             logger.exception("job {} failed in {}", job.id, stage)
             self._release_artefact(job)
             return self.store.fail(
@@ -1934,10 +1946,10 @@ class BasePipeline(ABC):
             job.metrics = self._test(job, model, val_artifact, rec)
         self.store.save(job)
 
-        # Decided once, for both halves below: a Slurm job reads the registry but
-        # never writes it (#17) — not the disable before replacing weights, not
-        # the registration, not the gate's enable.
-        slurm = slurm_job_id()
+        # Decided once per run, in execute() (#41): a Slurm job reads the registry
+        # but never writes it (#17) — not the disable before replacing weights,
+        # not the registration, not the gate's enable.
+        slurm = self._slurm_job_id
         self.store.advance(job, "registering")
         with self._stage(job, "register"):
             if slurm:

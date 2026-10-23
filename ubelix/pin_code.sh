@@ -28,9 +28,10 @@
 # Worktrees live under ${ATR_CODE_ROOT:-$HOME/.cache/training-atr-models/worktrees}
 # ($HOME: backed up, not purged like scratch), one per commit AND NODE
 # (<sha>.<node>), and are never removed automatically, because a requeued job may
-# still need one:
+# still need one. The marker goes first: a job that starts between the two
+# steps must not find a tree that is being removed (#41):
 #   git -C ~/training-atr-models worktree list
-#   git -C ~/training-atr-models worktree remove <dir> && rm <dir>.ready
+#   rm -f <dir>.ready && git -C ~/training-atr-models worktree remove <dir>
 
 _PIN_CODE_SELF=${BASH_SOURCE[0]}
 
@@ -67,35 +68,73 @@ pin_code() {
     _pin_code_locked "$root/.lock.$node" bash "$_PIN_CODE_SELF" --create "$commit" "$dir" "$REPO" || return 1
   fi
 
-  local head changes
+  local head changes errors
   head=$(git -C "$dir" rev-parse HEAD 2>/dev/null)
   if [ "$head" != "$commit" ]; then
     echo "!! pin_code: $dir is at ${head:-nothing}, not at $commit — refusing to run" >&2
+    if [ -z "$head" ] && [ -e "$dir/.git" ]; then
+      # The tree points at an admin directory the main checkout no longer has
+      # — it was re-cloned, or `worktree prune` ran (#41). Say what fixes it.
+      echo "   its .git points at an admin directory $REPO no longer has (re-cloned?):" >&2
+      echo "   git -C $REPO worktree prune; rm -rf $dir $dir.ready; then resubmit" >&2
+    fi
     return 1
   fi
-  if ! changes=$(git -C "$dir" status --porcelain --untracked-files=no 2>&1) || [ -n "$changes" ]; then
+  # stdout only: a warning git prints on stderr is not a change (#41). An
+  # untracked *.py counts — a stray module.py shadows the one in the tree —
+  # while a marker or a log a requeued job left does not; and a file marked
+  # assume-unchanged counts, because `status` would not show it.
+  errors=$(mktemp)
+  if ! changes=$(git -C "$dir" status --porcelain --untracked-files=all 2>"$errors"); then
+    echo "!! pin_code: git status failed in $dir — refusing to run:" >&2
+    head -20 "$errors" >&2; rm -f "$errors"
+    return 1
+  fi
+  rm -f "$errors"
+  changes=$(echo "$changes" | grep -v '^?? ' ; echo "$changes" | grep '^?? .*\.py$' || true)
+  changes=$(echo "$changes" | sed '/^$/d')
+  local hidden
+  hidden=$(git -C "$dir" ls-files -v 2>/dev/null | grep '^[a-z]' || true)
+  if [ -n "$changes" ] || [ -n "$hidden" ]; then
     echo "!! pin_code: $dir is not a clean checkout of $commit — refusing to run:" >&2
-    echo "$changes" | head -20 >&2
-    echo "   remove it (git -C $REPO worktree remove --force $dir; rm -f $dir.ready) and resubmit" >&2
+    { echo "$changes"; [ -n "$hidden" ] && echo "$hidden" | sed 's/^/assume-unchanged: /'; } | sed '/^$/d' | head -20 >&2
+    echo "   remove it (rm -f $dir.ready; git -C $REPO worktree remove --force $dir) and resubmit" >&2
     return 1
   fi
   REPO=$dir
   echo "== code: pinned to $(git -C "$REPO" log -1 --format='%h %cd %s' --date=short)"
 }
 
+#: How long a job waits for another job's checkout of the same commit. A wait
+#: that runs out says so (#41): flock's silent exit 1 looked like the command
+#: failing, and the fcntl fallback waited for ever.
+ATR_PIN_LOCK_WAIT_S=${ATR_PIN_LOCK_WAIT_S:-600}
+
 _pin_code_locked() {  # lockfile command... — run command holding an exclusive lock
-  local lock=$1; shift
+  local lock=$1 rc; shift
   if [ "${ATR_PIN_LOCK:-}" != "python" ] && command -v flock >/dev/null 2>&1; then
-    flock -w 600 "$lock" "$@"
+    flock -w "$ATR_PIN_LOCK_WAIT_S" -E 75 "$lock" "$@"; rc=$?
   else
-    # No flock (macOS): the same exclusive lock through fcntl.
+    # No flock (macOS): the same exclusive lock through fcntl, with the same wait.
     python3 -c '
-import fcntl, subprocess, sys
+import fcntl, subprocess, sys, time
+deadline = time.monotonic() + float(sys.argv[2])
 with open(sys.argv[1], "a") as fh:
-    fcntl.flock(fh, fcntl.LOCK_EX)
-    sys.exit(subprocess.call(sys.argv[2:]))
-' "$lock" "$@"
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                sys.exit(75)
+            time.sleep(0.2)
+    sys.exit(subprocess.call(sys.argv[3:]))
+' "$lock" "$ATR_PIN_LOCK_WAIT_S" "$@"; rc=$?
   fi
+  if [ "$rc" = 75 ]; then
+    echo "!! pin_code: waited $ATR_PIN_LOCK_WAIT_S s for $lock — another job is still checking out this commit, or a dead one left the lock; refusing to run" >&2
+  fi
+  return "$rc"
 }
 
 _pin_code_create() {  # commit dir repo — runs under the lock
