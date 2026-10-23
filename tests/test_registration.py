@@ -583,6 +583,29 @@ def test_several_corpora_are_all_named():
         describe_training(engine="vllm", base_model="b", corpora=[], granularity=None, cer=None)
 
 
+def test_three_or_more_corpora_are_named_briefly_and_their_counts_summed():
+    """Four corpora with their counts were 450 characters on asteraix; /models
+    shows one line."""
+    four = [CorpusCount("dh-unibe/image-text_zh-regierungsratsprotokolle", None, 20000, 816625),
+            CorpusCount("dh-unibe/image-text_kurrent-xix", 25, 6071, 141067),
+            CorpusCount("dh-unibe/image-text_parlamentsdienste-protokolle", 9, 63, 5703),
+            CorpusCount("dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix", 35, 52, 3368)]
+    line = describe_training(engine="vllm", base_model="Qwen/Qwen3-VL-4B-Instruct", corpora=four,
+                             granularity="line", cer=0.184)
+    assert line == ("LoRA on Qwen/Qwen3-VL-4B-Instruct, trained on 4 dh-unibe corpora "
+                    "(zh-regierungsratsprotokolle, kurrent-xix, parlamentsdienste-protokolle, "
+                    "nr-sr-vereinigte-bundesversammlung-xix; 26\u202f186 pages, 966\u202f763 lines), "
+                    "line level; held-out CER 18.4\u202f%")
+    assert len(line) < 260
+    mixed = four[:2] + [CorpusCount("other/corpus", 1, None, None)]
+    line = describe_training(engine="vllm", base_model="b", corpora=mixed, granularity="line", cer=None)
+    assert "3 corpora (dh-unibe/image-text_zh-regierungsratsprotokolle, " in line, \
+        "no shared prefix: full names"
+    assert "counts partly unrecorded" in line and "pages" not in line.split("(")[1].split(";")[1]
+    two = describe_training(engine="vllm", base_model="b", corpora=four[:2], granularity="line", cer=None)
+    assert " + " in two and "2 dh-unibe corpora" not in two, "two corpora keep the full form"
+
+
 def test_a_runner_s_spec_may_carry_its_own_description(tmp_path):
     """``setdefault``: a backend that writes a better line keeps it."""
     from vlm_train_svc.runner import Pipeline
