@@ -698,6 +698,11 @@ async def gpu() -> dict:
     The shape the gateway's ``/train/gpu`` has always returned, plus ``host``;
     the gateway now proxies here (serving#137) instead of reading its own cards.
     See :mod:`atr_training.gpu` for what each field is for.
+
+    ``unplaced_processes`` (#24): rows nvidia-smi reported for a card uuid the
+    card listing does not have. Usually empty; never silently dropped, because
+    a dropped row is a full card reading as free. A total that is ``null``
+    means a row in it had no memory figure, not that the memory is 0.
     """
     attribution = True
     try:
@@ -710,7 +715,7 @@ async def gpu() -> dict:
         jobs, attribution = [], False
     job_pids = _job_pids(_store(), jobs)
     try:
-        cards = await asyncio.to_thread(gpu_probe.inspect, job_pids)
+        cards, unplaced = await asyncio.to_thread(gpu_probe.inspect_all, job_pids)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — a wedged driver, a timeout
@@ -721,6 +726,7 @@ async def gpu() -> dict:
     # through a job, so a stray in atr-train.service is a finished run's leftover.
     rows = gpu_probe.card_rows(cards, services_expected=False)
     return {"host": socket.gethostname(), "cards": rows,
+            "unplaced_processes": [vars(p) for p in unplaced],
             "job_attribution_available": attribution, "known_job_pids": len(job_pids)}
 # ════════════════════════════════════════════════════════════════════════════
 #  Base-model discovery (#39) — script class outranks century

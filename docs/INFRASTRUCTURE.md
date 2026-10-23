@@ -506,7 +506,14 @@ host, and `forcegid` is why that works.
   `unaccounted_mib`. No service of ours holds memory here except through a job,
   so an unexplained process in `atr-train.service` is a leftover of a finished
   run and is counted as unaccounted. The gateway proxies this as `/train/gpu`,
-  which the Discord `/atr_gpu` command and the MCP read.
+  which the Discord `/atr_gpu` command and the MCP read. What nvidia-smi
+  cannot say is `null`, never 0 (#24): a process row whose pid or memory came
+  back as `[N/A]` carries `null` there, a total that would have to count such
+  a row is `null`, and `orphaned` is `null` when there was no pid to look up. A
+  row whose `gpu_uuid` matches no card is returned under `unplaced_processes`
+  instead of being dropped. Every such row, and every orphan, is logged
+  verbatim (`journalctl -u atr-train`), so the next real `[Not Found]` row is
+  written down — none has been observed through this code yet.
 - The two machines share no card, so nothing coordinates GPUs between the
   trainer and the gateway any more. That coordination was removed on both
   sides on 16.09.2026 (serving-atr-inference#139). This host's VRAM check is
