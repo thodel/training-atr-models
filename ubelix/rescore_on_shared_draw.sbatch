@@ -10,6 +10,8 @@
 #
 #   JOB=<id> DRAW_FROM=<id> ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch
 #   JOB=<id> DRAW_FROM=<id> ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=04:00:00
+#   JOB=<id> DRAW_FILE=<lines.jsonl> DATA_ROOT=<corpus root> LABEL=<name> \
+#       ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch     # a draw as a file (#74)
 #
 # Run from the checkout: ~/ubelix holds the container images, the logs and the
 # specs, and a helper copied there goes stale (tests/test_ubelix_layout.py).
@@ -36,4 +38,6 @@ apptainer exec --nv --bind /storage --bind /scratch --bind /rs_scratch \
   --env PYTHONPATH="$REPO/src:$REPO/engines" --env HF_HOME="$HF_HOME" \
   --env HF_TOKEN="${HF_TOKEN:-}" --env ATR_TRAIN_JOBS_ROOT="$ATR_TRAIN_JOBS_ROOT" \
   "$HOME/ubelix/vlm-train-tf5.sif" /opt/vlm-train/bin/python \
-  "$REPO/ubelix/rescore_on_shared_draw.py" --job "$JOB" --draw-from "$DRAW_FROM"
+  "$REPO/ubelix/rescore_on_shared_draw.py" --job "$JOB" \
+  ${DRAW_FILE:+--draw-file "$DRAW_FILE" --data-root "$DATA_ROOT" --label "$LABEL"} \
+  ${DRAW_FROM:+--draw-from "$DRAW_FROM"}
