@@ -217,7 +217,7 @@ Every value comes from an experiment in [`UBELIX_PLAN.md`](https://github.com/th
 | `base_model` | `Qwen/Qwen3-VL-4B-Instruct` | 4B matches 8B at half the size (§9.3-B) |
 | `load_in_4bit` | `false` | bf16 is +23 % on a card we own (§9.3-A) |
 | `batch_size` | `16` | **the** bottleneck: 51 % → 86 % GPU utilization (§9.3-G) |
-| `max_pixels` | `262144` | 256 visual tokens; 128 ties, 512 is worse (§9.3-D) |
+| `max_pixels` | `262144` | 256 visual tokens at most; 128 ties, 512 is worse (§9.3-D). Counted on a real crop: a 631x178 line costs 120, a page fitted to the budget 252 (#278, `scripts/count_image_tokens.py`) |
 | `workers` | `8` | 4/8/16 indistinguishable (§9.3-F) |
 | `save_steps` | `200` | bounds the work a preemption costs |
 | `epochs` | `1` | the runbook's rule at corpus scale |

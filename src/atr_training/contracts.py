@@ -59,7 +59,12 @@ VLM_PROMPT = "Transcribe the handwritten text in this image exactly as written."
 #: what ``VlmTrainParams.base_model`` points at. The runtime does not trust this: it
 #: re-derives the cap from the processor's own patch_size/merge_size and reports it
 #: (``vlm_dataset.apply_visual_budget``), so a base with a different grid cannot
-#: quietly train at another budget than the one written here (#86).
+#: quietly train at another budget than the one written here (#86). Counted on a
+#: real line and a real page (#278, ``scripts/count_image_tokens.py``): Qwen3-VL
+#: and Qwen3.5 spend 252/1008/2040 of 256/1024/2048 on a page (the resize rounds
+#: both edges down to the 32 px cell) and 120 on a 631x178 line crop; olmOCR-2
+#: (28 px cell) spends 320/1312/2668 for the same pixels; Gemma 4 charges its
+#: step — 130–132, 528–546, 1071–1073 — whatever the image.
 #: ``block`` (#57) — up to ``DEFAULT_BLOCK_LINES`` consecutive lines — sits between
 #: the two. Measured on the 19th-c. corpus on 2026-09-22: a line crop is ~119 px
 #: tall at its native size (crops are never upscaled, so they rarely fill their
