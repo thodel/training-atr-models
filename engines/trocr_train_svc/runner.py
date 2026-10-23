@@ -209,7 +209,7 @@ class Pipeline(BasePipeline):
             # The weight files in dest_dir, in MiB; None if the checkpoint
             # holds none the sizer knows, never 0 (#225).
             "vram_mb": weights_mib(dest_dir),
-        }, dest_dir) is not None:
+        }, dest_dir, metrics=metrics) is not None:
             logger.info(
                 "registered {} -> {} (disabled until promoted)", model_id, dest_dir)
         return dest_dir

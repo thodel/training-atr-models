@@ -1,11 +1,10 @@
 # The fields of the gateway's ModelSpec, in its order: serving-atr-inference
-# src/atr_serving/registry.py at 567c125 (main, 21.10.2026, which added
-# weights_digest; description came with #101 and vram_measured with #130).
+# src/atr_serving/registry.py at 7b9dfeb (main, 2026-10-23).
 #
-# Refresh when that file changes, e.g.
-#   git -C serving-atr-inference show origin/main:src/atr_serving/registry.py
-# and copy ModelSpec.model_fields here. tests/test_registration.py then says what
-# atr_training.registration.Registration has to gain or lose.
+# Written by scripts/refresh_gateway_fixtures.py — do not edit by hand; re-run it.
+# tests/test_registration.py then says what atr_training.registration.Registration
+# has to gain or lose, and tests/test_gateway_drift.py compares this file with
+# the gateway's main whenever the network allows.
 id
 engine
 description

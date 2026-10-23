@@ -625,7 +625,7 @@ class Pipeline(BasePipeline):
             # evaluation budget; the gateway's page default is 4096 and clamped to
             # the context, and pinning ours would cut served pages short (#131).
             "max_new_tokens": params.max_new_tokens,
-        }, dest_dir) is not None:
+        }, dest_dir, metrics=metrics) is not None:
             logger.info(
                 "registered {} -> {} (disabled until merged and promoted)", model_id, dest_dir)
         return dest_dir

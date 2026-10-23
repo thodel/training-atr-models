@@ -53,6 +53,7 @@ import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -64,6 +65,8 @@ from atr_training.contracts import MODEL_ID_RE
 from atr_training.weights_digest import WeightsDigest
 
 __all__ = [
+    "CorpusCount",
+    "describe_training",
     "TRAINED_DIRNAME",
     "WEIGHT_SUFFIXES",
     "Registration",
@@ -172,16 +175,21 @@ class Registration(BaseModel):
     minutes before this class was written without it, and ``set_enabled`` then
     refused every registration an operator had given a pixel budget. The field
     list is therefore pinned against a copy of the gateway's
-    (``tests/fixtures/registry/modelspec_fields.txt``); refresh that copy when
-    the gateway's ``registry.py`` changes, and the test says what to add here.
+    (``tests/fixtures/registry/modelspec_fields.txt``), which
+    ``scripts/refresh_gateway_fixtures.py`` writes from the gateway's main and
+    ``tests/test_gateway_drift.py`` compares with it on every run that has the
+    network (#151) — the copy went stale by hand twice. After a refresh,
+    ``test_registration`` says what to add here.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
     engine: Literal["vllm", "trocr", "kraken", "party"]
-    #: One line naming the weights, for ``/models`` (serving#101). Written by
-    #: hand or from a Zenodo title there; no runner here invents one.
+    #: One line naming the weights, for ``/models`` (serving#101): there from
+    #: a Zenodo title, here from what the run knows — engine, base, corpus,
+    #: counts, granularity and the held-out CER (:func:`describe_training`,
+    #: #151). Every runner writes one; a file written by hand may carry its own.
     description: str | None = None
     hf_repo: str | None = None
     zenodo_id: str | None = None
@@ -351,6 +359,67 @@ def _replace_atomically(target: Path, text: str) -> None:
             tmp.unlink(missing_ok=True)
         raise RegistrationError(
             target, f"could not be written ({type(exc).__name__}: {exc})") from exc
+
+
+@dataclass(frozen=True)
+class CorpusCount:
+    """One dataset of a run, as far as the run counted it.
+
+    ``projects`` is the number asked for, or None for ``all_projects``; the
+    counts are what the prepare stage actually wrote (``Progress.dataset_counts``)
+    and None when it never reported — "0 pages" is a different claim.
+    """
+
+    hf_repo: str
+    projects: int | None = None
+    pages: int | None = None
+    lines: int | None = None
+
+
+def _n(value: int) -> str:
+    """Thousands separated by a thin space, as the model cards print them."""
+    return f"{value:,}".replace(",", "\u202f")
+
+
+def _corpus(count: CorpusCount) -> str:
+    parts: list[str] = []
+    if count.projects is None:
+        parts.append("all projects")
+    else:
+        parts.append(f"{count.projects} project{'s' if count.projects != 1 else ''}")
+    if count.pages is not None:
+        parts.append(f"{_n(count.pages)} page{'s' if count.pages != 1 else ''}")
+    if count.lines is not None:
+        parts.append(f"{_n(count.lines)} line{'s' if count.lines != 1 else ''}")
+    return f"{count.hf_repo} ({', '.join(parts)})"
+
+
+def describe_training(*, engine: str, base_model: str | None, corpora: list[CorpusCount],
+                      granularity: str | None, cer: float | None) -> str:
+    """One line saying what a trained model is, for ``/models`` (#151).
+
+    The gateway shows a description for every curated model — the Zenodo title,
+    verbatim, since serving#101, because an id was once the only thing a reader
+    had and ``kraken-late_medieval_german`` loaded "Bifrost: Old Norse". A
+    model trained here had none at all. The trainer is the one place an honest
+    one can be written: it knows the engine, the base, the corpus and how much
+    of it arrived, the granularity, and the CER it measured on held-out pages.
+
+    Short, because it is one line in a list, not the model card. ``cer`` is a
+    fraction (``Metrics.cer``) and prints as a percentage; None prints as "not
+    measured", never as a number.
+    """
+    if not corpora:
+        raise ValueError("a training description names at least one corpus")
+    what = {"vllm": f"LoRA on {base_model}" if base_model else "LoRA fine-tune",
+            "trocr": f"TrOCR fine-tune of {base_model}" if base_model else "TrOCR fine-tune",
+            "kraken": f"kraken fine-tune of {base_model}" if base_model
+            else "kraken model trained from scratch",
+            }.get(engine, f"{engine} fine-tune of {base_model}" if base_model else f"{engine} model")
+    on = " + ".join(_corpus(c) for c in corpora)
+    level = f", {granularity} level" if granularity else ""
+    score = "CER not measured" if cer is None else f"held-out CER {cer * 100:.1f}\u202f%"
+    return f"{what}, trained on {on}{level}; {score}"
 
 
 def write_registration(root: str | Path, spec: dict[str, Any]) -> Path:
