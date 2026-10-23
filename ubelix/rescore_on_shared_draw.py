@@ -15,6 +15,12 @@ trained with, taken from its own record, and only `--val-jsonl`, `--data-root` a
 `--report` point at the other job.
 
     python ubelix/rescore_on_shared_draw.py --job <id-to-score> --draw-from <id>
+    python ubelix/rescore_on_shared_draw.py --job <id> --draw-file lines.jsonl \
+        --data-root <corpus root> --label <name>
+
+The second form scores a draw that is no run's ``val_eval.jsonl`` — the line crops
+of another run's page draw, for instance (#74): ``scripts/lines_of_pages.py``
+writes it, and ``--data-root`` is where its ``data/…`` paths resolve.
 
 Writes `data/eval_report.<draw-from>.json` in the scored job's directory and
 prints the CER beside the one the run recorded. Touches no job record.
@@ -54,22 +60,37 @@ def corpus_root_of(store: JobStore, settings, job_id: str) -> Path | None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--job", required=True, help="the run whose adapter is scored")
-    p.add_argument("--draw-from", required=True,
+    p.add_argument("--draw-from", default=None,
                    help="the run whose data/val_eval.jsonl is used as the draw")
+    p.add_argument("--draw-file", type=Path, default=None,
+                   help="a draw as a file instead (needs --data-root and --label)")
+    p.add_argument("--data-root", type=Path, default=None,
+                   help="where --draw-file's data/… paths resolve")
+    p.add_argument("--label", default=None,
+                   help="names the report: data/eval_report.<label>.json")
     p.add_argument("--adapter", default=None,
                    help="override the adapter directory (default: the job's checkpoints)")
     args = p.parse_args(argv)
+    if (args.draw_from is None) == (args.draw_file is None):
+        print("give exactly one of --draw-from and --draw-file", file=sys.stderr)
+        return 2
+    if args.draw_file is not None and (args.data_root is None or not args.label):
+        print("--draw-file needs --data-root and --label", file=sys.stderr)
+        return 2
 
     settings = get_settings()
     store = JobStore(settings.jobs_root)
     job = store.load(args.job)
     params = job.request.params
 
-    draw = Path(settings.jobs_root) / args.draw_from / "data" / "val_eval.jsonl"
+    if args.draw_file is not None:
+        draw, data_root, label = args.draw_file, args.data_root, args.label
+    else:
+        draw = Path(settings.jobs_root) / args.draw_from / "data" / "val_eval.jsonl"
+        data_root, label = corpus_root_of(store, settings, args.draw_from), args.draw_from
     if not draw.is_file():
         print(f"no draw at {draw}", file=sys.stderr)
         return 2
-    data_root = corpus_root_of(store, settings, args.draw_from)
     if data_root is None:
         print(f"the draw of {args.draw_from} names images under data/ and neither its "
               "job directory nor a cache entry it adopted holds them", file=sys.stderr)
@@ -87,11 +108,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no adapter under {root} for {args.job}", file=sys.stderr)
         return 2
 
-    report = store.paths(args.job).data / f"eval_report.{args.draw_from}.json"
+    report = store.paths(args.job).data / f"eval_report.{label}.json"
     cmd = evaluate_cmd(sys.executable, params=params,
                        base_model=job.request.base_model, adapter_dir=adapter,
                        val_jsonl=draw, data_root=data_root, report=report)
-    print("== scoring", args.job, "on the draw of", args.draw_from, flush=True)
+    print("== scoring", args.job, "on the draw", label, flush=True)
     print("==", " ".join(str(c) for c in cmd), flush=True)
     code = subprocess.run(cmd).returncode
     if code != 0 or not report.is_file():
@@ -105,8 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     own = getattr(job.metrics, "cer", None)
     print("\n== %s" % args.job)
     print("   on its own draw   : CER %s" % own)
-    print("   on %s's draw: CER %.4f over %s samples"
-          % (args.draw_from, fresh.cer, fresh.samples))
+    print("   on the draw %s: CER %.4f over %s samples"
+          % (label, fresh.cer, fresh.samples))
     print("   report: %s" % report)
     return 0
 
