@@ -1035,6 +1035,12 @@ def _verify(request: TrainRequest) -> dict:
     """
     check = getattr(app.state, "verify_spec", None) or verify_dataset_spec
     errors: list[str] = []
+    # What only the whole request can say, before any dataset is checked
+    # against the hub: the refusals below are structural and cost nothing, and
+    # each used to be accepted here and found out hours later in prepare.
+    refused = request_problems(request)
+    if refused:
+        return {"valid": False, "checked": True, "errors": refused}
     # Every dataset, not just the first (#40). Checking one of three and reporting
     # "valid" would be the same class of mistake the guard exists to prevent — and
     # each error is prefixed, because "project 'x' not found" is not actionable
@@ -1051,6 +1057,40 @@ def _verify(request: TrainRequest) -> dict:
         errors += ([f"{spec.hf_repo}: {e}" for e in found]
                    if len(request.datasets) > 1 else found)
     return {"valid": not errors, "checked": True, "errors": errors}
+
+
+def request_problems(request: TrainRequest) -> list[str]:
+    """Refusals a request earns as a whole — a 400 at submit, not a death in prepare.
+
+    * Several datasets and one of them ``granularity: line`` (#28): every
+      multi-dataset request goes through ``_prepare_multi``, which is the page
+      path; a line-shaped dataset in it was accepted, downloaded, and died.
+    * Several datasets and a ``chunk_size`` (#25): ``_prepare_multi`` never
+      asks ``_chunked``, so the value would be taken and ignored, and every page
+      materialized at once — the silence the field's issue is about.
+
+    These are **errors**: the list becomes an HTTP 400. Nothing here is a
+    warning, because the caller has no warning channel to read one in.
+    """
+    problems: list[str] = []
+    if len(request.datasets) > 1:
+        lines = [spec.hf_repo for spec in request.datasets if spec.granularity == "line"]
+        if lines:
+            problems.append(
+                f"{len(request.datasets)} datasets with granularity 'line' in "
+                f"{', '.join(lines)}: line-level selection across several datasets is "
+                "not implemented — a multi-dataset request takes the page path, where a "
+                "line-shaped dataset fails in prepare after the download. Submit the "
+                "line dataset on its own, or give every dataset granularity 'page' (#28).")
+        chunked = [f"{spec.hf_repo} (chunk_size={spec.chunk_size})"
+                   for spec in request.datasets if spec.chunk_size]
+        if chunked:
+            problems.append(
+                f"chunk_size with {len(request.datasets)} datasets ({', '.join(chunked)}): "
+                "a multi-dataset prepare does not chunk — the value would be taken and "
+                "ignored, and every page materialized at once. Submit one dataset, or "
+                "drop chunk_size (#25).")
+    return problems
 
 
 def _chunk_capable(engine: str) -> bool:

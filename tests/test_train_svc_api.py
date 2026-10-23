@@ -1178,3 +1178,67 @@ def test_bases_needs_the_key(settings, app, spawn):
     finally:
         for attr in ("settings", "store"):
             delattr(app.state, attr)
+
+
+# ── refused at submit, not hours later in prepare (#28, #25) ─────────────────
+def _two(first: dict, second: dict) -> dict:
+    body = {**BODY, "datasets": [{"hf_repo": "dh-unibe/first", "train_projects": ["a"], **first},
+                                 {"hf_repo": "dh-unibe/second", "train_projects": ["b"], **second}]}
+    body.pop("dataset", None)
+    return body
+
+
+def test_several_datasets_with_a_line_one_are_refused_at_submit(client, app):
+    """Every multi-dataset request takes the page path; a line-shaped dataset in
+    it was accepted, downloaded, and died in prepare (#28). This is a refusal
+    (400), not a warning: the caller has no warning channel."""
+    app.state.verify_spec = lambda spec, settings, **kw: []
+    resp = client.post("/jobs", json=_two({}, {"granularity": "line"}))
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["valid"] is False and detail["checked"] is True
+    assert "dh-unibe/second" in detail["errors"][0]
+    assert "line-level selection across several datasets is not implemented" in detail["errors"][0]
+    asked = client.post("/jobs/verify", json=_two({}, {"granularity": "line"}))
+    assert asked.status_code == 200 and asked.json()["valid"] is False
+
+
+def test_one_line_dataset_and_two_page_datasets_are_still_accepted(client, app, spawn):
+    app.state.verify_spec = lambda spec, settings, **kw: []
+    single = {**BODY, "dataset": {"hf_repo": REPO, "granularity": "line"}}
+    assert client.post("/jobs", json=single).status_code == 202
+    assert client.post("/jobs", json={**_two({}, {}), "model_id": "m-two"}).status_code == 202
+
+
+def test_chunk_size_with_several_datasets_is_refused_at_submit(client, app):
+    """_prepare_multi never asks _chunked: the value would be taken and
+    ignored, and every page materialized at once (#25)."""
+    app.state.verify_spec = lambda spec, settings, **kw: []
+    resp = client.post("/jobs", json=_two({"chunk_size": 5000}, {}))
+    assert resp.status_code == 400
+    error = resp.json()["detail"]["errors"][0]
+    assert "chunk_size with 2 datasets" in error and "dh-unibe/first (chunk_size=5000)" in error
+
+
+def test_chunk_size_on_an_engine_that_cannot_chunk_is_refused_at_submit(client):
+    """The real verifier, before any network: a vllm request with chunk_size
+    gets an answer, not silence (#25)."""
+    body = {**VLM_BODY, "dataset": {**VLM_BODY["dataset"], "chunk_size": 5000}}
+    resp = client.post("/jobs", json=body)
+    assert resp.status_code == 400
+    assert "this engine does not chunk" in resp.json()["detail"]["errors"][0]
+
+
+def test_chunk_size_on_a_line_dataset_is_refused_at_submit(client):
+    body = {**BODY, "dataset": {"hf_repo": REPO, "granularity": "line", "chunk_size": 5000}}
+    resp = client.post("/jobs", json=body)
+    assert resp.status_code == 400
+    assert "granularity 'line'" in resp.json()["detail"]["errors"][0]
+
+
+def test_a_kraken_request_without_chunk_size_on_an_unchunked_trainer_is_not_refused(client, app, settings, spawn):
+    """The regression of the first attempt at #25: it refused every kraken
+    request on a trainer with chunk_pages=0."""
+    assert settings.chunk_pages == 0
+    app.state.verify_spec = lambda spec, settings, **kw: []
+    assert client.post("/jobs", json=BODY).status_code == 202
