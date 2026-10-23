@@ -396,6 +396,32 @@ def _corpus(count: CorpusCount) -> str:
     return f"{count.hf_repo} ({', '.join(parts)})"
 
 
+#: Above this many corpora the line names them briefly and sums the counts:
+#: four corpora with their counts were 450 characters on asteraix (23.10.2026),
+#: and /models shows one line, not a model card.
+COMPACT_FROM = 3
+_COMMON_PREFIX = "dh-unibe/image-text_"
+
+
+def _corpora_compact(corpora: list[CorpusCount]) -> str:
+    """``N corpora (a, b, c; P pages, L lines)`` — names without the shared
+    ``dh-unibe/image-text_`` prefix when every corpus carries it, counts summed
+    where every corpus was counted and said to be partial otherwise."""
+    shared = all(c.hf_repo.startswith(_COMMON_PREFIX) for c in corpora)
+    names = [c.hf_repo[len(_COMMON_PREFIX):] if shared else c.hf_repo for c in corpora]
+    head = f"{len(corpora)} dh-unibe corpora" if shared else f"{len(corpora)} corpora"
+    parts: list[str] = []
+    pages = [c.pages for c in corpora]
+    lines = [c.lines for c in corpora]
+    if all(p is not None for p in pages):
+        parts.append(f"{_n(sum(pages))} pages")
+    if all(ln is not None for ln in lines):
+        parts.append(f"{_n(sum(lines))} lines")
+    if any(p is None for p in pages) or any(ln is None for ln in lines):
+        parts.append("counts partly unrecorded")
+    return f"{head} ({', '.join(names)}; {', '.join(parts)})"
+
+
 def describe_training(*, engine: str, base_model: str | None, corpora: list[CorpusCount],
                       granularity: str | None, cer: float | None) -> str:
     """One line saying what a trained model is, for ``/models`` (#151).
@@ -418,7 +444,8 @@ def describe_training(*, engine: str, base_model: str | None, corpora: list[Corp
             "kraken": f"kraken fine-tune of {base_model}" if base_model
             else "kraken model trained from scratch",
             }.get(engine, f"{engine} fine-tune of {base_model}" if base_model else f"{engine} model")
-    on = " + ".join(_corpus(c) for c in corpora)
+    on = (_corpora_compact(corpora) if len(corpora) >= COMPACT_FROM
+          else " + ".join(_corpus(c) for c in corpora))
     level = f", {granularity} level" if granularity else ""
     score = "CER not measured" if cer is None else f"held-out CER {cer * 100:.1f}\u202f%"
     return f"{what}, trained on {on}{level}; {score}"
