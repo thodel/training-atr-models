@@ -106,6 +106,17 @@ for d in req.datasets:
 PY
   export SPEC
 
+  # 3a. Do the datasets lie the way the spec selects them? The contract cannot
+  #     see the hub: `all_projects: true` on a split stored as flat shards is a
+  #     valid spec that died in prepare after 2 h 35 of compute, with two more
+  #     such datasets behind it (#201). One tree call per dataset, on this
+  #     login node, stdlib only. A hub that cannot be asked is "not checked",
+  #     not a refusal.
+  if ! python3 "$REPO/ubelix/spec_layout.py" "$SPEC"; then
+    echo "refusing to submit: a dataset does not lie the way the spec selects it (see above)" >&2
+    exit 4
+  fi
+
   # 3b. Does the image the job will run in know the base model's architecture?
   #     17808414 died after 59 seconds on `model type qwen3_5 but Transformers
   #     does not recognize this architecture`, because it was submitted without

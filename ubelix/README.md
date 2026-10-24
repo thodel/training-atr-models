@@ -100,6 +100,26 @@ JOB_ID=<id from stage 1> ubelix/submit.sh ubelix/train.sbatch -- \
 and a request above `job_gratis`'s 11,520 CPU-minutes — each has already cost a run
 (serving-atr-inference#147).
 
+**The datasets are checked against their layout before the queue (#201).** After
+the spec validates, `ubelix/spec_layout.py` asks the hub's tree API, on the login
+node and stdlib only, how each dataset's split lies, and refuses a selection
+that cannot reach it — `all_projects: true` on a split stored as flat shards
+(`data/train-00000-of-00002.parquet`, no project directories) died in prepare
+after 2 h 35 on 09.10.2026, with two more such datasets behind it. The refusal
+names the measured depth and the form that works. A hub that cannot be asked
+(no token for a private dataset, no network) is printed as `not checked`, never
+as a refusal. Three forms select a dataset, each deliberate and bounded:
+
+| form | what it selects | needs |
+|---|---|---|
+| `train_projects: [...]` (+ `eval_projects`) | the named project directories under `data/<split>/` | the names exist |
+| `all_projects: true` | every project directory | `max_pages`, project directories |
+| `whole_split: true` | the split as it lies: `data/<split>-*.parquet` when flat, else everything under `data/<split>/` | `max_pages` |
+
+A line-shaped dataset (`granularity: line`, e.g. `data-towerbooks-textlines`) is
+read whole on its own and refused in a multi-dataset request (#28). The three
+dh-unibe datasets this was found on are noted in `specs/german-kurrent-xvi-xix.json`.
+
 ### The CPU-minute cap, written out (#212)
 
 ```

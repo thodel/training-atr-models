@@ -1063,3 +1063,103 @@ def test_chunk_size_on_a_line_dataset_is_an_error():
     assert len(errors) == 1 and "granularity 'line'" in errors[0]
     assert verify_dataset_spec(DatasetSpec(hf_repo=REPO, granularity="line"),
                                FakeSettings(min_free_disk_gb=0), list_repo_files_fn=_listed) == []
+
+
+# ── #201: a flat split has a name, and all_projects says what it found ───────
+def _flat_files(repo=None, revision=None, repo_type=None, **kw):
+    """A listing fake that takes the seam's positional and keyword spellings alike."""
+    return ["README.md", "data/train-00000-of-00002.parquet", "data/train-00001-of-00002.parquet"]
+
+
+def _nested_files(repo=None, revision=None, repo_type=None, **kw):
+    return ["README.md", "data/train/A/x.parquet", "data/train/B/y.parquet"]
+
+
+def test_whole_split_is_a_deliberate_bounded_selection_of_a_flat_split():
+    from atr_training.contracts import DatasetSpec
+    spec = DatasetSpec(hf_repo="dh-unibe/flat", whole_split=True, max_pages=5000)
+    assert spec.whole_split and spec.train_projects == []
+    with pytest.raises(ValueError, match="requires max_pages"):
+        DatasetSpec(hf_repo="dh-unibe/flat", whole_split=True)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        DatasetSpec(hf_repo="dh-unibe/flat", whole_split=True, max_pages=1, train_projects=["A"])
+    with pytest.raises(ValueError, match="cannot be combined"):
+        DatasetSpec(hf_repo="dh-unibe/flat", whole_split=True, max_pages=1, all_projects=True)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        DatasetSpec(hf_repo="dh-unibe/flat", whole_split=True, max_pages=1, eval_projects=["A"])
+
+
+def test_split_layout_measures_depth_dirs_and_shards():
+    from atr_training.hf_source import split_layout
+    flat = split_layout(_flat_files(), "train")
+    assert (flat.kind, flat.depth, len(flat.flat_shards), flat.project_dirs) == ("flat", 2, 2, [])
+    assert "2 flat shards at depth 2 (data/train-00000-of-00002.parquet)" in flat.describe("train")
+    nested = split_layout(_nested_files(), "train")
+    assert (nested.kind, nested.depth, nested.project_dirs) == ("nested", 4, ["A", "B"])
+    assert split_layout(_flat_files(), "validation").kind == "empty"
+    assert split_layout(["data/train/x.parquet"], "train").kind == "empty", \
+        "parquet directly under the split is neither a project nor a flat shard"
+
+
+def test_all_projects_on_a_flat_split_says_what_it_found_and_how_to_select_it():
+    """The 2 h 35 of 09.10.2026, answered in one listing: not 'is this dataset
+    laid out as …?' but what the split holds, and the form that reaches it."""
+    from atr_training.contracts import DatasetSpec
+    from atr_training.hf_source import DatasetSelectionError, expand_all_projects
+    spec = DatasetSpec(hf_repo="dh-unibe/flat", all_projects=True, max_pages=10)
+    with pytest.raises(DatasetSelectionError) as err:
+        expand_all_projects(spec, list_repo_files_fn=_flat_files)
+    assert "2 flat shards at depth 2" in str(err.value) and "whole_split: true" in str(err.value)
+    with pytest.raises(DatasetSelectionError) as err:
+        expand_all_projects(spec, list_repo_files_fn=lambda repo, **kw: ["README.md"])
+    assert "no parquet for split 'train'" in str(err.value) and "whole_split" not in str(err.value)
+    expanded = expand_all_projects(spec, list_repo_files_fn=_nested_files)
+    assert expanded.train_projects == ["A", "B"] and not expanded.all_projects
+
+
+def test_whole_split_resolves_to_the_shards_that_are_there():
+    from atr_training.contracts import DatasetSpec
+    from atr_training.hf_source import data_files_for, keep_projects_for
+    spec = DatasetSpec(hf_repo="dh-unibe/flat", whole_split=True, max_pages=10)
+    assert data_files_for(spec, list_repo_files_fn=_flat_files) == {"train": ["data/train-*.parquet"]}
+    assert data_files_for(spec, list_repo_files_fn=_nested_files) == {"train": ["data/train/**/*.parquet"]}
+    assert keep_projects_for(spec) is None, "every row the glob returns belongs in it"
+
+
+def test_the_empty_selection_guard_names_whole_split_and_still_refuses():
+    from atr_training.contracts import DatasetSpec
+    from atr_training.hf_source import DatasetSelectionError, data_files_for
+    with pytest.raises(DatasetSelectionError, match="whole_split: true"):
+        data_files_for(DatasetSpec(hf_repo="dh-unibe/flat"))
+
+
+def test_a_line_dataset_stored_as_flat_shards_is_read_from_them():
+    """`data-towerbooks-textlines` lies as data/train-0000N-of-00006.parquet; the
+    nested glob matched nothing."""
+    from atr_training.contracts import DatasetSpec
+    spec = DatasetSpec(hf_repo="dh-unibe/towerbooks", granularity="line")
+    assert granularity_files(spec, list_repo_files_fn=lambda repo, rev, kind: _flat_files()) == \
+        {"train": ["data/train-*.parquet"]}
+    assert granularity_files(spec, list_repo_files_fn=lambda repo, rev, kind: _nested_files()) == \
+        {"train": ["data/train/*.parquet"]}
+
+    def down(repo, rev, kind):
+        raise RuntimeError("no network")
+    assert granularity_files(spec, list_repo_files_fn=down) == {"train": ["data/train/*.parquet"]}
+
+
+def test_verify_accepts_whole_split_and_sizes_the_shards():
+    from atr_training.contracts import DatasetSpec
+    sizes = []
+
+    def size(repo, paths, revision=None, repo_type="dataset"):
+        sizes.append(sorted(paths))
+        return 1
+    spec = DatasetSpec(hf_repo="dh-unibe/flat", whole_split=True, max_pages=10)
+    assert verify_dataset_spec(spec, FakeSettings(), list_repo_files_fn=_flat_files,
+                               paths_size_fn=size) == []
+    assert sizes == [["data/train-00000-of-00002.parquet", "data/train-00001-of-00002.parquet"]]
+    errors = verify_dataset_spec(spec, FakeSettings(),
+                                 list_repo_files_fn=lambda repo, **kw: ["README.md", "other.txt"],
+                                 paths_size_fn=size)
+    assert any("whole_split=true, but" in e and "no parquet" in e for e in errors), errors

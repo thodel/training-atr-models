@@ -38,7 +38,9 @@ if TYPE_CHECKING:
     from atr_training.settings import TrainerSettings
 
 __all__ = [
+    "SplitLayout",
     "chunk_pages_for",
+    "split_layout",
     "DatasetNotOnHub",
     "DatasetSelectionError",
     "LineRow",
@@ -151,19 +153,79 @@ def list_projects(hf_repo: str, split: str, revision: str | None = None) -> list
         ) from exc
 
 
-def expand_all_projects(spec: DatasetSpec) -> DatasetSpec:
+class SplitLayout:
+    """How a split lies in a repo, read off one file listing (#201).
+
+    ``project_dirs`` are the directories under ``data/<split>/``; ``flat_shards``
+    the files ``data/<split>-*.parquet`` beside it. ``depth`` is the path depth
+    of the split's parquet files: 4 for ``data/train/<project>/x.parquet``, 2 for
+    ``data/train-00000-of-00002.parquet``, None when the split has none.
+    """
+
+    def __init__(self, project_dirs: list[str], flat_shards: list[str], depth: int | None):
+        self.project_dirs = project_dirs
+        self.flat_shards = flat_shards
+        self.depth = depth
+
+    @property
+    def kind(self) -> str:
+        if self.project_dirs:
+            return "nested"
+        if self.flat_shards:
+            return "flat"
+        return "empty"
+
+    def describe(self, split: str) -> str:
+        if self.kind == "nested":
+            return (f"{len(self.project_dirs)} project directories under data/{split}/ "
+                    f"(parquet at depth {self.depth})")
+        if self.kind == "flat":
+            return (f"{len(self.flat_shards)} flat shards at depth {self.depth} "
+                    f"({self.flat_shards[0]}), no project directories")
+        return f"no parquet for split {split!r} at all"
+
+
+def split_layout(files, split: str) -> SplitLayout:
+    """Classify the split's layout from a repo's file list — pure, no network."""
+    prefix = f"data/{split}/"
+    dirs = sorted({f[len(prefix):].split("/")[0] for f in files
+                   if f.startswith(prefix) and "/" in f[len(prefix):]})
+    flat = sorted(f for f in files if f.startswith(f"data/{split}-") and f.endswith(".parquet"))
+    parquet = [f for f in files if f.endswith(".parquet")
+               and (f.startswith(prefix) or f.startswith(f"data/{split}-"))]
+    depth = min(f.count("/") + 1 for f in parquet) if parquet else None
+    return SplitLayout(dirs, flat, depth)
+
+
+def expand_all_projects(spec: DatasetSpec, list_repo_files_fn=None) -> DatasetSpec:
     """Expand ``all_projects: True`` to the enumerated project list.
 
-    One round-trip to enumerate the hub directory. Returns a *new* DatasetSpec
-    with ``all_projects`` cleared and ``train_projects`` filled in.
+    One round-trip to list the repo. Returns a *new* DatasetSpec with
+    ``all_projects`` cleared and ``train_projects`` filled in. A repo without
+    project directories is refused with its **measured** layout in the message
+    (#201): a flat split is selected with ``whole_split: true``, and saying so
+    here costs a second, not the 2 h 35 of compute it cost on 09.10.2026.
     """
     if not spec.all_projects:
         return spec
-    projects = list_projects(spec.hf_repo, spec.split, spec.revision)
+    lister = list_repo_files_fn or _default_list_repo_files
+    try:
+        files = list(lister(spec.hf_repo, revision=spec.revision, repo_type="dataset"))
+    except (DatasetNotOnHub, VerificationUnavailable):
+        raise
+    except Exception as exc:  # noqa: BLE001 — the hub's own error types vary
+        raise ProjectListingError(
+            f"could not list projects for {spec.hf_repo}/{spec.split}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    layout = split_layout(files, spec.split)
+    projects = layout.project_dirs
     if not projects:
+        hint = (" Select it with `whole_split: true` (and `max_pages`)."
+                if layout.kind == "flat" else "")
         raise DatasetSelectionError(
-            f"all_projects=true for {spec.hf_repo}/{spec.split} returned no project "
-            "directories — is this dataset laid out as ``data/<split>/<project>/``?"
+            f"all_projects=true for {spec.hf_repo}/{spec.split} found no project "
+            f"directories: the split holds {layout.describe(spec.split)}.{hint}"
         )
     import copy
 
@@ -390,6 +452,8 @@ def keep_projects_for(spec: DatasetSpec) -> frozenset[str] | None:
     purpose, and rows outside it must be dropped as they are read — see
     :func:`only_projects`.
     """
+    # whole_split names no projects, so it lands on the first return below:
+    # every row its glob returns belongs in the selection (#201).
     resolved = expand_all_projects(spec) if spec.all_projects else spec
     if not resolved.train_projects or resolved.eval_projects:
         return None
@@ -423,7 +487,7 @@ def only_projects(rows, keep: frozenset[str] | None):
     return gen()
 
 
-def data_files_for(spec: DatasetSpec) -> dict[str, list[str]]:
+def data_files_for(spec: DatasetSpec, list_repo_files_fn=None) -> dict[str, list[str]]:
     """Map role → ``data_files`` globs.
 
     Returns ``{"train": [...]}`` and, when ``eval_projects`` is set, also
@@ -432,11 +496,17 @@ def data_files_for(spec: DatasetSpec) -> dict[str, list[str]]:
     "download the entire repo".
 
     When ``spec.all_projects`` is True the spec is expanded first (one hub
-    round-trip), then resolved as normal. When neither ``train_projects`` nor
-    ``all_projects`` is set, the whole split is selected (for datasets that
-    have no project directories).
+    round-trip), then resolved as normal. ``whole_split: true`` — the named form
+    for a dataset without project directories (#201) — selects the split as it
+    lies: the flat shards ``data/<split>-*.parquet`` when the repo has them, else
+    everything under ``data/<split>/``. Neither set and no ``train_projects``
+    **raises**: an empty selection never means "everything" (the guard below).
     """
-    resolved = expand_all_projects(spec) if spec.all_projects else spec
+    if spec.whole_split:
+        lister = list_repo_files_fn or _default_list_repo_files
+        flat = has_flat_shards(spec.hf_repo, spec.split, spec.revision, list_repo_files_fn=lister)
+        return {"train": [flat_split_glob(spec.split) if flat else whole_split_glob(spec.split)]}
+    resolved = expand_all_projects(spec, list_repo_files_fn) if spec.all_projects else spec
 
     if not resolved.train_projects:
         # Restored guard (serving-atr-inference/docs/TRAINING_PLAN.md §1): an empty selection must never
@@ -449,8 +519,10 @@ def data_files_for(spec: DatasetSpec) -> dict[str, list[str]]:
         raise DatasetSelectionError(
             f"DatasetSpec for {resolved.hf_repo!r} selects no train_projects. Name "
             "the projects, or set `all_projects: true` (which requires `max_pages`) "
-            "to train on everything deliberately. A line-level dataset has no "
-            "project directories and is selected with `granularity: \"line\"`."
+            "to train on every project deliberately, or `whole_split: true` (also "
+            "with `max_pages`) for a dataset laid out as flat shards without project "
+            "directories (#201). A line-shaped dataset is selected with "
+            "`granularity: \"line\"`."
         )
     else:
         overlap = sorted(set(resolved.train_projects) & set(resolved.eval_projects))
@@ -484,7 +556,7 @@ def data_files_for(spec: DatasetSpec) -> dict[str, list[str]]:
     return files
 
 
-def granularity_files(spec: DatasetSpec) -> dict[str, list[str]]:
+def granularity_files(spec: DatasetSpec, list_repo_files_fn=None) -> dict[str, list[str]]:
     """``data_files`` globs for a ``granularity=line`` source.
 
     Line-level datasets have no project directories — every row is a line crop,
@@ -493,8 +565,10 @@ def granularity_files(spec: DatasetSpec) -> dict[str, list[str]]:
     but when no ``filename`` column is present the split is random.
 
     Unlike :func:`data_files_for`, ``train_projects`` is ignored for line-level:
-    there are no projects to select from. Instead the whole split is loaded,
-    constrained to the parquet files under ``data/<split>/``.
+    there are no projects to select from. Instead the whole split is loaded: the
+    flat shards ``data/<split>-*.parquet`` when the repo has them (#201:
+    ``data-towerbooks-textlines`` lies that way, and ``data/<split>/*.parquet``
+    matched nothing), else the parquet files under ``data/<split>/``.
     """
     if spec.granularity != "line":
         raise DatasetSelectionError(
@@ -504,6 +578,14 @@ def granularity_files(spec: DatasetSpec) -> dict[str, list[str]]:
     # The "never load the whole repo" guard: at 2.9 GB towerbooks is well within
     # the disk budget. If a line-level dataset exceeds it, a future caller can
     # add selective loading via a dataset config file or sub-directory convention.
+    try:
+        flat = has_flat_shards(spec.hf_repo, spec.split, spec.revision,
+                               list_repo_files_fn=list_repo_files_fn)
+    except Exception as exc:  # noqa: BLE001 — an unlisted repo keeps the nested glob
+        logger.debug("cannot list {} for its layout: {}", spec.hf_repo, exc)
+        flat = False
+    if flat:
+        return {"train": [flat_split_glob(spec.split)]}
     return {"train": [f"data/{spec.split}/*.parquet"]}
 
 
@@ -885,7 +967,7 @@ def verify_dataset_spec(
     # selection — which the contract only accepts *with* ``max_pages`` — was
     # refused here as "selects no train_projects" and never reached the queue.
     if spec.all_projects:
-        spec = expand_all_projects(spec)
+        spec = expand_all_projects(spec, list_repo_files_fn)
 
     # ``chunk_size`` where it cannot act is a refusal, not a silence (#25). Both
     # are errors — a 400 at submit — because the alternative was a job that took
@@ -904,8 +986,9 @@ def verify_dataset_spec(
     if errors:
         return errors
 
-    # Structural validation for page-level (line-level skips train_projects check)
-    if spec.granularity == "page":
+    # Structural validation for page-level (line-level skips train_projects check;
+    # whole_split names its selection without projects, #201)
+    if spec.granularity == "page" and not spec.whole_split:
         if not spec.train_projects:
             raise DatasetSelectionError(
                 f"DatasetSpec for {spec.hf_repo!r} selects no train_projects. Refusing "
@@ -930,7 +1013,12 @@ def verify_dataset_spec(
 
     # 2. Project directories must exist under data/<split>/ (page-level only)
     split_prefix = f"data/{spec.split}/"
-    if spec.granularity == "page":
+    all_projects: list[str] = []
+    if spec.whole_split and split_layout(all_files, spec.split).kind == "empty":
+        errors.append(f"whole_split=true, but {spec.hf_repo!r} has no parquet for split "
+                      f"{spec.split!r} — neither data/{spec.split}-*.parquet nor "
+                      f"data/{spec.split}/")
+    if spec.granularity == "page" and not spec.whole_split:
         available_dirs: set[str] = set()
         for f in all_files:
             if f.startswith(split_prefix):
@@ -959,7 +1047,12 @@ def verify_dataset_spec(
 
     # 4. Size of THE SELECTION against the disk guard.
     if settings is not None and settings.min_free_disk_gb > 0 and not errors:
-        if spec.granularity == "page":
+        if spec.whole_split:
+            # The split as it lies: flat shards, else everything under the split.
+            layout = split_layout(all_files, spec.split)
+            selected = layout.flat_shards or [
+                f for f in all_files if f.endswith(".parquet") and f.startswith(split_prefix)]
+        elif spec.granularity == "page":
             selected = [
                 f for f in all_files
                 if f.endswith(".parquet")
