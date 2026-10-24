@@ -812,6 +812,29 @@ def batch_file_for(paths: Paths, job_name: str) -> Optional[Path]:
     return _batch_files(paths, job_name)[0]
 
 
+_SOURCED = re.compile(r'^\s*(?:source|\.)\s+"?[^"\s]*ubelix/([\w.-]+\.sh)"?')
+
+
+def _sourced_scripts(batch: Path, text: str) -> List[str]:
+    """The bodies of the ``ubelix/*.sh`` files *text* sources, from beside *batch*.
+
+    Only that directory: the batch files source ``"$REPO/ubelix/<name>.sh"``, and
+    the checkout the probe reads is the one ``$REPO`` names. A sourced file that
+    is not there contributes nothing rather than a guess.
+    """
+    bodies = []
+    for line in text.splitlines():
+        match = _SOURCED.match(line)
+        if not match:
+            continue
+        try:
+            bodies.append((batch.parent / match.group(1)).read_text(
+                encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return bodies
+
+
 def _batch_files(paths: Paths, job_name: str) -> Tuple[Optional[Path], List[str]]:
     """``(the batch file named job_name, the ones that could not be read)``.
 
@@ -854,12 +877,18 @@ def on_timeout(paths: Paths, job_name: str) -> Dict[str, Any]:
                                          "named %r" % job_name}
     options: Dict[str, Optional[str]] = {}
     trap_requeues = False
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
         match = _SBATCH_OPTION.match(line)
         if match:
             options[match.group(1)] = match.group(2)
-        elif "scontrol requeue" in line and not line.lstrip().startswith("#"):
-            trap_requeues = True
+    # The trap may live in a script the batch file sources: since #280 it is
+    # ubelix/requeue_trap.sh, and reading the batch file alone told every report
+    # that a wall ends a training job.
+    for body in [text] + _sourced_scripts(path, text):
+        for line in body.splitlines():
+            if "scontrol requeue" in line and not line.lstrip().startswith("#"):
+                trap_requeues = True
     signal = options.get("signal")
     requeue = "requeue" in options
     seconds = None
