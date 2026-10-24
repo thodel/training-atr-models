@@ -220,6 +220,15 @@ class DatasetSpec(BaseModel):
     #: an unbounded one defeats the purpose of the guard). Mutually exclusive with
     #: ``train_projects``.
     all_projects: bool = False
+    #: Select every row of the split of a dataset laid out as **flat shards**
+    #: (``data/<split>-NNNNN-of-NNNNN.parquet``, what ``Dataset.push_to_hub``
+    #: writes) — a dataset with no project directories, which ``all_projects``
+    #: cannot reach and ``train_projects`` cannot name (#201: three dh-unibe
+    #: datasets, found after 2 h 35 of compute). The same rule as ``all_projects``:
+    #: a selection of everything is deliberate and bounded, so ``max_pages`` is
+    #: required; mutually exclusive with ``train_projects``, ``eval_projects`` and
+    #: ``all_projects``. An empty selection still never means "everything".
+    whole_split: bool = False
     #: When set, pages are materialized in chunks of this many pages each:
     #: materialize → compile → discard → next chunk. Keeps peak disk bounded.
     #: Must be ≥ 1. The rank (#25): this value when set, else the trainer's
@@ -231,6 +240,22 @@ class DatasetSpec(BaseModel):
     #: submit (``verify_dataset_spec``, ``app.request_problems``), because the
     #: alternative was a job that took the value and ignored it.
     chunk_size: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _check_whole_split_guard(self):
+        if not self.whole_split:
+            return self
+        if self.max_pages is None:
+            raise ValueError(
+                "whole_split=True requires max_pages to be set: a selection of everything "
+                "is deliberate and bounded, like all_projects."
+            )
+        if self.train_projects or self.eval_projects or self.all_projects:
+            raise ValueError(
+                "whole_split=True selects the split as it lies and cannot be combined with "
+                "train_projects, eval_projects or all_projects."
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_all_projects_guard(self):

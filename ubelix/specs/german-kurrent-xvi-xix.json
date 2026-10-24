@@ -296,5 +296,6 @@
     "workers": 8,
     "optim": "paged_adamw_8bit",
     "save_steps": 2000
-  }
+  },
+  "notes": "Not in this corpus (#201): dh-unibe/image-text_koenigsfelden-charters-part-3 and dh-unibe/transkribus-exports-bullinger-handschrift lie as flat shards without project directories and are selected with `whole_split: true` plus `max_pages` since #201 (0.68 and 0.51 GB, old column names xml/project, which the reader understands); dh-unibe/data-towerbooks-textlines is line-shaped, and a line dataset in a multi-dataset request is refused at submit (#28). Adding either changes the corpus the v1 run measured on; do it in a new spec version."
 }

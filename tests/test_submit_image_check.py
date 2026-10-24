@@ -60,17 +60,25 @@ exit 0
 ''')
     _executable(bin_dir / "sbatch", f'#!/usr/bin/env bash\necho "sbatch $*" >> "{calls}"\necho "Submitted batch job 1"\n')
     # python3: preflight.py is the real one and wants git state; let it pass.
+    # spec_layout.py would ask the hub; it answers with $STUB_LAYOUT_CODE (#201).
     _executable(bin_dir / "python3", f'''#!/usr/bin/env bash
-case "$1" in *preflight.py) exit 0 ;; esac
+case "$1" in
+  *preflight.py) exit 0 ;;
+  *spec_layout.py)
+    [ "${{STUB_LAYOUT_CODE:-0}}" = 0 ] && echo "spec layout: ok  stub" \\
+      || echo "spec layout: REFUSED  o/flat: all_projects=true, but the split holds 2 flat shards at depth 2" >&2
+    exit "${{STUB_LAYOUT_CODE:-0}}" ;;
+esac
 exec "{sys.executable}" "$@"
 ''')
     return {"home": home, "repo": repo, "spec": spec, "bin": bin_dir, "calls": calls}
 
 
-def _submit(harness, sbatch_name: str, *, knows_code: int) -> subprocess.CompletedProcess:
+def _submit(harness, sbatch_name: str, *, knows_code: int,
+            layout_code: int = 0) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(harness["home"]), "ATR_TRAIN_REPO": str(harness["repo"]),
            "PATH": f"{harness['bin']}:{os.environ['PATH']}", "ATR_UNPINNED": "1",
-           "STUB_KNOWS_CODE": str(knows_code)}
+           "STUB_KNOWS_CODE": str(knows_code), "STUB_LAYOUT_CODE": str(layout_code)}
     env.pop("SIF", None)
     return subprocess.run(["bash", str(harness["repo"] / "ubelix" / "submit.sh"),
                            str(harness["repo"] / "ubelix" / sbatch_name), str(harness["spec"])],
@@ -87,6 +95,22 @@ def test_a_refusal_is_said_and_nothing_is_submitted(harness):
     assert "refusing to submit: the image cannot load the base model" in done.stderr
     assert "IMAGE=refuses qwen3_5" in done.stdout, "the image's own line is shown"
     assert "sbatch" not in _calls(harness)
+
+
+def test_a_dataset_laid_out_otherwise_is_refused_before_the_image_check(harness):
+    """#201: the layout check runs on the login node after the spec validates;
+    a refusal is exit 4, says why, and nothing reaches sbatch or the image."""
+    done = _submit(harness, "train.sbatch", knows_code=0, layout_code=1)
+    assert done.returncode == 4
+    assert "flat shards at depth 2" in done.stderr
+    assert "refusing to submit: a dataset does not lie the way the spec selects it" in done.stderr
+    assert "sbatch" not in _calls(harness) and "image_knows_model.py" not in _calls(harness)
+
+
+def test_the_layout_check_runs_with_the_login_node_s_python_not_the_container(harness):
+    _submit(harness, "train.sbatch", knows_code=0)
+    assert "spec_layout.py" not in _calls(harness), "not through apptainer"
+    assert "spec layout: ok" in _submit(harness, "train.sbatch", knows_code=0).stdout
 
 
 def test_could_not_tell_is_said_and_the_submission_goes_on(harness):
