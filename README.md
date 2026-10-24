@@ -55,6 +55,9 @@ Beschrieben in acht Dokumenten (englisch):
 - [`docs/GGUF.md`](docs/GGUF.md) — ein VLM-Arm als GGUF für llama-server:
   Merge, Konvertierung, Quantisierung und die Messung auf dem Bundesrats-Testsatz
   (Q4_K_M liest so gut wie BF16; #176).
+- [`docs/FOOTPRINT.md`](docs/FOOTPRINT.md) — was ein Lauf an Strom kostet:
+  gemessen je Stufe, seit 24.10. auch über Verdrängungen hinweg, und der
+  Ausgangswert des Programms seit 01.09. (#184).
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — Deploy, Abbrechen und neu
   Einreichen, `.env` ändern, Logs, Registrierung von Hand, fremde Job-Einträge
   schliessen.

@@ -49,7 +49,7 @@ from atr_training.contracts import (
     utcnow,
 )
 from atr_training.convergence import check_convergence, plan_steps
-from atr_training.gpu import Peak, PeakSampler
+from atr_training.gpu import Peak, PeakSampler, read_ledger
 from atr_training.heldout import load_heldout
 from atr_training.hf_source import (data_files_for, granularity_files,
                                             keep_projects_for, only_projects)
@@ -219,6 +219,10 @@ class SubprocessRunner:
 #: How long a stage waits for the mirror thread after the child has exited. The
 #: thread is a daemon, so a share that never returns costs this much and no more.
 MIRROR_JOIN_TIMEOUT_S = 5.0
+
+#: File name prefix of the energy ledger a stage's sampler keeps in the job
+#: directory, ``energy-pending.<stage>.<runner pid>.json`` (#184).
+ENERGY_LEDGER_PREFIX = "energy-pending."
 
 
 def local_log_path(share_log: Path, local_root: Path | None,
@@ -450,10 +454,12 @@ class BasePipeline(ABC):
         # ``on_start`` is a second watcher on the same pid (the collapse watch,
         # #131); it must not raise, since that would lose a running child.
         sampler: PeakSampler | None = None
+        self._recover_energy(job)
+        ledger = self.store.paths(job.id).root / f"{ENERGY_LEDGER_PREFIX}{stage}.{os.getpid()}.json"
 
         def started(pid: int) -> None:
             nonlocal sampler
-            sampler = PeakSampler(pid).start()
+            sampler = PeakSampler(pid, ledger=ledger).start()
             if on_start is not None:
                 try:
                     on_start(pid)
@@ -467,12 +473,44 @@ class BasePipeline(ABC):
         finally:
             if sampler is not None:
                 self._record_peak(job, record, sampler.stop())
+                # Gone before the record is saved: a kill in between loses this
+                # stage's energy rather than counting it twice. The figure is a
+                # floor (see footprint), so the error may only point down.
+                ledger.unlink(missing_ok=True)
         record.exit_code = code
         if code != 0:
             raise StageFailed(
                 f"{stage} failed: {Path(cmd[0]).name} exited {code}. "
                 f"Last lines of {record.log}:\n" + "\n".join(tail(log_path, 20))
             )
+
+    def _recover_energy(self, job: TrainJob) -> None:
+        """Add what interrupted attempts drew, from the ledgers they left (#184).
+
+        A ledger outlives its stage only when the process died before
+        :meth:`_run` reached its ``finally`` — preemption, a requeue at the wall,
+        the OOM killer. Its total never reached ``progress``, so it is added here
+        and the file removed. One that cannot be read is logged and left in
+        place: not 0 Wh, and not a reason to fail the stage.
+        """
+        try:
+            root = self.store.paths(job.id).root
+            for path in sorted(root.glob(f"{ENERGY_LEDGER_PREFIX}*.json")):
+                read = read_ledger(path)
+                if read is None:
+                    logger.warning("energy ledger {} is unreadable; not counted", path.name)
+                    continue
+                wh, shared = read
+                job.progress.energy_wh = round(job.progress.energy_wh + wh, 2)
+                job.progress.energy_recovered_wh = round(
+                    job.progress.energy_recovered_wh + wh, 2)
+                job.progress.gpu_shared = job.progress.gpu_shared or shared
+                logger.info("{:.1f} Wh recovered from an interrupted attempt ({})",
+                            wh, path.name)
+                path.unlink(missing_ok=True)
+                self.store.save(job)
+        except Exception as exc:  # noqa: BLE001 — a measurement must not fail a stage
+            logger.warning("could not recover energy ledgers for {}: {}", job.id, exc)
 
     def _record_peak(self, job: TrainJob, record: StageRecord, peak: Peak) -> None:
         """Put a sampled peak on the stage and keep the job's maximum beside it.

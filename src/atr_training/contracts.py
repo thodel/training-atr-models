@@ -1066,6 +1066,11 @@ class Progress(BaseModel):
     #: and keeps the factor beside the result, so a later correction to the factor
     #: does not need the run again.
     energy_wh: float = 0.0
+    #: The part of ``energy_wh`` recovered from attempts that were preempted or
+    #: requeued before their stage ended, read from the ledger the sampler writes
+    #: every minute (#184). Before it existed an interrupted run kept only the
+    #: energy of its last attempt — 880 Wh for a run that drew on ~46 GPU-hours.
+    energy_recovered_wh: float = 0.0
     #: True when any stage shared a card, so part of ``energy_wh`` is not this
     #: job's. Reported and labelled rather than dropped.
     gpu_shared: bool = False

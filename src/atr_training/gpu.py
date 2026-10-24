@@ -45,9 +45,11 @@ import os
 import pwd
 import shutil
 import subprocess
+import json
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from loguru import logger
 
@@ -458,6 +460,25 @@ class Peak:
         return sum(self.energy_wh.values())
 
 
+#: Seconds between two writes of a sampler's energy ledger. What an interrupted
+#: stage loses is at most this much of its draw — about 6 Wh on an H100 at 390 W.
+LEDGER_FLUSH_S = 60.0
+
+
+def read_ledger(path: Path) -> tuple[float, bool] | None:
+    """``(watt-hours, cards_shared)`` from a ledger :class:`PeakSampler` left, or None.
+
+    None for a file that cannot be read or parsed: it is reported by the caller
+    and not counted, because an unreadable figure is not 0 Wh (#165).
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        total = sum(float(v) for v in data["energy_wh"].values())
+        return total, bool(data.get("cards_shared"))
+    except Exception:  # noqa: BLE001 — a damaged ledger is reported, not raised
+        return None
+
+
 class PeakSampler:
     """Poll nvidia-smi for as long as a subprocess runs, and keep the maximum.
 
@@ -477,10 +498,18 @@ class PeakSampler:
     :meth:`Peak.summary`.
     """
 
-    def __init__(self, pid: int, *, interval_s: float = 2.0) -> None:
+    def __init__(self, pid: int, *, interval_s: float = 2.0,
+                 ledger: Path | None = None, flush_s: float | None = None) -> None:
         self.pid = pid
         self.interval_s = interval_s
         self.peak = Peak()
+        #: Where the running energy total is written every ``flush_s`` (#184).
+        #: The integral otherwise lives only in this process, and a preempted or
+        #: requeued stage dies before :meth:`stop` — on UBELIX that lost all but
+        #: the last attempt of every interrupted run. None turns it off.
+        self.ledger = ledger
+        self.flush_s = LEDGER_FLUSH_S if flush_s is None else flush_s
+        self._flushed_at = time.monotonic()
         self._last_watts: dict[int, float] = {}
         self._last_at: float | None = None
         self._stop = threading.Event()
@@ -511,10 +540,33 @@ class PeakSampler:
     def _loop(self) -> None:
         while not self._stop.is_set():
             self._once()
+            if self.ledger is not None and time.monotonic() - self._flushed_at >= self.flush_s:
+                self.flush()
             self._stop.wait(self.interval_s)
         # One last look: a short stage can finish inside the first interval, and
         # a peak of nothing would be the worst kind of measurement — plausible.
         self._once()
+
+    def flush(self) -> None:
+        """Write the energy integrated so far to :attr:`ledger`, atomically.
+
+        Never raises, like the rest of the sampler. A ledger that could not be
+        written costs the energy of an interruption, not the stage.
+        """
+        self._flushed_at = time.monotonic()
+        if self.ledger is None or self.peak.total_energy_wh <= 0:
+            return
+        try:
+            tmp = self.ledger.with_name(self.ledger.name + ".tmp")
+            tmp.write_text(json.dumps({
+                "energy_wh": {str(i): round(wh, 3)
+                              for i, wh in sorted(self.peak.energy_wh.items())},
+                "cards_shared": self.peak.cards_shared,
+                "readings": self.peak.readings,
+            }), encoding="utf-8")
+            os.replace(tmp, self.ledger)
+        except Exception as exc:  # noqa: BLE001 — a measurement must not fail a stage
+            logger.warning("could not write the energy ledger {}: {}", self.ledger, exc)
 
     def _once(self) -> None:
         try:
