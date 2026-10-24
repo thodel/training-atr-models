@@ -37,6 +37,8 @@ from atr_training.ketos_cmd import (
     train_cmd,
     weights_suffix,
 )
+from atr_training.collapse_watch import CollapseWatch
+from atr_training.convergence import COLLAPSE_PATIENCE, FLOOR_FROM_SCRATCH
 from atr_training.curves import CURVE_FILENAME, curve_from_checkpoints, write_training_json
 from atr_training.chunking import (chunk_record, chunks, finished_chunk,
                                    is_plan, read_plan)
@@ -61,6 +63,10 @@ __all__ = [
     "Pipeline", "main",
 ]
 
+
+#: How often the collapse watch reads the checkpoint directory (#131). A module
+#: constant so a test can make it fast.
+COLLAPSE_POLL_S = 60.0
 
 #: The record and the rule for reading it live in :mod:`atr_training.chunking`,
 #: because the observer in :mod:`atr_training.runtime_probe` has to call a chunk
@@ -468,11 +474,24 @@ class Pipeline(BasePipeline):
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         job.checkpoint_dir = str(ckpt_dir)
         self.store.save(job)
-        self._run(job, "train",
-                  train_cmd(self.settings.ketos, params=params,
-                            training_manifest=train_bin, evaluation_manifest=val_bin,
-                            checkpoint_dir=ckpt_dir, load=load),
-                  record)
+        watch = self._collapse_watch(job, ckpt_dir, from_scratch=load is None)
+        try:
+            self._run(job, "train",
+                      train_cmd(self.settings.ketos, params=params,
+                                training_manifest=train_bin, evaluation_manifest=val_bin,
+                                checkpoint_dir=ckpt_dir, load=load),
+                      record, on_start=watch.start if watch is not None else None)
+        except StageFailed as exc:
+            if watch is not None and watch.reason:
+                raise StageFailed(f"train stopped: {watch.reason}") from exc
+            raise
+        finally:
+            if watch is not None:
+                watch.stop()
+        if watch is not None and watch.reason:
+            # Lightning can leave on SIGTERM with exit 0; a stopped run must not
+            # go on to test and register as if it had finished.
+            raise StageFailed(f"train stopped: {watch.reason}")
         weights = find_best_weights(ckpt_dir, params.weights_format)
         if weights is None:
             raise StageFailed(
@@ -496,6 +515,25 @@ class Pipeline(BasePipeline):
                               else " — peaked early"))
         logger.info("best weights: {}", weights)
         return weights
+
+    def _collapse_watch(self, job: TrainJob, ckpt_dir: Path, *,
+                        from_scratch: bool) -> CollapseWatch | None:
+        """The watch that stops a collapsed run from scratch (#131), or None.
+
+        Only from scratch: a fine-tune starts from weights that already read,
+        and its zero would mean something else. Not with ``force``, which is how
+        a run from scratch is let go on regardless. Not without a step count,
+        because the floor is in steps.
+        """
+        steps = job.progress.steps_per_epoch
+        if not from_scratch or job.request.force or not steps:
+            if from_scratch:
+                logger.info("collapse watch: off ({})", "force" if job.request.force
+                            else "no steps_per_epoch to place the floor")
+            return None
+        logger.info("collapse watch: on — stops at {} checkpoints at exactly 0 past {:,} steps "
+                    "({} steps/epoch)", COLLAPSE_PATIENCE, FLOOR_FROM_SCRATCH, steps)
+        return CollapseWatch(ckpt_dir, steps, poll_s=COLLAPSE_POLL_S)
 
     def _test(self, job: TrainJob, weights: Path, val_bin: Path,
               record: StageRecord) -> Metrics:
