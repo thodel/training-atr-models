@@ -52,6 +52,9 @@ Beschrieben in acht Dokumenten (englisch):
   UBELIX: der Entscheidungsbaum für jede Engine, und warum die Grösse einen Lauf
   nach UBELIX drängt statt davon weg (eine A40 hat 44.42 GiB, eine H100 80 GB).
   asteraix ist die Ausnahme fürs Warten, nicht für die Grösse (#157).
+- [`docs/FOOTPRINT.md`](docs/FOOTPRINT.md) — was ein Lauf an Strom kostet:
+  gemessen je Stufe, seit 24.10. auch über Verdrängungen hinweg, und der
+  Ausgangswert des Programms seit 01.09. (#184).
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — Deploy, Abbrechen und neu
   Einreichen, `.env` ändern, Logs, Registrierung von Hand, fremde Job-Einträge
   schliessen.
