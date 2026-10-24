@@ -554,6 +554,40 @@ def test_on_timeout_is_read_from_the_batch_file_not_assumed(cluster):
         "requeue on preemption only")
 
 
+def test_a_trap_in_a_sourced_script_still_counts(cluster):
+    """#280 moved the trap into ubelix/requeue_trap.sh, which train.sbatch sources;
+    the probe read only the batch file and told every report that a wall ends a
+    training job — the advice #230 had just removed from the report skill."""
+    ubelix = cluster.checkout / "ubelix"
+    ubelix.mkdir(parents=True)
+    (ubelix / "train.sbatch").write_text(
+        "#SBATCH --job-name=train\n#SBATCH --requeue\n#SBATCH --signal=B:TERM@120\n"
+        '. "$REPO/ubelix/requeue_trap.sh"\n')
+    (ubelix / "requeue_trap.sh").write_text(
+        "# `scontrol requeue` in a comment does not count\n"
+        "trap 'scontrol requeue \"$SLURM_JOB_ID\"' TERM\n")
+
+    train = probe.on_timeout(cluster, "train")
+
+    assert train["trap_requeues"] is True
+    assert "the trap requeues" in train["meaning"]
+
+
+def test_the_real_train_sbatch_requeues_at_the_wall(cluster):
+    """The repository's own files, not a fixture written to match the probe: the
+    fixture above kept this green while the real file had moved its trap away."""
+    ubelix = cluster.checkout / "ubelix"
+    ubelix.mkdir(parents=True)
+    real = Path(__file__).resolve().parents[1] / "ubelix"
+    for name in ("train.sbatch", "train_resumable.sbatch", "requeue_trap.sh"):
+        (ubelix / name).write_text((real / name).read_text(encoding="utf-8"))
+
+    train = probe.on_timeout(cluster, "train")
+
+    assert train["requeue"] is True and train["signal_before_wall_s"] == 120
+    assert train["trap_requeues"] is True, train
+
+
 def test_queue_names_the_attempt_and_what_the_wall_does(cluster):
     """Measured 12.10.2026 13:16 CEST on 17890142: SIGTERM 120 s before the wall,
     the trap requeued, attempt 2 started on the same Slurm id four minutes later.
