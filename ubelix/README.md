@@ -120,6 +120,13 @@ A line-shaped dataset (`granularity: line`, e.g. `data-towerbooks-textlines`) is
 read whole on its own and refused in a multi-dataset request (#28). The three
 dh-unibe datasets this was found on are noted in `specs/german-kurrent-xvi-xix.json`.
 
+The same pass **warns when two datasets of a spec select project directories of
+the same name**, with the share of each (#202): `zh-regierungsratsprotokolle`
+and `kurrent-xix` hold 182 projects in common, `koenigsfelden-adhr-colmar` and
+`-charters-part-2` lie entirely inside `-charters-post-1500`, and a spec that
+selects both whole weights that material twice. A warning, not a refusal — the
+catalogue-wide table comes from `scripts/dataset_overlap.py`.
+
 ### The CPU-minute cap, written out (#212)
 
 ```
