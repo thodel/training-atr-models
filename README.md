@@ -52,6 +52,9 @@ Beschrieben in acht Dokumenten (englisch):
   UBELIX: der Entscheidungsbaum für jede Engine, und warum die Grösse einen Lauf
   nach UBELIX drängt statt davon weg (eine A40 hat 44.42 GiB, eine H100 80 GB).
   asteraix ist die Ausnahme fürs Warten, nicht für die Grösse (#157).
+- [`docs/GGUF.md`](docs/GGUF.md) — ein VLM-Arm als GGUF für llama-server:
+  Merge, Konvertierung, Quantisierung und die Messung auf dem Bundesrats-Testsatz
+  (Q4_K_M liest so gut wie BF16; #176).
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — Deploy, Abbrechen und neu
   Einreichen, `.env` ändern, Logs, Registrierung von Hand, fremde Job-Einträge
   schliessen.
