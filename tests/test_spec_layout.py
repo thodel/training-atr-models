@@ -200,3 +200,54 @@ def test_the_token_reaches_the_request_but_is_never_printed(monkeypatch, tmp_pat
     (tmp_path / ".hf_token").write_text("hf_from_file\n")
     sl.fetch_tree("o/x", None, "data")
     assert seen["auth"] == "Bearer hf_from_file"
+
+
+# ── #202: two datasets of one spec that select the same project names ────────
+def test_selected_projects_are_what_the_selection_materialises():
+    nested = sl.layout("o/nested", None, "train", fetch=_fake(NESTED))
+    assert sl.selected_projects({"all_projects": True}, nested) == ["A", "B"]
+    assert sl.selected_projects({"train_projects": ["A"], "eval_projects": ["B"]}, nested) == ["A", "B"]
+    assert sl.selected_projects({"train_projects": ["A"]}, nested) == ["A"]
+    assert sl.selected_projects({"whole_split": True}, sl.layout("o/f", None, "train", fetch=_fake(FLAT))) == []
+
+
+def test_shared_projects_are_counted_per_pair_with_both_shares():
+    rows = sl.shared_projects({"o/zh": ["MM_1_001", "MM_1_002", "MM_1_094"],
+                               "o/kx": ["MM_1_001", "MM_1_002", "MM_2_033", "MM_2_034"],
+                               "o/other": ["X"], "o/empty": []})
+    assert rows == [("o/kx", "o/zh", 2, 0.5, 2 / 3)]
+
+
+def test_main_warns_about_shared_projects_but_does_not_refuse(tmp_path, capsys):
+    both = {"data": [{"type": "directory", "path": "data/train"}],
+            "data/train": [{"type": "directory", "path": "data/train/MM_1_001"},
+                           {"type": "directory", "path": "data/train/MM_1_002"}]}
+    kx = {"data": [{"type": "directory", "path": "data/train"}],
+          "data/train": [{"type": "directory", "path": "data/train/MM_1_001"},
+                         {"type": "directory", "path": "data/train/MM_1_002"},
+                         {"type": "directory", "path": "data/train/MM_2_033"},
+                         {"type": "directory", "path": "data/train/MM_2_034"}]}
+    trees = {"o/zh": both, "o/kx": kx}
+
+    def fetch(repo, revision, path):
+        if repo == "o/private":
+            raise sl.HubUnreachable("401")
+        return trees[repo].get(path, [])
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"datasets": [
+        {"hf_repo": "o/zh", "all_projects": True, "max_pages": 1},
+        {"hf_repo": "o/kx", "all_projects": True, "max_pages": 1},
+        {"hf_repo": "o/private", "all_projects": True, "max_pages": 1}]}))
+    assert sl.main([str(spec)], fetch=fetch) == 0, "a warning, not a refusal"
+    out, err = capsys.readouterr()
+    assert "WARNING  o/kx and o/zh select 2 project directories of the same name" in err
+    assert "(50.0 % of the one, 100.0 % of the other)" in err and "weighted twice" in err
+    assert "1 dataset(s) not checked, so shared projects with them are unknown" in out
+
+    own = tmp_path / "own.json"
+    own.write_text(json.dumps({"datasets": [
+        {"hf_repo": "o/zh", "all_projects": True, "max_pages": 1},
+        {"hf_repo": "o/kx", "train_projects": ["MM_2_033", "MM_2_034"]}]}))
+    assert sl.main([str(own)], fetch=fetch) == 0
+    out, err = capsys.readouterr()
+    assert "WARNING" not in err, "kurrent-xix given its own projects only: clean"

@@ -24,6 +24,15 @@ Per dataset the hub's tree API is asked what lies under ``data/`` (and under
 Exit 0: submit. Exit 1: do not, with every reason on stderr. A hub that cannot
 be asked is **not** a refusal: the dataset is printed as ``not checked`` with
 the reason, and the exit stays 0 — "could not look" is not "wrong" (#165).
+
+Two datasets of one spec that **share project directory names** are a warning
+with the share, not a refusal (#202): ``zh-regierungsratsprotokolle`` and
+``kurrent-xix`` hold 182 projects in common, and a spec selecting both whole
+weights that material twice — found only because two capped selections
+happened to report byte-identical statistics. The warning compares what each
+dataset *selects* (its named projects, or every directory under
+``all_projects``), so a spec that gives one of them its own projects only is
+clean and says so.
 """
 
 from __future__ import annotations
@@ -165,6 +174,27 @@ def judge(dataset: Dict[str, Any], found: Dict[str, Any], alone: bool = True) ->
     return "ok", "%s: %s; nothing selected here to check" % (repo, what)
 
 
+def selected_projects(dataset: Dict[str, Any], found: Dict[str, Any]) -> List[str]:
+    """The project directories this dataset's selection materialises."""
+    if dataset.get("all_projects"):
+        return list(found.get("project_dirs") or [])
+    return list(dataset.get("train_projects") or []) + list(dataset.get("eval_projects") or [])
+
+
+def shared_projects(selections: Dict[str, List[str]]) -> List[Tuple[str, str, int, float, float]]:
+    """``(a, b, shared, share of a, share of b)`` for every pair of datasets whose
+    selections share project names, largest first."""
+    names = sorted(k for k, v in selections.items() if v)
+    out = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            shared = set(selections[a]) & set(selections[b])
+            if shared:
+                out.append((a, b, len(shared), len(shared) / len(set(selections[a])),
+                            len(shared) / len(set(selections[b]))))
+    return sorted(out, key=lambda r: -r[2])
+
+
 def main(argv: List[str], fetch=fetch_tree) -> int:
     if len(argv) != 1:
         print(__doc__, file=sys.stderr)
@@ -176,11 +206,14 @@ def main(argv: List[str], fetch=fetch_tree) -> int:
         print("spec layout: no datasets in the spec — nothing to check")
         return 0
     refused = 0
+    selections: Dict[str, List[str]] = {}
+    unchecked = 0
     for dataset in datasets:
         repo, split = dataset.get("hf_repo", "?"), dataset.get("split", "train")
         try:
             found = layout(repo, dataset.get("revision"), split, fetch=fetch)
         except HubUnreachable as exc:
+            unchecked += 1
             print("spec layout: not checked  %s: the hub could not be asked (%s)" % (repo, exc))
             continue
         verdict, message = judge(dataset, found, alone=len(datasets) == 1)
@@ -189,6 +222,15 @@ def main(argv: List[str], fetch=fetch_tree) -> int:
             print("spec layout: REFUSED  %s" % message, file=sys.stderr)
         else:
             print("spec layout: ok  %s" % message)
+        selections[repo] = selected_projects(dataset, found)
+    for a, b, shared, share_a, share_b in shared_projects(selections):
+        print("spec layout: WARNING  %s and %s select %d project director%s of the same name "
+              "(%.1f %% of the one, %.1f %% of the other): that material would be weighted "
+              "twice (#202)" % (a, b, shared, "y" if shared == 1 else "ies",
+                                100 * share_a, 100 * share_b), file=sys.stderr)
+    if unchecked and len(datasets) > 1:
+        print("spec layout: %d dataset(s) not checked, so shared projects with them are "
+              "unknown, not absent" % unchecked)
     return 1 if refused else 0
 
 
