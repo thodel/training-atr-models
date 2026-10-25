@@ -441,16 +441,24 @@ class BasePipeline(ABC):
         record.finished_at = utcnow()
         self.store.save(job)
 
-    def _run(self, job: TrainJob, stage: JobStage, cmd: list[str], record: StageRecord) -> None:
+    def _run(self, job: TrainJob, stage: JobStage, cmd: list[str], record: StageRecord,
+             on_start: Callable[[int], None] | None = None) -> None:
         # Watch the card while the subprocess runs (#163). This is the only route
         # to a peak for kraken, which drives `ketos` as an external CLI and holds
         # no torch handle, and it is the figure comparable to a card's capacity
         # for the engines that do — torch's own marks exclude the CUDA context.
+        # ``on_start`` is a second watcher on the same pid (the collapse watch,
+        # #131); it must not raise, since that would lose a running child.
         sampler: PeakSampler | None = None
 
         def started(pid: int) -> None:
             nonlocal sampler
             sampler = PeakSampler(pid).start()
+            if on_start is not None:
+                try:
+                    on_start(pid)
+                except Exception as exc:  # noqa: BLE001 — see above
+                    logger.warning("{}: a watcher on pid {} failed to start: {}", stage, pid, exc)
 
         log_path = self.store.paths(job.id).log(stage)
         try:

@@ -67,12 +67,20 @@ __all__ = [
     "epochs_for",
     "floor_for",
     "check_convergence",
+    "COLLAPSE_PATIENCE",
+    "collapse_reason",
 ]
 
 #: A network starting from random weights has to learn the alphabet, the blank
 #: symbol and the script. 400 steps produced CER 0.98; a Thun fine-tune at batch
-#: 16 would be ~3,600. This sits well below anything reasonable and well above the
-#: run that failed.
+#: 16 would be ~3,600. This sits well above the run that failed — and it is only
+#: that: a lower bound against a known failure, not evidence that a run above it
+#: learns (#131). On the German sweep corpus (236,908 lines, batch 256) kraken
+#: from scratch collapsed at **2,778** steps (CER 1.0000 and 0.9998, two seeds)
+#: and again at **10,186** (0.9855 and 0.9866, length ratio 0.015), while run 3
+#: on shard_00 (831,718 lines) reached val 0.7057 at ~9,750. What decides is the
+#: material, which a number of steps cannot see; so no floor here is raised to
+#: fit it, and the run is watched instead (:func:`collapse_reason`).
 FLOOR_FROM_SCRATCH = 2_000
 #: Starting from trained weights, far fewer steps are needed — the model already
 #: knows what characters look like.
@@ -81,6 +89,14 @@ FLOOR_FINETUNE = 500
 #: pretrained VLM: the one real run converged usefully in 38 steps, so a floor in
 #: the hundreds would refuse work that demonstrably functions.
 FLOOR_BY_ENGINE: dict[str, int] = {"vllm": 25}
+#: How many checkpoints past the floor must all read exactly 0 before a run from
+#: scratch is stopped as collapsed (#131). Exactly 0, not "low": a validation
+#: accuracy of 0.0000 is not one character right — nothing is being read, and a
+#: run that is merely bad shows a number. Three, so a single late epoch on the
+#: plateau before CTC breaks through does not end a run: on the 10,186-step
+#: corpus that is epochs 3–5 of 11, about 4,600 steps, where the full run took
+#: 4.9 h for CER 0.985.
+COLLAPSE_PATIENCE = 3
 
 
 @dataclass(frozen=True)
@@ -198,3 +214,37 @@ def check_convergence(
             f'"force": true to run it anyway.'
         ),
     )
+
+
+def collapse_reason(points, steps_per_epoch: int, floor: int = FLOOR_FROM_SCRATCH,
+                    patience: int = COLLAPSE_PATIENCE) -> str | None:
+    """Why a run from scratch should stop now, or None (#131).
+
+    ``points`` are the run's :class:`~atr_training.curves.EpochPoint` so far —
+    epoch numbers as Lightning writes them, from 0, so the checkpoint of epoch
+    ``e`` is ``(e + 1) * steps_per_epoch`` steps in. Only checkpoints past the
+    floor count: before it, a zero is what learning looks like.
+
+    The stop needs ``patience`` such checkpoints, every one at exactly 0, and
+    none above 0 anywhere: one character right at any epoch means the run is
+    reading something, and that is a bad run to judge afterwards, not a
+    collapse to end. kraken keeps the ten best checkpoints only, so a run whose
+    floor lies beyond its tenth epoch may never show three; it is then not
+    stopped — not seeing enough is not a reason to end anything.
+    """
+    if steps_per_epoch < 1 or patience < 1:
+        return None
+    points = sorted(points, key=lambda p: p.epoch)
+    if any(p.val_metric > 0 for p in points):
+        return None
+    past = [p for p in points if (p.epoch + 1) * steps_per_epoch >= floor]
+    if len(past) < patience:
+        return None
+    last = past[-1]
+    return (f"collapsed: validation accuracy exactly 0 at {len(past)} checkpoint(s) past "
+            f"the floor of {floor:,} steps (epochs {past[0].epoch}–{last.epoch}, "
+            f"{(last.epoch + 1) * steps_per_epoch:,} steps). A CTC network that has read "
+            f"no character by now emits blanks; on the German sweep corpus 10,186 steps "
+            f"from scratch still ended at CER 0.985 (#131). Fine-tune from a base model "
+            f'(`base_model` + `resize: "union"`), or submit with "force": true to let a '
+            f"run from scratch go on regardless.")
