@@ -315,6 +315,7 @@ def test_trocr_params_have_the_right_defaults():
     assert p.accumulate_grad_batches == 8
     assert p.gradient_checkpointing is True
     assert p.precision == "bf16"
-    assert p.beam_size == 1
+    assert p.beam_size == 4
+    assert p.length_penalty == 1.0
     assert p.max_new_tokens == 256
     assert p.wandb_run is None

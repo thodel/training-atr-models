@@ -54,6 +54,7 @@ def _base_args(params: TrOCRTrainParams, base_model: str) -> list[str]:
         "--max-new-tokens", str(params.max_new_tokens),
         "--beam-size", str(params.beam_size),
         "--length-penalty", str(params.length_penalty),
+        "--no-repeat-ngram-size", str(params.no_repeat_ngram_size),
     ]
 
 

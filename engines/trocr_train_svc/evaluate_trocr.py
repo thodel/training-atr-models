@@ -40,14 +40,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--max-new-tokens", type=int, default=256)
-    p.add_argument("--beam-size", type=int, default=1)
+    p.add_argument("--beam-size", type=int, default=4)
     p.add_argument("--length-penalty", type=float, default=1.0)
+    p.add_argument("--no-repeat-ngram-size", type=int, default=3)
     p.add_argument("--max-samples", type=int, default=200)
     return p.parse_args(argv)
 
 
 def transcribe(model, processor, image_path: Path, max_new_tokens: int,
-               num_beams: int) -> str:
+               num_beams: int, length_penalty: float = 1.0,
+               no_repeat_ngram_size: int = 0) -> str:
     import torch
     from PIL import Image
 
@@ -66,6 +68,14 @@ def transcribe(model, processor, image_path: Path, max_new_tokens: int,
             max_new_tokens=max_new_tokens,
             num_beams=num_beams,
             do_sample=False,
+            # Only beam search reads these, and transformers rejects them with
+            # num_beams=1. Passed here rather than left to the checkpoint's
+            # generation config: --length-penalty used to be accepted and never
+            # reach generate (#37).
+            **({"length_penalty": length_penalty, "early_stopping": True}
+               if num_beams > 1 else {}),
+            **({"no_repeat_ngram_size": no_repeat_ngram_size}
+               if no_repeat_ngram_size > 0 else {}),
         )
     return processor.batch_decode(generated, skip_special_tokens=True)[0].strip()
 
@@ -102,12 +112,16 @@ def main(argv: list[str] | None = None) -> int:
 
     pairs: list[tuple[str, str]] = []
     examples: list[dict] = []
+    rows: list[dict] = []
     for index, sample in enumerate(samples, 1):
         prediction = transcribe(
             model, processor, root / sample.image,
-            args.max_new_tokens, args.beam_size,
+            args.max_new_tokens, args.beam_size, args.length_penalty,
+            args.no_repeat_ngram_size,
         )
         pairs.append((prediction, sample.text))
+        rows.append({"image": sample.image, "reference": sample.text,
+                     "prediction": prediction})
         if len(examples) < 10:
             examples.append({
                 "image": sample.image,
@@ -126,11 +140,19 @@ def main(argv: list[str] | None = None) -> int:
         "eval_cap": args.max_samples,
         "eval_selection": selection,
         "val_total": len(pool),
+        "beam_size": args.beam_size,
+        "length_penalty": args.length_penalty if args.beam_size > 1 else None,
+        "no_repeat_ngram_size": args.no_repeat_ngram_size,
         "examples": examples,
     })
     out = Path(args.report)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    # Every prediction, not ten: diagnosing the first real run (#37) meant
+    # predicting the draw again because the report kept only its examples.
+    with out.with_suffix(".raw.jsonl").open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(
         f"CER {score.cer:.4f}  WER {score.wer}  "
         f"over {score.samples} samples -> {out}",

@@ -720,11 +720,26 @@ class TrOCRTrainParams(BaseModel):
     # ── generation at eval time ──────────────────────────────────────────────
     #: Tokens to generate at most per sample during evaluation.
     max_new_tokens: int = Field(default=256, ge=1)
-    #: Beam width for beam search at eval. 1 = greedy.
-    beam_size: int = Field(default=1, ge=1)
-    #: Length penalty passed to ``model.generate``. Positive values encourage
-    #: longer sequences; negative encourage shorter.
-    length_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    #: Beam width for beam search at eval. 1 = greedy. 4 by default since
+    #: 25.10.2026: on the first real run (#37) greedy decoding ran on after short
+    #: lines — "1780 Januar 20." came back with eighty dots — and beam search with
+    #: early stopping took the same checkpoint on the same 500 lines from CER
+    #: 1.01 to 0.74, and to 0.54 with :attr:`no_repeat_ngram_size` beside it.
+    beam_size: int = Field(default=4, ge=1)
+    #: Length penalty passed to ``model.generate`` in beam search. Positive values
+    #: encourage longer sequences; negative encourage shorter. 1.0 is
+    #: transformers' own default and what the 0.54 above was measured at; the
+    #: former 0.0 scores beams by their summed log-probability, which favours
+    #: the shortest hypothesis — the opposite of the error it is meant to fix.
+    length_penalty: float = Field(default=1.0, ge=-2.0, le=2.0)
+    #: No token n-gram of this size may occur twice in one output; 0 turns the
+    #: block off. 3 by default because it was measured, on the same checkpoint
+    #: and the same 500 lines (#37): beam 4 alone read at CER 0.737, with the
+    #: block at 0.543. The obvious cost — a line that genuinely repeats, like a
+    #: table of contents' ". . . . 76" — did not show: on the 37 references with
+    #: a repeated token trigram the block took the CER from 1.49 to 0.70, because
+    #: the model's own loops cost far more than one suppressed real repeat.
+    no_repeat_ngram_size: int = Field(default=3, ge=0)
 
     # ── evaluation ───────────────────────────────────────────────────────────
     eval_samples: int = Field(default=200, ge=1)
