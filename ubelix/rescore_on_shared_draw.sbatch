@@ -12,6 +12,11 @@
 #   JOB=<id> DRAW_FROM=<id> ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=04:00:00
 #   JOB=<id> DRAW_FILE=<lines.jsonl> DATA_ROOT=<corpus root> LABEL=<name> \
 #       ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch     # a draw as a file (#74)
+#   JOB=<id> DRAW_FILE=<eval_sets>/german-medieval-v1/vlm-pages-test/pages.jsonl \
+#       DATA_ROOT=<eval_sets>/german-medieval-v1/vlm-pages-test LABEL=german-medieval-v1-test \
+#       HELDOUT=1 ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=<…>
+#                                       # a held-out page set (#301): refuses on overlap.
+#       695 pages, four times the 164 above — size TIME from that run's log.
 #
 # Run from the checkout: ~/ubelix holds the container images, the logs and the
 # specs, and a helper copied there goes stale (tests/test_ubelix_layout.py).
@@ -40,4 +45,5 @@ apptainer exec --nv --bind /storage --bind /scratch --bind /rs_scratch \
   "$HOME/ubelix/vlm-train-tf5.sif" /opt/vlm-train/bin/python \
   "$REPO/ubelix/rescore_on_shared_draw.py" --job "$JOB" \
   ${DRAW_FILE:+--draw-file "$DRAW_FILE" --data-root "$DATA_ROOT" --label "$LABEL"} \
+  ${HELDOUT:+--heldout} \
   ${DRAW_FROM:+--draw-from "$DRAW_FROM"}

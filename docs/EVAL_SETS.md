@@ -192,6 +192,40 @@ The run **refuses** rather than scores if the benchmark's documents appear in th
 training corpus: a CER measured there is a memory test, not an error rate. The
 check is by document, not by page, because pages of one manuscript share a hand.
 
+#### A finished VLM page arm, without retraining (#301)
+
+A VLM page arm reads a draw: one JSON sample per page, not an arrow. The set's
+test pages become one, once, and outside the jobs tree:
+
+```bash
+POOL=<jobs root>/20260905T190759Z-kraken-german-eval-pool-v1/data
+OUT=<share>/eval_sets/german-medieval-v1/vlm-pages-test
+python scripts/build_page_benchmark.py --set german-medieval-v1 --side test \
+    --pages-list $POOL/split/pages_test.lst --pages-dir $POOL/pages --out $OUT
+```
+
+It **refuses** unless the list's documents are the registry's 200 test documents
+and its page digest is the recorded `7a3f839ff97da4fd`. Then it copies the XML
+and JPEG of every page to `$OUT/data/pages/`, writes `$OUT/pages.jsonl`, and
+writes `$OUT/benchmark.json` with what it checked, how many samples and reference
+characters there are, and the draw's md5. A page without text is named there,
+not silently dropped.
+
+Scoring an arm on it:
+
+```bash
+JOB=<id> DRAW_FILE=$OUT/pages.jsonl DATA_ROOT=$OUT LABEL=german-medieval-v1-test \
+    HELDOUT=1 ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=<…>
+```
+
+`HELDOUT=1` (`--heldout`) compares the draw's documents with the run's training
+manifest **before** scoring, and refuses on one shared document. A run that
+adopted its corpus has no manifest of its own; the check reads the cache entry's,
+then the builder's. When none is left, or nothing on one side names a document,
+it refuses too; `--allow-unchecked` overrides and says so. The outcome is kept
+beside the report as `eval_report.<label>.heldout.json`. The score itself goes to
+`eval_report.<label>.json`; the job record is not touched.
+
 ### Keeping it out of training
 
 The 350 document ids are reserved in `config/heldout_eval_documents.json`, and
