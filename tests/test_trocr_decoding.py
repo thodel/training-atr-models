@@ -57,6 +57,7 @@ def _transcribe(tmp_path, **kwargs):
 def test_beam_search_is_the_default():
     assert TrOCRTrainParams().beam_size == 4
     assert TrOCRTrainParams().length_penalty == 1.0
+    assert TrOCRTrainParams().no_repeat_ngram_size == 3
 
 
 def test_beam_settings_reach_generate(tmp_path, fake_torch):
@@ -66,6 +67,14 @@ def test_beam_settings_reach_generate(tmp_path, fake_torch):
     assert kwargs["num_beams"] == 4
     assert kwargs["length_penalty"] == 0.8
     assert kwargs["early_stopping"] is True
+
+
+def test_the_ngram_block_reaches_generate_and_zero_turns_it_off(tmp_path, fake_torch):
+    _, on = _transcribe(tmp_path, num_beams=4, no_repeat_ngram_size=3)
+    _, off = _transcribe(tmp_path, num_beams=4, no_repeat_ngram_size=0)
+
+    assert on["no_repeat_ngram_size"] == 3
+    assert "no_repeat_ngram_size" not in off
 
 
 def test_greedy_gets_no_beam_only_settings(tmp_path, fake_torch):
@@ -84,3 +93,4 @@ def test_the_runner_passes_the_defaults_to_the_evaluator(tmp_path):
 
     assert cmd[cmd.index("--beam-size") + 1] == "4"
     assert cmd[cmd.index("--length-penalty") + 1] == "1.0"
+    assert cmd[cmd.index("--no-repeat-ngram-size") + 1] == "3"

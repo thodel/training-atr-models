@@ -42,12 +42,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--beam-size", type=int, default=4)
     p.add_argument("--length-penalty", type=float, default=1.0)
+    p.add_argument("--no-repeat-ngram-size", type=int, default=3)
     p.add_argument("--max-samples", type=int, default=200)
     return p.parse_args(argv)
 
 
 def transcribe(model, processor, image_path: Path, max_new_tokens: int,
-               num_beams: int, length_penalty: float = 1.0) -> str:
+               num_beams: int, length_penalty: float = 1.0,
+               no_repeat_ngram_size: int = 0) -> str:
     import torch
     from PIL import Image
 
@@ -72,6 +74,8 @@ def transcribe(model, processor, image_path: Path, max_new_tokens: int,
             # reach generate (#37).
             **({"length_penalty": length_penalty, "early_stopping": True}
                if num_beams > 1 else {}),
+            **({"no_repeat_ngram_size": no_repeat_ngram_size}
+               if no_repeat_ngram_size > 0 else {}),
         )
     return processor.batch_decode(generated, skip_special_tokens=True)[0].strip()
 
@@ -113,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         prediction = transcribe(
             model, processor, root / sample.image,
             args.max_new_tokens, args.beam_size, args.length_penalty,
+            args.no_repeat_ngram_size,
         )
         pairs.append((prediction, sample.text))
         rows.append({"image": sample.image, "reference": sample.text,
@@ -137,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         "val_total": len(pool),
         "beam_size": args.beam_size,
         "length_penalty": args.length_penalty if args.beam_size > 1 else None,
+        "no_repeat_ngram_size": args.no_repeat_ngram_size,
         "examples": examples,
     })
     out = Path(args.report)

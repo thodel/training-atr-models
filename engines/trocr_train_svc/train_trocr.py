@@ -42,6 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--beam-size", type=int, default=4)
     p.add_argument("--length-penalty", type=float, default=1.0)
+    p.add_argument("--no-repeat-ngram-size", type=int, default=3)
     # Training
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--batch-size", type=int, default=1)
@@ -185,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
         generation_config.length_penalty = args.length_penalty
         generation_config.early_stopping = True
     generation_config.max_new_tokens = args.max_new_tokens
+    if args.no_repeat_ngram_size > 0:
+        generation_config.no_repeat_ngram_size = args.no_repeat_ngram_size
 
     trainer = Seq2SeqTrainer(
         model=model,
