@@ -400,6 +400,16 @@ class TrainerSettings(BaseSettings):
     #: peak page-disk is one chunk instead of the whole selection.
     chunk_pages: int = 0
 
+    #: Width-to-height ceiling on the **extracted line images** of a kraken
+    #: corpus, applied to the train arrows right after ``ketos compile`` (#145).
+    #: The PageXML ceiling (``pagexml.MAX_LINE_ASPECT``) bounds the ``Coords``
+    #: box, and on the German sweep corpus it removed 0 of 345,359 lines while
+    #: 4.97 % of the extracted images were over 60:1, up to 177:1 — and kraken
+    #: pads a batch to its widest image. **0 disables it.** The validation arrow
+    #: is not cut: the job's CER is measured on it, and dropping its widest
+    #: lines would flatter that number.
+    image_ceiling: float = 60.0
+
     #: Publish a finished model to the Hub when its character accuracy reaches
     #: this, in percent. **0 disables it**, and that is the default: uploading is
     #: outward-facing and the hub keeps history, so it is opted into deliberately.

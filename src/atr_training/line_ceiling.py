@@ -390,13 +390,21 @@ def cut_arrow(src: str | Path, dest: str | Path | None = None, *,
         if dry_run:
             return result
 
-        filtered = table.filter(pa.array(keep))
-        schema = filtered.schema.with_metadata(
-            _rebuilt_metadata(table.schema, alphabet, filtered.num_rows))
+        # Batch by batch, not ``table.filter``: the source is memory-mapped and
+        # costs nothing to hold, but a filtered *table* is a copy of everything
+        # kept — tens of GB for a corpus the trainer cuts after its compile.
+        mask = pa.array(keep)
+        schema = table.schema.with_metadata(
+            _rebuilt_metadata(table.schema, alphabet, len(keep) - removed))
         dest.parent.mkdir(parents=True, exist_ok=True)
         with pa.OSFile(str(dest), "wb") as sink:
             with pa.ipc.new_file(sink, schema) as writer:
-                writer.write_table(filtered.replace_schema_metadata(schema.metadata))
+                offset = 0
+                for batch in table.to_batches():
+                    part = batch.filter(mask.slice(offset, batch.num_rows))
+                    offset += batch.num_rows
+                    if part.num_rows:
+                        writer.write_batch(part)
     return ArrowCut(lines_before=result.lines_before, removed=result.removed,
                     widest_before=result.widest_before,
                     widest_after=result.widest_after,
