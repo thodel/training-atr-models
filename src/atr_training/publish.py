@@ -32,6 +32,7 @@ Entry point: ``scripts/publish_to_hub.py``.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
@@ -335,6 +336,11 @@ def _resolved_base(base: str) -> "BaseEntry | None":
     return registry.get(base) if registry is not None else None
 
 
+#: ``owner/name`` exactly: one slash, no leading one, the characters the hub
+#: allows in either half.
+_HUB_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
+
+
 def _is_hub_repo(ref: str) -> bool:
     """``owner/name`` — the only shape the hub's ``base_model:`` can resolve.
 
@@ -346,7 +352,28 @@ def _is_hub_repo(ref: str) -> bool:
     card either as a resolvable link or as a plain statement — never as a name
     the reader cannot check.
     """
-    return "/" in ref and not ref.startswith("10.")
+    # "Contains a slash" took a file path for a repo too: a fine-tune of weights
+    # trained here (base `/mnt/…/trained/kraken-bern-hertwig-v2/….mlmodel`)
+    # wrote that path into ``base_model:``, the hub refused the README, and with
+    # it the whole commit — `kraken-bern-schlussredaktion-v1` (2026-10-25) got a
+    # repo holding nothing but `.gitattributes`.
+    return not ref.startswith("10.") and bool(_HUB_REPO_RE.match(ref))
+
+
+def _trained_here(base: str) -> "tuple[str, dict] | None":
+    """``(model id, its metadata)`` when ``base`` is the weights file of a model
+    this trainer made — ``…/trained/<id>/<id>.<ext>`` — else None. The metadata
+    says whether that model went to the hub, and where."""
+    if not base.startswith("/"):
+        return None
+    path = Path(base)
+    if path.parent.name != path.stem:
+        return None
+    try:
+        meta = json.loads((path.parent / METADATA_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    return path.stem, meta if isinstance(meta, dict) else {}
 
 
 def _base_cell(base: str | None) -> str:
@@ -365,6 +392,15 @@ def _base_cell(base: str | None) -> str:
         return f"[`{base}`](https://doi.org/{base})"
     if _is_hub_repo(base):
         return f"[`{base}`](https://huggingface.co/{base})"
+    here = _trained_here(base)
+    if here is not None:
+        model_id, meta = here
+        repo = (meta.get("published") or {}).get("repo_id")
+        where = (f"[`{repo}`](https://huggingface.co/{repo})" if repo
+                 else f"local weights `{base}`")
+        return f"**{model_id}** — trained on this box, {where}"
+    if base.startswith("/"):
+        return f"local weights `{base}`"
 
     spec = _resolved_base(base)
     if spec is None:
