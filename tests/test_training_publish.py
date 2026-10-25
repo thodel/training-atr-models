@@ -794,3 +794,35 @@ def test_a_model_without_a_progress_block_still_renders(tmp_path: Path):
     card = card_for(tmp_path, KRAKEN_META)
     assert "## Energy and carbon" not in card
     assert card.rstrip().endswith("```") or "## Using it" in card
+
+
+def test_a_file_path_is_not_a_hub_repo_and_stays_out_of_the_frontmatter(tmp_path: Path, curated):
+    """2026-10-25: a fine-tune of weights trained here wrote their path into
+    ``base_model:``, the hub refused the README, and the repo got nothing but
+    `.gitattributes`."""
+    base = "/mnt/wbkolleg_dh_1/x/trained/kraken-bern-hertwig-v2/kraken-bern-hertwig-v2.mlmodel"
+    card = card_for(tmp_path, _with_base(KRAKEN_META, base))
+    assert "base_model" not in frontmatter(card)
+    assert "huggingface.co//mnt" not in card and "huggingface.co/mnt" not in card
+    assert "**kraken-bern-hertwig-v2** — trained on this box, local weights" in card
+
+
+def test_a_base_trained_here_and_published_links_its_repo(tmp_path: Path, curated):
+    trained = tmp_path / "trained" / "kraken-base-v1"
+    trained.mkdir(parents=True)
+    (trained / "metadata.json").write_text(json.dumps(
+        {"published": {"repo_id": "dh-unibe/kraken-base-v1"}}), encoding="utf-8")
+    base = str(trained / "kraken-base-v1.mlmodel")
+    card = card_for(tmp_path, _with_base(KRAKEN_META, base))
+    assert "[`dh-unibe/kraken-base-v1`](https://huggingface.co/dh-unibe/kraken-base-v1)" in card
+    assert "base_model" not in frontmatter(card)
+
+
+@pytest.mark.parametrize("ref, ok", [
+    ("Qwen/Qwen3-VL-8B-Instruct", True), ("dh-unibe/kraken-x_v1.2", True),
+    ("10.5281/zenodo.7051644", False), ("/mnt/a/b.mlmodel", False),
+    ("a/b/c", False), ("kraken-prima", False), ("/b", False), ("a/", False),
+])
+def test_only_owner_slash_name_is_a_hub_repo(ref, ok):
+    from atr_training import publish
+    assert publish._is_hub_repo(ref) is ok
