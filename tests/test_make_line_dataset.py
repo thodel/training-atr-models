@@ -274,3 +274,139 @@ def test_confirm_private_is_quiet_when_private(api, capsys):
     api(FakeApi(state=True))
     assert mld.confirm_private("dh-unibe/x-lines") is True
     assert capsys.readouterr().err == ""
+
+
+# ── the licence travels with the crops (#173) ───────────────────────────────
+SOURCE_CARD = """---
+license: mit
+language:
+- de
+- la
+tags:
+- htr
+- doi:10.57967/hf/8591
+dataset_info:
+  features:
+  - name: image
+    dtype: image
+  splits:
+  - name: train
+    num_examples: 3222
+---
+# Dataset Card for image-text_koenigsfelden-charters-post-1500
+
+Provenance: State Archives Aargau.
+"""
+
+#: What push_to_hub writes for the copy: its own features, nothing else.
+PUSHED_HEAD = """---
+dataset_info:
+  features:
+  - name: image
+    dtype: binary
+  - name: text
+    dtype: string
+  splits:
+  - name: train
+    num_examples: 50024
+---"""
+
+
+def test_the_licence_and_the_language_are_carried_and_nothing_else():
+    assert mld.carried_metadata(SOURCE_CARD) == {"license": "mit", "language": ["de", "la"]}, \
+        "the source's DOI, tags and features describe the source, not the copy"
+
+
+def test_carried_keys_go_on_top_and_the_pushed_block_stays_byte_for_byte():
+    merged = mld.with_metadata(PUSHED_HEAD, {"license": "mit", "language": ["de"]})
+    assert merged.startswith("---\nlicense: mit\nlanguage:\n- de\ndataset_info:\n")
+    inner = PUSHED_HEAD[4:-4]
+    assert merged.endswith(inner + "\n---"), "dataset_info is not round-tripped"
+
+
+def test_a_licence_set_on_the_copy_is_not_overwritten():
+    head = "---\nlicense: cc-by-4.0\n---"
+    assert mld.with_metadata(head, {"license": "mit"}) == head
+
+
+def test_a_copy_without_frontmatter_gets_one():
+    assert mld.with_metadata("", {"license": "mit"}) == "---\nlicense: mit\n---"
+
+
+def test_a_source_without_a_licence_carries_nothing_and_the_card_says_so(monkeypatch):
+    monkeypatch.setattr(mld, "_source_card", lambda repo, rev: "# no frontmatter\n")
+    monkeypatch.setattr(mld, "existing_frontmatter", lambda out: PUSHED_HEAD)
+    text = mld.card("dh-unibe/x-lines", "dh-unibe/x", REV, 10, 100, "ok")
+    assert "\nlicense:" not in text.split("\n---", 2)[0]
+    assert "| Licence | none declared by the source — ask before reusing |" in text
+
+
+def test_the_card_of_a_new_copy_carries_the_licence(monkeypatch):
+    monkeypatch.setattr(mld, "_source_card", lambda repo, rev: SOURCE_CARD)
+    monkeypatch.setattr(mld, "existing_frontmatter", lambda out: PUSHED_HEAD)
+    text = mld.card("dh-unibe/x-lines", "dh-unibe/x", REV, 50024, 3892784, "ok")
+    assert text.startswith("---\nlicense: mit\nlanguage:\n- de\n- la\ndataset_info:")
+    assert "| Licence | `mit`, as declared by the source |" in text
+    assert "Provenance: State Archives Aargau." in text
+    frontmatter = text.split("\n---", 1)[0]
+    assert "doi" not in frontmatter and "3222" not in frontmatter, \
+        "the source's DOI and split sizes stay the source's"
+
+
+class Uploads:
+    def __init__(self):
+        self.files = []
+
+    def upload_file(self, **kw):
+        self.files.append(kw)
+
+
+def _hub_with(monkeypatch, tmp_path, out_card: str):
+    import types
+
+    readme = tmp_path / "README.md"
+    readme.write_text(out_card, encoding="utf-8")
+    hub = types.ModuleType("huggingface_hub")
+    hub.hf_hub_download = lambda *a, **k: str(readme)
+    hub.HfApi = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+
+
+def test_carry_metadata_adds_the_licence_to_an_existing_copy(monkeypatch, tmp_path, capsys):
+    _hub_with(monkeypatch, tmp_path, PUSHED_HEAD + "\n\n# x-lines\n\nLine-level variant.\n")
+    monkeypatch.setattr(mld, "_source_card", lambda repo, rev: SOURCE_CARD)
+    api = Uploads()
+    assert mld.carry_metadata("dh-unibe/x-lines", "dh-unibe/x", REV, api=api) == 0
+    (upload,) = api.files
+    text = upload["path_or_fileobj"].decode("utf-8")
+    assert text.startswith("---\nlicense: mit\nlanguage:")
+    assert "# x-lines\n\nLine-level variant." in text, "the prose is kept"
+    assert upload["path_in_repo"] == "README.md" and upload["repo_type"] == "dataset"
+    assert "added license, language" in capsys.readouterr().out
+
+
+def test_carry_metadata_leaves_a_copy_that_has_it(monkeypatch, tmp_path, capsys):
+    _hub_with(monkeypatch, tmp_path, "---\nlicense: mit\nlanguage: de\n---\n\nbody\n")
+    monkeypatch.setattr(mld, "_source_card", lambda repo, rev: SOURCE_CARD)
+    api = Uploads()
+    assert mld.carry_metadata("dh-unibe/x-lines", "dh-unibe/x", REV, api=api) == 0
+    assert api.files == [] and "unchanged" in capsys.readouterr().out
+
+
+def test_carry_metadata_refuses_when_the_source_declares_nothing(monkeypatch, tmp_path):
+    _hub_with(monkeypatch, tmp_path, PUSHED_HEAD)
+    monkeypatch.setattr(mld, "_source_card", lambda repo, rev: "# nothing\n")
+    api = Uploads()
+    assert mld.carry_metadata("dh-unibe/x-lines", "dh-unibe/x", REV, api=api) == 1
+    assert api.files == []
+
+
+def test_carry_metadata_builds_nothing_and_needs_no_page_bound(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mld, "carry_metadata", lambda out, repo, rev: seen.append(out) or 0)
+    monkeypatch.setattr(mld, "build", lambda *a, **k: pytest.fail("nothing is built"))
+    assert mld.main(["--repo", "dh-unibe/x", "--revision", REV, "--out", "dh-unibe/x-lines",
+                     "--carry-metadata"]) == 0
+    assert seen == ["dh-unibe/x-lines"]
+    assert mld.main(["--repo", "dh-unibe/x", "--revision", REV,
+                     "--out", "dh-unibe/x-lines"]) == 2, "a build still needs --max-pages"

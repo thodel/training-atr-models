@@ -112,6 +112,82 @@ def working_directory(base: Path) -> Iterator[Path]:
             logger.info("removed {}", path)
 
 
+#: Frontmatter keys of the source's card that hold for the line-level copy as
+#: well (#173). A line crop is cut from the source's page and carries its terms,
+#: so the licence and the language travel with it. Everything else in that
+#: frontmatter describes the *source* — its features, split sizes, DOI — and
+#: would be wrong here. A public dataset without a licence is one nobody may
+#: reuse, which is the opposite of why it is public: the seven line datasets of
+#: 05.10.2026 carry none, and all seven of their sources declare ``mit``
+#: (checked 25.10.2026).
+CARRIED_KEYS = ("license", "license_name", "license_link", "language")
+
+
+def _source_card(repo: str, revision: str) -> str:
+    """The source's README at ``revision``, or "" when it has none."""
+    from huggingface_hub import hf_hub_download
+    try:
+        path = hf_hub_download(repo, "README.md", repo_type="dataset", revision=revision)
+    except Exception as exc:  # a dataset without a card is not an error here
+        logger.warning("{}: no README to carry over ({})", repo, exc)
+        return ""
+    return Path(path).read_text(encoding="utf-8")
+
+
+def split_card(text: str) -> tuple[str, str]:
+    """``(frontmatter between the --- lines, the prose after them)``."""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            return text[3:end].strip("\n"), text[end + 4:].strip()
+    return "", text.strip()
+
+
+def carried_metadata(text: str) -> dict:
+    """The :data:`CARRIED_KEYS` the source's card declares, in that order."""
+    import yaml
+
+    head, _ = split_card(text)
+    try:
+        data = yaml.safe_load(head) if head else {}
+    except yaml.YAMLError as exc:
+        logger.warning("the source card's frontmatter does not parse ({}); "
+                       "nothing carried over", exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: data[k] for k in CARRIED_KEYS if data.get(k) not in (None, "", [])}
+
+
+def with_metadata(head: str, carried: dict) -> str:
+    """``head`` (a ``---`` block, or "") with the carried keys it lacks added.
+
+    Added at the top, and the rest left byte for byte as ``push_to_hub`` wrote it:
+    the dataset viewer reads its ``dataset_info``, and a YAML round trip is a
+    rewrite nobody needs. A key the head already has is not overwritten — a
+    licence set by hand on the copy is a decision, not a gap.
+    """
+    import yaml
+
+    inner, _ = split_card(head) if head else ("", "")
+    missing = {k: v for k, v in carried.items() if k not in _keys(inner)}
+    if not missing:
+        return head
+    added = yaml.safe_dump(missing, sort_keys=False, allow_unicode=True).rstrip("\n")
+    return "---\n" + added + ("\n" + inner if inner else "") + "\n---"
+
+
+def _keys(frontmatter: str) -> set:
+    """Top-level keys of a frontmatter block; empty when it does not parse."""
+    import yaml
+
+    try:
+        data = yaml.safe_load(frontmatter) if frontmatter else {}
+    except yaml.YAMLError:
+        return set()
+    return set(data) if isinstance(data, dict) else set()
+
+
 def source_body(repo: str, revision: str) -> str:
     """The source card's prose, without its YAML frontmatter.
 
@@ -119,20 +195,9 @@ def source_body(repo: str, revision: str) -> str:
     wrong for a line-level copy — `push_to_hub` writes correct ones. The prose is
     the part worth carrying over: it names the archives, the period and the
     projects, and that provenance should not be lost because the rows were cut
-    differently.
+    differently. Of the frontmatter, only :data:`CARRIED_KEYS` come along.
     """
-    from huggingface_hub import hf_hub_download
-    try:
-        path = hf_hub_download(repo, "README.md", repo_type="dataset", revision=revision)
-    except Exception as exc:  # a dataset without a card is not an error here
-        logger.warning("{}: no README to carry over ({})", repo, exc)
-        return ""
-    text = Path(path).read_text(encoding="utf-8")
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end != -1:
-            text = text[end + 4:]
-    return text.strip()
+    return split_card(_source_card(repo, revision))[1]
 
 
 def existing_frontmatter(out: str) -> str:
@@ -156,9 +221,13 @@ def existing_frontmatter(out: str) -> str:
 
 
 def card(out: str, repo: str, revision: str, lines: int, chars: int, summary: str) -> str:
-    """The new dataset's card: its own frontmatter, our summary, the source's prose."""
-    body = source_body(repo, revision)
-    head = existing_frontmatter(out)
+    """The new dataset's card: its own frontmatter with the source's licence and
+    language (#173), our summary, the source's prose."""
+    source = _source_card(repo, revision)
+    body = split_card(source)[1]
+    carried = carried_metadata(source)
+    head = with_metadata(existing_frontmatter(out), carried)
+    licence = carried.get("license")
     parts = ([head, ""] if head else []) + [
         "# %s" % out.split("/")[-1],
         "",
@@ -173,6 +242,8 @@ def card(out: str, repo: str, revision: str, lines: int, chars: int, summary: st
         "| Characters | %d |" % chars,
         "| Source | [`%s`](https://hf.co/datasets/%s) |" % (repo, repo),
         "| Source revision | `%s` |" % revision,
+        "| Licence | %s |" % ("`%s`, as declared by the source" % licence if licence
+                               else "none declared by the source — ask before reusing"),
         "",
         "What the source reported while being read: `%s`" % summary,
         "",
@@ -427,13 +498,47 @@ def confirm_private(out: str) -> bool:
     return False
 
 
+def carry_metadata(out: str, repo: str, revision: str, *, api=None) -> int:
+    """Add the source's licence and language to an existing line dataset's card.
+
+    For the datasets built before :data:`CARRIED_KEYS` existed: nothing is
+    rebuilt, only the frontmatter of ``out``'s README gains the keys it lacks.
+    A key ``out`` already has is left as it is.
+    """
+    from huggingface_hub import HfApi, hf_hub_download
+
+    api = api or HfApi()
+    carried = carried_metadata(_source_card(repo, revision))
+    if not carried:
+        print(f"{repo}@{revision[:8]} declares none of {', '.join(CARRIED_KEYS)} — "
+              "nothing to carry over", file=sys.stderr)
+        return 1
+    text = Path(hf_hub_download(out, "README.md", repo_type="dataset")).read_text("utf-8")
+    inner, body = split_card(text)
+    head = "---\n%s\n---" % inner if inner else ""
+    merged = with_metadata(head, carried)
+    if merged == head:
+        print(f"{out}: already declares {', '.join(carried)} — unchanged")
+        return 0
+    api.upload_file(path_or_fileobj=(merged + "\n\n" + body + "\n").encode("utf-8"),
+                    path_in_repo="README.md", repo_id=out, repo_type="dataset",
+                    commit_message=f"Carry the licence and language of {repo} (#173)")
+    added = sorted(set(carried) - _keys(inner), key=list(carried).index)
+    print(f"{out}: added {', '.join(added)} from {repo}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", required=True, help="the page-shaped source dataset")
     p.add_argument("--revision", required=True, help="full 40-hex SHA of the source")
     p.add_argument("--out", required=True, help="the dataset repo to create, e.g. owner/name-lines")
-    p.add_argument("--max-pages", type=int, required=True,
-                   help="bound on pages read; DatasetSpec refuses all_projects without one")
+    p.add_argument("--max-pages", type=int, default=None,
+                   help="bound on pages read; DatasetSpec refuses all_projects without "
+                        "one. Required unless --carry-metadata")
+    p.add_argument("--carry-metadata", action="store_true",
+                   help="build nothing: add the source's licence and language to the "
+                        "card of the existing --out (for datasets built before #173)")
     p.add_argument("--projects", default=None,
                    help="comma-separated project directories to read; default is all of them")
     p.add_argument("--dry-run", action="store_true", help="build and report, do not push")
@@ -453,6 +558,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(args.revision) != 40:
         print("--revision must be a full 40-character SHA", file=sys.stderr)
+        return 2
+    if args.carry_metadata:
+        return carry_metadata(args.out, args.repo, args.revision)
+    if args.max_pages is None:
+        print("--max-pages is required to build a dataset", file=sys.stderr)
         return 2
 
     if not args.dry_run and not settle_visibility(args.out, args.private):

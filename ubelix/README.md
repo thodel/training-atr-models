@@ -331,6 +331,27 @@ Verify a resume by three lines: `resuming from …/checkpoint-N` (trainer log),
 `re-entered while \`training\`` (runner log), and the same job id on both
 attempts (batch log).
 
+## Line datasets: public, and with the source's licence (#173)
+
+A line-level copy exists so the material can be used, so it is created
+**public**; `PRIVATE=1` (sbatch) or `--private` is the deliberate exception, and
+an existing repo keeps whatever visibility it has. Public without a licence is
+not usable either, so the card now carries the source card's `license`,
+`license_name`, `license_link` and `language` into its own frontmatter, and
+says in its table where the licence came from — or that the source declares
+none. The source's DOI, tags and split sizes stay the source's.
+
+The seven line datasets of 05.10.2026 went up without a licence. Their cards
+are repaired without rebuilding anything:
+
+    python ubelix/make_line_dataset.py --carry-metadata \
+        --repo dh-unibe/image-text_koenigsfelden-charters-post-1500 \
+        --revision <the 40-hex source revision the card names> \
+        --out dh-unibe/image-text_koenigsfelden-charters-post-1500-lines
+
+A key the copy already has is left alone; a source that declares nothing is
+refused with exit 1 rather than guessed at.
+
 ## Working directories of line-dataset jobs (#183)
 
 `make_line_dataset.sbatch` materialises a corpus under
