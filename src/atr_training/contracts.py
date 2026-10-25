@@ -720,11 +720,18 @@ class TrOCRTrainParams(BaseModel):
     # ── generation at eval time ──────────────────────────────────────────────
     #: Tokens to generate at most per sample during evaluation.
     max_new_tokens: int = Field(default=256, ge=1)
-    #: Beam width for beam search at eval. 1 = greedy.
-    beam_size: int = Field(default=1, ge=1)
-    #: Length penalty passed to ``model.generate``. Positive values encourage
-    #: longer sequences; negative encourage shorter.
-    length_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    #: Beam width for beam search at eval. 1 = greedy. 4 by default since
+    #: 25.10.2026: on the first real run (#37) greedy decoding ran on after short
+    #: lines — "1780 Januar 20." came back with eighty dots — and beam search with
+    #: early stopping took the same checkpoint on the same 500 lines from CER
+    #: 1.01 to 0.54 (with a trigram block; see #37 for the run without it).
+    beam_size: int = Field(default=4, ge=1)
+    #: Length penalty passed to ``model.generate`` in beam search. Positive values
+    #: encourage longer sequences; negative encourage shorter. 1.0 is
+    #: transformers' own default and what the 0.54 above was measured at; the
+    #: former 0.0 scores beams by their summed log-probability, which favours
+    #: the shortest hypothesis — the opposite of the error it is meant to fix.
+    length_penalty: float = Field(default=1.0, ge=-2.0, le=2.0)
 
     # ── evaluation ───────────────────────────────────────────────────────────
     eval_samples: int = Field(default=200, ge=1)
