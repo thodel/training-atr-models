@@ -199,8 +199,11 @@ def _store(cache: ArtefactCache, tmp_path: Path, **kw):
     source = tmp_path / "built"
     source.mkdir(exist_ok=True)
     (source / "train.arrow").write_bytes(b"x" * 1024)
+    settings = TrainerSettings()
     key = key_for(_dataset(**kw), "kraken",
-                  extra={"chunk_pages": TrainerSettings().chunk_pages})
+                  extra={"chunk_pages": settings.chunk_pages,
+                         # The ceiling the train arrows were cut to (#145).
+                         "image_ceiling": settings.image_ceiling or None})
     cache.put(key, source)
     return key
 

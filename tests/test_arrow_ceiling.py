@@ -33,7 +33,8 @@ def png(width: int, height: int = 10) -> bytes:
     return buf.getvalue()
 
 
-def write_arrow(path: Path, lines: list[tuple[int, str]], *, struct: bool = True) -> Path:
+def write_arrow(path: Path, lines: list[tuple[int, str]], *, struct: bool = True,
+                batch_rows: int | None = None) -> Path:
     """A corpus in the shape kraken 7.0.2 writes: a struct beside split masks."""
     images = [png(w) for w, _ in lines]
     texts = [t for _, t in lines]
@@ -63,7 +64,7 @@ def write_arrow(path: Path, lines: list[tuple[int, str]], *, struct: bool = True
     table = table.replace_schema_metadata(metadata)
     with pa.OSFile(str(path), "wb") as sink:
         with pa.ipc.new_file(sink, table.schema) as writer:
-            writer.write_table(table)
+            writer.write_table(table, max_chunksize=batch_rows)
     return path
 
 
@@ -193,3 +194,22 @@ def test_nothing_over_the_ceiling_is_a_finding_not_a_failure(tmp_path):
     cut = cut_arrow(path, tmp_path / "out.arrow", ceiling=60.0)
     assert cut.removed == 0 and cut.lines_after == 2
     assert isinstance(cut, ArrowCut) and cut.written is not None
+
+
+def test_a_corpus_of_many_batches_is_cut_row_for_row(tmp_path):
+    """The cut writes batch by batch (a filtered table would copy everything
+    kept into memory); the mask has to line up with each batch's rows."""
+    # Wide at 0, 4, 5 and 9: every batch of three gets a different mask, so a
+    # mask that restarted at each batch would keep the wrong rows.
+    lines = [(1770 if i in (0, 4, 5, 9) else 100 + 10 * i, f"l{i}") for i in range(10)]
+    path = write_arrow(tmp_path / "in.arrow", lines, batch_rows=3)
+    with pa.memory_map(str(path), "rb") as handle:
+        assert pa.ipc.open_file(handle).num_record_batches == 4
+    cut = cut_arrow(path, tmp_path / "out.arrow", ceiling=60.0)
+    assert cut.removed == 4
+    kept = [(w, t) for w, t in lines if w <= 600]
+    assert aspects_from_arrow(tmp_path / "out.arrow") == [w / 10 for w, _ in kept]
+    with pa.memory_map(str(tmp_path / "out.arrow"), "rb") as handle:
+        texts = [r["text"] for r in pa.ipc.open_file(handle).read_all().column("lines").to_pylist()]
+    assert texts == [t for _, t in kept]
+    assert read_metadata(tmp_path / "out.arrow")["counts"]["all"] == 6

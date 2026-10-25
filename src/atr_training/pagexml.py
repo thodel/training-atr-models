@@ -135,6 +135,17 @@ def rewrite_image_filename(xml_text: str, new_name: str) -> str:
 #: paid for by every other line in its batch**. That is why halving the batch
 #: raised memory instead of lowering it (64 -> 32.3 GiB, 32 -> 36.8 GiB): a
 #: smaller batch merely regrouped the outliers.
+#:
+#: **Necessary, and not sufficient** (#145). This bounds the ``Coords`` box, and
+#: the box is not what kraken pads to: on the German sweep corpus it removed 0 of
+#: 345,359 lines — widest box exactly 60.0:1 — while the *extracted images* of
+#: the same lines reached 177:1, 4.97 % of them over 60:1, and four fine-tunes
+#: died of OOM mid-epoch. So "0 lines removed" here does not mean "0 over-wide
+#: lines". The binding quantity is measured after the compile, where the kraken
+#: runner cuts the train arrows to the same figure
+#: (``TrainerSettings.image_ceiling``, :func:`line_ceiling.cut_arrow`). This
+#: one stays: it keeps the gross mis-segmentations out before they cost a
+#: compile.
 MAX_LINE_ASPECT = 60.0
 
 

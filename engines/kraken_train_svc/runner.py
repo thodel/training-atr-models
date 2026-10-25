@@ -44,6 +44,7 @@ from atr_training.chunking import (chunk_record, chunks, finished_chunk,
                                    is_plan, read_plan)
 from atr_training.manifests import binary_manifest, write_manifest
 from atr_training.heldout import load_heldout
+from atr_training.line_ceiling import ArrowCut, cut_arrow
 from atr_training.prepare import materialize, transcribed_lines_of
 from atr_training.promote import PromotionResult, held_out_page, http_recognizer, promote
 from atr_training.registration import RegistrationError, set_enabled, weights_mib
@@ -139,8 +140,71 @@ class Pipeline(BasePipeline):
                     "wrote nothing, which usually means every line was empty or the "
                     "images could not be resolved from the PageXML"
                 )
+            if name == "train":
+                removed = self._cut_to_ceiling(job, arrow, "train")
+                if removed:
+                    # Trained on is what the step budget divides by (#72).
+                    job.progress.train_lines = max(0, (job.progress.train_lines or 0) - removed)
+                    if job.progress.train_samples:
+                        job.progress.train_samples = max(1, job.progress.train_samples - removed)
+                    self.store.save(job)
             out.append(binary_manifest(paths.data / f"{name}_bin.lst", arrow))
         return out[0], out[1]
+
+    # ── the ceiling where it binds (#145) ───────────────────────────────────
+    def _cut_to_ceiling(self, job: TrainJob, arrow: Path, what: str) -> int:
+        """Cut ``arrow`` in place to ``settings.image_ceiling``; lines removed.
+
+        The PageXML ceiling bounds the box, and kraken pads a batch to the
+        widest *extracted image*: on the German sweep corpus 0 boxes and 4.97 %
+        of the images were over 60:1, up to 177:1, and four fine-tunes died of
+        OOM mid-epoch. So the train arrows are cut right after ``ketos compile``,
+        where the quantity is exact rather than predicted.
+
+        Measured first and rewritten only when something goes: a corpus with
+        nothing over the ceiling is not copied. The rewrite goes to a temporary
+        name and replaces the arrow in one rename, so a crash leaves either the
+        uncut file or the cut one — and a chunk's record, which says it is
+        finished, is written only after this returns. What was cut is appended
+        to ``line_ceiling.json`` in the job directory; characters that only
+        occurred on a removed line are said, because the codec is built from
+        the kept ones and the model can then never emit them.
+        """
+        ceiling = self.settings.image_ceiling
+        if not ceiling:
+            return 0
+        measured = cut_arrow(arrow, ceiling=ceiling, dry_run=True)
+        if measured.removed:
+            partial = arrow.with_name(arrow.name + ".ceiling.part")
+            partial.unlink(missing_ok=True)
+            cut = cut_arrow(arrow, partial, ceiling=ceiling)
+            os.replace(partial, arrow)
+        else:
+            cut = measured
+        self._record_cut(job, what, ceiling, cut)
+        logger.info("image ceiling {}:1, {}: {}", ceiling, what, cut)
+        if cut.characters_lost:
+            logger.warning("{}: {} character(s) occur only on lines over the ceiling and "
+                           "leave the alphabet with them: {}", what,
+                           len(cut.characters_lost), "".join(cut.characters_lost))
+        return cut.removed
+
+    def _record_cut(self, job: TrainJob, what: str, ceiling: float, cut: ArrowCut) -> None:
+        path = self.store.paths(job.id).root / "line_ceiling.json"
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(entries, list):
+                entries = []
+        except (OSError, ValueError):
+            entries = []
+        entries = [e for e in entries if e.get("what") != what] + [{
+            "what": what, "ceiling": ceiling, "lines_before": cut.lines_before,
+            "removed": cut.removed, "widest_before": round(cut.widest_before, 1),
+            "widest_after": round(cut.widest_after, 1),
+            "characters_lost": "".join(cut.characters_lost),
+        }]
+        path.write_text(json.dumps(entries, indent=1, ensure_ascii=False) + "\n",
+                        encoding="utf-8")
 
     # ── reusing a compiled corpus (#109) ────────────────────────────────────
     #: A ketos binary dataset embeds the line images it was compiled from, so an
@@ -155,6 +219,9 @@ class Pipeline(BasePipeline):
             # manifest, not from the request. The request's own chunk_size
             # outranks the setting (#25); a multi-dataset request has none.
             "chunk_pages": self._chunk_pages(job.request.datasets[0]),
+            # A corpus cut to the image ceiling is a different corpus (#145): an
+            # entry compiled before the cut, or at another ceiling, is not it.
+            "image_ceiling": self.settings.image_ceiling or None,
         })
 
     def _adopt_cached(self, job: TrainJob, entry) -> tuple[Path, Path]:
@@ -286,6 +353,15 @@ class Pipeline(BasePipeline):
             # where they were, and the source is consumed once across all chunks
             # — but neither its pages nor its ketos compile are paid for twice.
             if (done := _finished_chunk(arrow)) is not None:
+                ceiling = self.settings.image_ceiling
+                if ceiling and done.get("image_ceiling") != ceiling:
+                    # Finished before the cut existed, or at another ceiling:
+                    # cut now, and let the record say so from here on.
+                    removed = self._cut_to_ceiling(job, arrow, f"train chunk {index}")
+                    done = {**done, "lines": done["lines"] - removed,
+                            "image_ceiling": ceiling,
+                            "ceiling_removed": done.get("ceiling_removed", 0) + removed}
+                    _chunk_record(arrow).write_text(json.dumps(done), encoding="utf-8")
                 arrows.append(arrow)
                 pages_total += done["pages_written"]
                 lines_total += done["lines"]
@@ -343,13 +419,14 @@ class Pipeline(BasePipeline):
                                       [str(p) for p in keep_paths])
             arrows.append(self._compile_one(
                 job, manifest, arrow, record, f"train chunk {index}"))
+            removed = self._cut_to_ceiling(job, arrow, f"train chunk {index}")
 
             # Pages and lines as *trained on*, not as materialised: the reserved
             # ones are on disk and in no manifest. `train_lines` divides the step
             # count (#72), so counting them would flatter the configuration —
             # which is what the field exists to prevent.
             pages_total += len(keep_paths)
-            lines_total += written.lines - reserved_lines
+            lines_total += written.lines - reserved_lines - removed
             if remaining is not None:
                 # The budget counts what the stream gave up, reserved or not: it
                 # caps the materialisation, and those pages were materialised.
@@ -358,7 +435,11 @@ class Pipeline(BasePipeline):
             # re-entry believes, so it must not exist a moment before it is true.
             _chunk_record(arrow).write_text(json.dumps({
                 "pages_written": len(keep_paths),
-                "lines": written.lines - reserved_lines,
+                "lines": written.lines - reserved_lines - removed,
+                # #145: what the arrow was cut to, so a resume under another
+                # ceiling knows to cut again rather than trust it.
+                "image_ceiling": self.settings.image_ceiling or None,
+                "ceiling_removed": removed,
                 "start_index": pages_total - len(keep_paths),
                 "arrow": arrow.name,
                 # New key (#255). A resume reads it back rather than recounting,

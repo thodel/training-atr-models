@@ -51,6 +51,11 @@ os.environ["ATR_TRAIN_API_KEY"] = TEST_API_KEY
 os.environ["ATR_TRAIN_REQUIRE_AUTH"] = "true"
 os.environ["ATR_TRAIN_ALLOWED_CLIENTS"] = ""
 
+# The image ceiling (#145) cuts the train arrows after compile, and the fake
+# compiles of the pipeline tests write b"ARROW", not a corpus. Off for the suite;
+# the tests of the cut turn it on themselves.
+os.environ["ATR_TRAIN_IMAGE_CEILING"] = "0"
+
 #: "This host" for every settings object in the suite.
 TEST_HOST_ID = "test-trainer"
 os.environ["ATR_TRAIN_HOST_ID"] = TEST_HOST_ID
