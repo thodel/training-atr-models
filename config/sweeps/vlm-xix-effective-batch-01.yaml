@@ -288,6 +288,26 @@ noise_floor:
     0.0613'
 
 notes: |
+  RESULT (18.10.2026, written 26.10.2026; the table is
+  vlm-xix-effective-batch-01.yaml.leaderboard.md beside this file, derived from
+  the state on asteraix by scripts/sweep_leaderboard.py). All three cells on one
+  draw (val_eval.jsonl md5 3cf68c4727), 48,000 samples each:
+
+    eff 16 / 2e-4   0.2275  (mean of the four noise-floor seeds)
+    eff 32 / 4e-4   0.2233  → promoted, on a margin of 0.0043
+    eff 64 / 8e-4   0.2894
+    rung 1, eff 32 at 144,000 samples: 0.1355
+
+  NO SETTING IN THIS RANGE IS DISTINGUISHABLE FROM ANOTHER. 16 and 32 are
+  0.004 apart against a floor of 0.117; 64 is 0.062 behind, also inside it.
+  Linear scaling holds as far as this corpus can tell, and none of the three
+  buys time either: per sample the A40 took the same (3 h 02 / 3 h 05 / 3 h 03
+  for 48,000 samples). The promotion was decided by noise and says so in the
+  state. qwen3vl-german-xix-v2's own setting (eff 16, 2e-4) stays the default;
+  eff 32 at 4e-4 is an equal alternative, eff 64 at 8e-4 is not recommended
+  without more seeds. Rung 1's 0.1355 is not comparable with v2's 0.0533:
+  other draw, and a third of v2's samples.
+
   METRIC. Run this with --metric cer. `benchmark_cer` cannot be filled by the
   sweep: BenchmarkSpec names one hf_repo plus one project, and this sweep's own
   validation partition is drawn across four corpora. The winner is measured on
