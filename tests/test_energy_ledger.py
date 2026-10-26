@@ -108,10 +108,11 @@ class _Job:
 
     def __init__(self) -> None:
         self.progress = Progress()
+        self.gpus: list[int] = []
 
 
 class _Settings:
-    def env_for_child(self):
+    def env_for_child(self, gpus=None):
         return {}
 
 

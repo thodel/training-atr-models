@@ -522,7 +522,15 @@ class BasePipeline(ABC):
 
         log_path = self.store.paths(job.id).log(stage)
         try:
-            code = self.runner.run(cmd, log_path, env=self.settings.env_for_child(),
+            # The cards the scheduler allocated to THIS job, not the box-wide
+            # fallback: `env_for_child()` without them is `ATR_TRAIN_GPU`, which
+            # is 1 on asteraix. Since two cards were scheduled (22.10.2026) every
+            # job given card 0 ran its stages on card 1 — the runner itself saw
+            # CUDA_VISIBLE_DEVICES=0, its ketos child 1 — so card 0 sat idle, the
+            # scheduler refused card 1 as busy, and a job still in prepare could
+            # have had a second one put on the same card (#162, 26.10.2026).
+            code = self.runner.run(cmd, log_path,
+                                   env=self.settings.env_for_child(job.gpus),
                                    on_start=started)
         finally:
             if sampler is not None:

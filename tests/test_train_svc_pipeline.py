@@ -272,6 +272,21 @@ def test_checkpoints_go_to_local_scratch_not_the_job_dir(store, settings):
     assert not any(store.paths(job.id).checkpoints.iterdir())
 
 
+@pytest.mark.parametrize("card", [0, 1])
+def test_every_stage_runs_on_the_card_the_scheduler_gave_the_job(store, settings, card):
+    """26.10.2026 on asteraix: a job allocated card 0 (record `gpus: [0]`, runner
+    started with CUDA_VISIBLE_DEVICES=0) ran `ketos train` on card 1, because the
+    stage env fell back to ATR_TRAIN_GPU=1. Card 0 idled, the scheduler refused
+    card 1 as full, and the next job waited for nothing (#162)."""
+    runner = FakeRunner()
+    job = store.create(request_with())
+    job.gpus = [card]
+    store.save(job)
+    Pipeline(store, settings, runner=runner,
+             source=FakeSource({"train": 4, "eval": 2})).execute(job.id)
+    assert runner.env["CUDA_VISIBLE_DEVICES"] == str(card)
+
+
 def test_child_env_pins_the_training_gpu(store, settings):
     runner = FakeRunner()
     run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), runner)
