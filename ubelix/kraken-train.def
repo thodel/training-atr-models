@@ -1,0 +1,66 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# Dependency image for the kraken trainer on UBELIX (#171). It rebuilds the
+# asteraix venv `.venvs/kraken-train` — the one every kraken number of this
+# project was measured in — and nothing else: Ubuntu 24.04, system python3.12,
+# torch 2.8.0+cu128, then engines/kraken_train_svc/requirements.txt, which pins
+# `kraken==7.0.2` EXACTLY (every flag in atr_training.ketos_cmd was read off the
+# 7.0.2 sources; 7.1 adds flags and changes defaults).
+#
+# The venv lives at /opt/kraken-train because TrainerSettings derives ketos from
+# ATR_TRAIN_VENVS_ROOT (`<root>/kraken-train/bin/ketos`), and the batch files set
+# that root to /opt. The repo itself is NOT baked in — it is bind-mounted at
+# runtime, as for vlm-train.sif, so code edits do not need a rebuild.
+#
+# The driver: UBELIX' free cards are RTX 4090 with driver 590.48.01 (job
+# 17519782, 07.10.2026), newer than asteraix' 580.95.05 that the cu128 pin was
+# chosen against; a newer driver takes older CUDA wheels.
+#
+# Build on the login node, from the repo root (see ubelix/README.md):
+#   apptainer build $HOME/ubelix/kraken-train.sif ubelix/kraken-train.def
+
+%files
+    # Relative to the build CWD, which must be the repo root.
+    engines/kraken_train_svc/requirements.txt /opt/requirements.txt
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv python3.12-dev \
+        git ca-certificates libgl1 libglib2.0-0 libgomp1
+    rm -rf /var/lib/apt/lists/*
+
+    python3.12 -m venv /opt/kraken-train
+    /opt/kraken-train/bin/pip install -U pip wheel
+
+    # torch first, from the cu128 index — the order of scripts/make_venvs.sh, so
+    # the requirements resolve against the pinned torch instead of pulling a
+    # newer CUDA build in through kraken's `torch<=2.10` range.
+    /opt/kraken-train/bin/pip install --no-cache-dir \
+        torch==2.8.0 torchvision==0.23.0 \
+        --index-url https://download.pytorch.org/whl/cu128
+
+    /opt/kraken-train/bin/pip install --no-cache-dir -r /opt/requirements.txt
+
+    # The build fails here rather than a job failing on the node: the version
+    # that the command lines were written against, and a ketos that runs.
+    /opt/kraken-train/bin/python -c "import kraken, torch, datasets; \
+        from importlib.metadata import version; \
+        assert version('kraken') == '7.0.2', version('kraken'); \
+        assert torch.__version__.startswith('2.8.0'), torch.__version__; \
+        print('kraken', version('kraken'), 'torch', torch.__version__, \
+              'lightning', version('lightning'), 'datasets', datasets.__version__)"
+    /opt/kraken-train/bin/ketos --version
+
+%environment
+    export PATH=/opt/kraken-train/bin:$PATH
+    export PYTHONNOUSERSITE=1
+
+%runscript
+    exec /opt/kraken-train/bin/python "$@"
+
+%labels
+    Purpose  kraken (ketos 7.0.2) HTR training on UBELIX
+    Mirrors  asterAIx kraken-train venv

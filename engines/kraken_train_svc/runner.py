@@ -34,6 +34,7 @@ from atr_training.ketos_cmd import (
     evaluate_cmd,
     find_best_weights,
     parse_test_report,
+    resume_point,
     train_cmd,
     weights_suffix,
 )
@@ -250,6 +251,29 @@ class Pipeline(BasePipeline):
             if stale.exists():
                 stale.unlink()
         return manifests
+
+    def _resume_artifacts(self, job: TrainJob) -> tuple[Path, Path] | None:
+        """The corpus this job compiled, read from its own directory (#171).
+
+        The UBELIX path is two jobs: ``--stop-after compile`` on a CPU node, then
+        the train stage on a GPU node with the same id, which re-enters while
+        `training` and asks for this. Asking only the artefact cache made that
+        depend on the cache being on and the store having succeeded; the job's
+        own manifests are the first answer, and the cache the fallback. Every
+        arrow they name has to exist — a manifest pointing at a purged file is
+        not a corpus to resume against.
+        """
+        data = self.store.paths(job.id).data
+        train, val = data / "train_bin.lst", data / "val_bin.lst"
+        if train.is_file() and val.is_file():
+            arrows = [Path(line) for manifest in (train, val)
+                      for line in manifest.read_text(encoding="utf-8").splitlines()
+                      if line.strip()]
+            if arrows and all(a.is_file() and a.stat().st_size > 0 for a in arrows):
+                return train, val
+            logger.warning("job {}: its manifests name arrows that are gone — asking "
+                           "the artefact cache instead", job.id)
+        return super()._resume_artifacts(job)
 
     def _cacheable(self, job: TrainJob, train_bin: Path, val_bin: Path
                    ) -> list[Path] | None:
@@ -548,19 +572,31 @@ class Pipeline(BasePipeline):
     def _train(self, job: TrainJob, train_bin: Path, val_bin: Path,
                record: StageRecord) -> Path:
         params = job.request.params
-        load = self._resolve_base_model(job.request.base_model) if job.request.base_model else None
         # Local scratch, NOT the job dir on the share: lightning's checkpoint save
         # is a temp-file + rename, which is cross-device when the target is CIFS.
         ckpt_dir = self.settings.checkpoint_root / job.id
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         job.checkpoint_dir = str(ckpt_dir)
         self.store.save(job)
-        watch = self._collapse_watch(job, ckpt_dir, from_scratch=load is None)
+        # An interrupted attempt — preempted, walltime-requeued, or a service
+        # restart — left its checkpoints here; continue from the newest instead
+        # of training from epoch 0 into the same directory (#171). Only a run
+        # re-entered while `training` can find any: the directory is per job id.
+        resume = resume_point(ckpt_dir)
+        if resume is not None:
+            logger.warning("train: resuming from {} — this attempt continues an "
+                           "interrupted one", resume.name)
+            load = None
+        else:
+            load = (self._resolve_base_model(job.request.base_model)
+                    if job.request.base_model else None)
+        watch = self._collapse_watch(job, ckpt_dir,
+                                     from_scratch=not job.request.base_model)
         try:
             self._run(job, "train",
                       train_cmd(self.settings.ketos, params=params,
                                 training_manifest=train_bin, evaluation_manifest=val_bin,
-                                checkpoint_dir=ckpt_dir, load=load),
+                                checkpoint_dir=ckpt_dir, load=load, resume=resume),
                       record, on_start=watch.start if watch is not None else None)
         except StageFailed as exc:
             if watch is not None and watch.reason:

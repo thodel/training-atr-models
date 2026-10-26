@@ -175,8 +175,24 @@ pin holds across the queue but not across that resume.
   card must be empty: while a colleague's job held 740 MiB of gpu0, `card_mib`
   rose to 44,319 while `own_mib` stayed at 43,536.
 
-  Not yet measured: batch 128, 64, 32, which is where the headroom is. Until
-  those exist, a kraken run that cannot have a card to itself belongs on UBELIX.
+  The rest of the sweep, the same day and setup (#171):
+
+  | Batch | Peak own | Of an A40 (45,486) | Of an RTX 4090 (23,028) |
+  |---:|---:|---:|---:|
+  | 32 | 12,220 MiB | 26.9 % | 53.1 % |
+  | 64 | 13,766 MiB | 30.3 % | 59.8 % |
+  | 128 | **20,134 MiB** | 44.3 % | **87.4 %** |
+  | 256 | 43,536 MiB | 95.7 % | **does not fit** |
+
+  Memory grows far faster than the batch: a batch is padded to its widest
+  line, and the larger it is, the likelier it holds one. So a kraken run fits
+  UBELIX' free cards — RTX 4090, not the H100s — at **batch 128 or less**, and
+  `ubelix/kraken_train.sbatch` refuses a larger one before anything trains
+  (`ubelix/kraken_batch_fits.py`, for `KRAKEN_PLUS_SPEC` from scratch; another
+  network is "not checked"). The path there is `ubelix/kraken-train.def`
+  (ketos 7.0.2, as on asteraix) and the two stages in `ubelix/README.md`.
+  Still missing for this table: a peak measured on UBELIX itself, and the
+  numbers after the image ceiling of #145, which cuts the widest lines.
 
   **trocr still has no number, and gets one by sampling rather than by
   plumbing.** Its runner does not read its own `training_summary.json`, so torch
