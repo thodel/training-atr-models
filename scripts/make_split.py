@@ -153,6 +153,15 @@ def main(argv: list[str] | None = None) -> int:
         shard_pages=args.shard_pages,
     )
 
+    # All six parameters and the manifests, not only the seed: the first set's
+    # caps had to be recovered from git history (#112), and
+    # scripts/register_eval_set.py refuses a split that does not carry them.
+    record["params"] = {
+        "seed": args.seed, "val_docs": args.val_docs, "val_per_doc": args.val_per_doc,
+        "test_docs": args.test_docs, "test_per_doc": args.test_per_doc,
+        "shard_pages": args.shard_pages, "manifests": list(args.manifests),
+    }
+
     out = args.out or (args.data_dir / "split")
     out.mkdir(parents=True, exist_ok=True)
     for stale in out.glob("shard_*.lst"):
