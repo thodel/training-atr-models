@@ -38,6 +38,7 @@ mkdir -p "$APPTAINER_TMPDIR" "$APPTAINER_CACHEDIR"
 # Build from the REPO ROOT: the def's %files path is relative to the build CWD.
 cd ~/training-atr-models
 apptainer build ~/ubelix/vlm-train.sif ubelix/vlm-train.def   # ~10 min, 4.1 GB
+apptainer build ~/ubelix/kraken-train.sif ubelix/kraken-train.def   # kraken only (#171)
 ```
 
 Build on a **login node**: compute nodes may lack internet, login nodes have it.
@@ -304,6 +305,46 @@ Space". See [`UBELIX_PLAN.md`](https://github.com/thodel/serving-atr-inference/b
 #SBATCH --qos=job_gpu_preemptable
 #SBATCH --gres=gpu:h100:4
 ```
+
+## kraken on UBELIX (#171)
+
+kraken needs its own image: neither VLM image has `ketos`. `kraken-train.def`
+rebuilds the asteraix venv — `kraken==7.0.2` exactly, torch 2.8.0+cu128 — at
+`/opt/kraken-train`, where the trainer looks for `ketos` when
+`ATR_TRAIN_VENVS_ROOT=/opt`; the build fails if it ends up with another kraken.
+
+Two stages, as for the VLM, with the same job id:
+
+```bash
+ubelix/submit.sh ubelix/kraken_prepare.sbatch $HOME/ubelix/specs/<kraken-spec>.json
+#   prints:  JOB_ID=<id> ubelix/submit.sh ubelix/kraken_train.sbatch
+JOB_ID=<id> ubelix/submit.sh ubelix/kraken_train.sbatch
+```
+
+* **Stage 1** prepares and runs `ketos compile` on an `epyc2` CPU node and
+  stops after compile. The arrows stay in the job directory on scratch.
+* **Stage 2** trains on one free RTX 4090 (`gpu`, `job_gratis`). It finds the
+  corpus in the job's own directory, so it does not depend on the artefact
+  cache.
+* **The batch:** the 4090 has 23,028 MiB, and the project default
+  `batch_size: 256` needs ~43,500 (`docs/WHERE_A_RUN_RUNS.md`). Set
+  `params.batch_size` to 128 or less in a spec meant for UBELIX. Stage 2 checks
+  it on the GPU node before anything trains (`kraken_batch_fits.py`) and ends
+  with exit 3 rather than an OOM in the first epoch. A fine-tune or a custom
+  `spec` is another network, so the check says "not checked" and the run goes
+  ahead.
+* **Walls and preemption:** stage 2 requeues itself at the wall, as
+  `train_resumable.sbatch` does. On SIGTERM the runner now passes the signal on
+  to `ketos`, which runs in a session of its own. Lightning 2.6 turns it into
+  an exception at the next step, and kraken writes `checkpoint_abort.ckpt`. The
+  next attempt runs `ketos train --resume` from the newest checkpoint, so it
+  does not start again from epoch 0. Without the abort checkpoint (a SIGKILL
+  at the end of the grace), it resumes from the newest epoch checkpoint.
+
+Not yet run on UBELIX. The first run should check two things: that
+`ketos compile` with `-d cuda:0` runs on a node without a GPU (kraken parses the
+device flag without checking for CUDA), and the peak on the 4090 next to the
+asteraix table.
 
 ## Long runs: preemption and resume
 
