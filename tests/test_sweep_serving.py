@@ -423,3 +423,27 @@ def test_a_preempted_cell_is_submitted_afresh_not_reattached():
     assert d.state.at(0, first)["job_id"] != "given-up"
     assert d.state.at(0, first)["score"] is not None
     assert not d.state.at(0, first).get("preempted")
+
+
+def test_a_finished_ladder_is_not_decided_again_on_every_pass():
+    """18.–26.10.2026: the serving XIX driver wrote the same rung-0 cut into its
+    state 2,489 times, one per five-minute pass (#138)."""
+    m = manifest()
+    trainer = all_good(m)
+    d = driver(trainer, m)
+    d.serve(passes=4)
+    rungs = [p["rung"] for p in d.state.promotions]
+    assert len(rungs) == len(set(rungs)), rungs
+
+
+def test_a_changed_rung_is_recorded_again():
+    """Deduplication is of identical cuts, not of rungs: a configuration added
+    later can change who goes through, and that is a new decision."""
+    m = manifest()
+    trainer = all_good(m)
+    d = driver(trainer, m)
+    d.run()
+    first = dict(d.state.promotions[0])
+    d.state.promotions[0] = {**first, "promoted": list(first["eliminated"][:1])}
+    d.run()
+    assert len([p for p in d.state.promotions if p["rung"] == 0]) == 2

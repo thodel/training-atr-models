@@ -722,6 +722,14 @@ class SweepDriver:
             decision = promote(scores, eta=self.eta, keep=ladder[rung + 1], rung=rung,
                                noise_floor=self.manifest.noise_floor)
             promotions.append(decision)
+            if self._already_recorded(decision):
+                # A serving driver re-runs the whole ladder every pass, and a rung
+                # whose scores have not changed decides the same way. Recording it
+                # again is not a second decision: the XIX sweep wrote the same
+                # rung-0 cut into its state 2,489 times between 18. and 26.10.2026,
+                # and logged it as WITHIN NOISE every five minutes (#138).
+                entrants = list(decision.promoted)
+                continue
             self._log_promotion(decision)
             self.state.promotions.append({
                 "rung": decision.rung, "promoted": decision.promoted,
@@ -740,6 +748,16 @@ class SweepDriver:
             self.state.save()
             entrants = list(decision.promoted)
         return promotions
+
+    def _already_recorded(self, decision: Promotion) -> bool:
+        """Is this exact cut the last one the state holds for its rung?"""
+        earlier = [p for p in self.state.promotions if p.get("rung") == decision.rung]
+        if not earlier:
+            return False
+        last = earlier[-1]
+        return (list(last.get("promoted") or []) == list(decision.promoted)
+                and list(last.get("eliminated") or []) == list(decision.eliminated)
+                and list(last.get("unscored") or []) == list(decision.unscored))
 
     def _log_promotion(self, decision: Promotion) -> None:
         logger.info("{}", decision)
