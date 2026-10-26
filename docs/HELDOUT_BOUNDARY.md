@@ -255,6 +255,27 @@ records carry `reserved_pages: None`, and none of them adopted a corpus. These
 are the first-generation numbers that the parser fix replaced; nothing current
 rests on them. **They stay open, and that is the result, not a missing one.**
 
+### The first held-out numbers (#301)
+
+`german-medieval-v1`, part test: **695 pages from 200 documents**, held out by
+document, as a VLM draw under
+`eval_sets/german-medieval-v1/vlm-pages-test/` (`scripts/build_page_benchmark.py`).
+Scored with `ubelix/rescore_on_shared_draw.py --heldout`, each adapter at its
+own pixel budget and with its own prompt. Both reports say `checked: true` and
+`shared: []`: no document of the draw is among the 1,180 the corpus trained on.
+Read off UBELIX on 26.10.2026 (`eval_report.german-medieval-v1-test.json`).
+
+| arm | validation CER (164 pages, drawn by page) | **held-out CER** | `truncated_cer` | `length_ratio` | at the token cap |
+|---|---:|---:|---:|---:|---:|
+| `px4m-native` | 0.2659 | **0.3674** | 0.3475 | 0.898 | 38 of 695 |
+| `px4m-native-r16` | 0.3214 | **0.4186** | 0.3780 | 0.919 | 37 of 695 |
+
+Two readings. The ranking holds held out: `px4m-native` ahead by ~5 points
+either way. And both lose ~10 points from validation to held-out, which is the
+measure of how much the by-page validation split flattered them: unknown hands
+are harder than the pages beside the training pages. Under
+`convention_normalized` the held-out CERs are 0.3433 and 0.3782.
+
 ### The full table
 
 <details>
@@ -262,6 +283,7 @@ rests on them. **They stay open, and that is the result, not a missing one.**
 
 | Lauf | Store | CER | `reserved_pages` | Verdikt | gefallen | Grund |
 |---|---|---:|---:|---|---:|---|
+| `20261019T180118Z-olmocr2-7b-medieval-page-px4m-native-r16` | scratch | 0.3214 | ? | clean | 0 | added 26.10. (#301), not printed by the audit: the held-out rescore compared the draw with the training manifest of its builder `20261001T093909Z-olmocr2-7b-medieval-german-page-v1` (8104 entries, 1180 documents) and found no shared document; `reserved_pages` not read |
 | `20261014T194417Z-ladder-med-qwen35-4b-v2` | scratch | 0.1594 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261014T193118Z-ladder-med-qwen35-9b-v2` | scratch | 0.1375 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261013T121310Z-olmocr2-7b-medieval-page-px4m-native` | scratch | 0.2659 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
