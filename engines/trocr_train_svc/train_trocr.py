@@ -126,6 +126,37 @@ class TrocrDataCollator:
         return encoded
 
 
+#: The loss a ``VisionEncoderDecoderModel`` must train with: cross-entropy on
+#: labels that are already aligned with the decoder's outputs (#37).
+ALIGNED_LOSS = "ForMaskedLM"
+
+
+def use_aligned_loss(model) -> None:
+    """Make the encoder-decoder compute its loss without a second label shift.
+
+    The decoder input is ``shift_right(labels)``, so logit *t* already predicts
+    label *t*. transformers 4.57 computes the loss through ``self.loss_function``
+    and, with no ``loss_type`` on the config, falls back to ``ForCausalLMLoss``,
+    which shifts the labels once more: every TrOCR run here was trained to
+    predict the token after next. Measured on the untuned
+    ``dh-unibe/trocr-kurrent-XVI-XVII`` and 16 of our lines (25.10.2026): the
+    model's own loss 27.6 equalled cross-entropy with one extra shift exactly,
+    against 2.3 aligned. Trained that way, a model that reads our lines at CER
+    0.27 untuned came out at 0.53, skipping sub-word pieces and leaving half of
+    every two-byte character behind as U+FFFD.
+
+    Set on the model and its config, then checked, so a transformers version
+    that resolves the loss differently fails here rather than in the CER.
+    """
+    model.loss_type = ALIGNED_LOSS
+    model.config.loss_type = ALIGNED_LOSS
+    resolved = getattr(model.loss_function, "__name__", "")
+    if resolved != f"{ALIGNED_LOSS}Loss":
+        raise SystemExit(
+            f"the encoder-decoder resolves its loss to {resolved or model.loss_function!r}, "
+            f"not {ALIGNED_LOSS}Loss: training would shift the labels twice (#37)")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     from transformers import (
@@ -159,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     # model=None und lud das Modell erst danach, ohne es je zuzuweisen — trainiert
     # haette der Trainer mit None. transformers 4.57 lehnt model=None ohnehin ab.
     model = VisionEncoderDecoderModel.from_pretrained(args.base_model)
+    use_aligned_loss(model)
     # Der Prozessor kann Tokens ergaenzt haben. Der Resize muss an den *Decoder*:
     # VisionEncoderDecoderModel implementiert set_input_embeddings nicht
     # (transformers 4.57 wirft NotImplementedError), und die Bedingung davor
