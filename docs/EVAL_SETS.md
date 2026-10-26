@@ -319,3 +319,110 @@ transfer to nothing.
 `TextLine`s in the sample). `ketos compile --skip-empty-lines` drops them, so its
 usable yield is ~31 transcribed lines per page, not the ~50 the page count
 suggests. A `max_pages` chosen from page counts alone over-promises here.
+
+## The XVI–XIX page arms: three ways to a held-out number (#301, part B)
+
+The XVI–XIX page corpus (20 datasets) has no held-out set of its own. Its
+`reserved_pages: 1318` only means the pages of `german-medieval-v1` documents
+were taken out of training. #301 names three ways, and they measure three
+different things. None of them stands in for another.
+
+| way | what it measures | price |
+|---|---|---|
+| a | the early edge only: `german-medieval-v1`'s documents come from the four datasets that reach into the XVI century | none, the arms are rescored |
+| b | the XIX century on the Federal Council lines, a page model read on **lines** | none, but not comparable with a page CER |
+| c | the target, Kurrent pages held out by document | every XVI–XIX **and** XIX arm must be trained again |
+
+### a) `german-medieval-v1/test`, the draw that already exists
+
+The two XVI–XIX arms have no report on it yet (26.10.2026). `--heldout`
+checks their training manifests against the draw's 200 documents first. They
+should be clean, because these documents were reserved before the corpus was
+built, but the check is what says so.
+
+```bash
+D=/storage/research/wbkolleg_dh_1/Textrecognition_Training/eval_sets/german-medieval-v1/vlm-pages-test
+for JOB in 20261019T180118Z-olmocr2-7b-german-kurrent-xvi-xix-page-px4m-native \
+           20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1; do
+  JOB=$JOB DRAW_FILE=$D/pages.jsonl DATA_ROOT=$D LABEL=german-medieval-v1-test HELDOUT=1 \
+    ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=08:00:00
+done
+```
+
+Compare the result with the medieval arms on the same 695 pages
+(`docs/HELDOUT_BOUNDARY.md`), not with the XVI–XIX validation CER.
+
+### b) The Federal Council lines
+
+`score_federal_minutes.sbatch` asks every adapter with the **line** prompt at the
+line pixel budget, which is right for a line arm and wrong for a page arm. The
+olmOCR arm was trained on the olmOCR page prompt. `rescore_on_shared_draw.py`
+keeps each run's own prompt and budget, so b goes through it, with the
+Federal Council draw as a file:
+
+```bash
+E=/scratch/network/users/$USER/runs/jobs/evalset-federal-minutes
+for JOB in 20261019T180118Z-olmocr2-7b-german-kurrent-xvi-xix-page-px4m-native \
+           20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1; do
+  JOB=$JOB DRAW_FILE=$E/data/val.jsonl DATA_ROOT=$E LABEL=federal-minutes-lines \
+    ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=04:00:00
+done
+```
+
+Without `--heldout`: the 2,751 lines come from Zenodo (Hodel & Schoch 2021,
+doi:10.5281/zenodo.4746342), not from a dh-unibe dataset, so no manifest names
+their documents. Two of the 20 training datasets are Swiss federal records
+(`parlamentsdienste-protokolle`, `nr-sr-vereinigte-bundesversammlung-xix`).
+Nothing has shown that they share no pages with the Council minutes. Until
+something does, the number is a reading on known material, not a held-out
+number.
+
+### c) A Kurrent page set of its own
+
+Drawn by document from the corpus the XVI–XIX arms trained on, then
+registered. From then on the trainer drops those documents from every run.
+
+1. **Draw** (UBELIX, login node). The pool is the page manifests of a run that
+   built the XVI–XIX page corpus with its own manifest
+   (`20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1`, 13,606
+   entries, `docs/HELDOUT_BOUNDARY.md`). Its job directory is on scratch, and
+   **scratch purges after 30 days**, so this has to happen before mid-November
+   2026, or the corpus has to be built again.
+
+   ```bash
+   J=/scratch/network/users/$USER/runs/jobs/20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1
+   OUT=/storage/research/wbkolleg_dh_1/Textrecognition_Training/eval_sets/german-kurrent-xvi-xix-v1/split
+   python3 scripts/make_split.py $J/data --out $OUT --seed 20261026 \
+       --test-docs 100 --val-docs 60 --test-per-doc 220 --val-per-doc 160
+   ```
+
+   The printed record gives the page counts. `german-medieval-v1/test` has 695
+   pages. If this draw is far off, change `--test-docs` and draw again; the
+   seed keeps every draw reproducible. `make_split.py` now writes all six
+   parameters into `split.json`.
+
+2. **Register.** `scripts/register_eval_set.py` turns the split into a
+   registry entry. It refuses a taken name, missing parameters, a leak into
+   train, a document on both sides, or a document another set holds. Without
+   `--write` it only prints.
+
+   ```bash
+   python3 scripts/register_eval_set.py $OUT --name german-kurrent-xvi-xix-v1 \
+       --source-job 20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1 \
+       --datasets <the 20 hf_repo of the run's request>
+   ```
+
+   `--write` is the step that costs something. These documents leave the
+   training side of **every** later run in every backend, and the XIX corpora
+   share their datasets (`zh-regierungsratsprotokolle`, `kurrent-xix`, the
+   two federal ones). Every XIX and XVI–XIX model trained before the
+   registration reads `crossed` against this set in the held-out audit. The
+   entry belongs in the repository through a PR, not as a dirty checkout on
+   UBELIX (`submit.sh` refuses one).
+
+3. **Freeze the draw**, as for the medieval set:
+   `scripts/build_page_benchmark.py --set german-kurrent-xvi-xix-v1 --side test`
+   with `--pages-list $OUT/pages_test.lst`, `--pages-dir $J/data/pages`, and
+   `--out` under `eval_sets/german-kurrent-xvi-xix-v1/vlm-pages-test`.
+
+4. **Train again, then measure** with `rescore_on_shared_draw.py --heldout`.
