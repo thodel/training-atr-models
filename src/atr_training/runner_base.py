@@ -193,7 +193,7 @@ class SubprocessRunner:
                 proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                         env=full_env, start_new_session=True)
                 _notify_start(on_start, proc.pid)
-                return proc.wait()
+                return _wait_or_stop(proc)
 
         local_path.parent.mkdir(parents=True, exist_ok=True)
         with local_path.open("ab") as local, share_log.open("ab") as share:
@@ -209,11 +209,65 @@ class SubprocessRunner:
             mirror = threading.Thread(target=_mirror, args=(proc.stdout, local, share),
                                       daemon=True)
             mirror.start()
-            exit_code = proc.wait()
+            exit_code = _wait_or_stop(proc)
             # The child is gone, so the pipe is at EOF and the thread returns on
             # its own. Bounded anyway: a hung share write must not hold the stage.
             mirror.join(timeout=MIRROR_JOIN_TIMEOUT_S)
             return exit_code
+
+
+#: How long a stage child gets to leave after the runner was told to stop
+#: (#171). Under Slurm the batch file has 120 s from the signal to the kill
+#: (``--signal=B:TERM@120``); kraken needs one training step to notice the
+#: SIGTERM and a few seconds to write ``checkpoint_abort.ckpt``.
+CHILD_STOP_GRACE_S = 90.0
+
+
+def _wait_or_stop(proc: subprocess.Popen, grace_s: float | None = None) -> int:
+    """``proc.wait()``, and if the runner is stopped meanwhile, stop the child too.
+
+    The child leads its own session (``start_new_session``), so neither the
+    service's cancel — ``killpg`` on the *runner's* group — nor Slurm's SIGTERM
+    to the batch script reaches it: both end in :class:`Cancelled` or
+    :class:`Preempted` raised here, in the runner, while ``ketos`` trains on and
+    holds the card with nobody left to report it (the orphan of #24). So the
+    exception is passed on to the child's group as SIGTERM, the child gets
+    :data:`CHILD_STOP_GRACE_S` to leave — enough for kraken to write
+    ``checkpoint_abort.ckpt``, which a requeued attempt resumes from — then
+    SIGKILL, and the exception goes on up as before.
+    """
+    try:
+        return proc.wait()
+    except BaseException:
+        _stop_child(proc, CHILD_STOP_GRACE_S if grace_s is None else grace_s)
+        raise
+
+
+def _stop_child(proc: subprocess.Popen, grace_s: float) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except OSError:
+        return
+    logger.warning("stopping stage child pid {} (SIGTERM to its group, {:.0f} s to leave)",
+                   proc.pid, grace_s)
+    deadline = time.monotonic() + grace_s
+    while proc.poll() is None and time.monotonic() < deadline:
+        try:
+            proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            break
+        except BaseException:  # noqa: BLE001 — a second signal must not cut the grace short
+            continue
+    if proc.poll() is None:
+        logger.warning("stage child pid {} still there after {:.0f} s — SIGKILL",
+                       proc.pid, grace_s)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 #: How long a stage waits for the mirror thread after the child has exited. The

@@ -29,6 +29,8 @@ __all__ = [
     "evaluate_cmd",
     "find_best_weights",
     "latest_checkpoint",
+    "resume_point",
+    "ABORT_CHECKPOINT",
     "parse_test_report",
     "weights_suffix",
 ]
@@ -132,9 +134,17 @@ def train_cmd(
     evaluation_manifest: str | Path | None,
     checkpoint_dir: str | Path,
     load: str | Path | None = None,
+    resume: str | Path | None = None,
     format_type: str = "binary",
 ) -> list[str]:
     """``ketos train``.
+
+    ``resume`` continues an interrupted run from one of its own checkpoints
+    (``--resume``, #171): kraken 7.0.2 restores the model, the optimizer, the
+    epoch and the data module from it, and refuses it together with ``--load``
+    (``load/resume options are mutually exclusive``) — the checkpoint already
+    holds whatever the run was loaded from, so neither ``--load`` nor ``--spec``
+    is passed with it.
 
     Two behaviours of kraken 7.0.2 are encoded here rather than left to the caller:
 
@@ -168,7 +178,13 @@ def train_cmd(
             "--quit", params.quit,
             "--epochs", str(params.epochs)]
 
-    if load is not None:
+    if resume is not None:
+        if load is not None:
+            raise KetosCommandError(
+                "--resume and --load are mutually exclusive in ketos 7.0.2; a "
+                "resumed run takes its weights from its own checkpoint")
+        cmd += ["--resume", str(resume)]
+    elif load is not None:
         cmd += ["--load", str(load), "--resize", params.resize]
         if params.freeze_backbone is not None:
             cmd += ["--freeze-backbone", str(params.freeze_backbone)]
@@ -271,6 +287,36 @@ def latest_checkpoint(checkpoint_dir: str | Path) -> tuple[Path, int] | None:
         if latest is None or epoch > latest[0]:
             latest = (epoch, path)
     return (latest[1], latest[0]) if latest else None
+
+
+#: What kraken 7.0.2 writes when ``fit`` leaves by an exception — SIGTERM
+#: included, which Lightning 2.6 turns into one at the next step
+#: (``KrakenOnExceptionCheckpoint`` in ``kraken/train/utils.py``).
+ABORT_CHECKPOINT = "checkpoint_abort.ckpt"
+
+
+def resume_point(checkpoint_dir: str | Path) -> Path | None:
+    """The checkpoint an interrupted run continues from, or None to start fresh.
+
+    The newest of ``checkpoint_abort.ckpt`` and the epoch checkpoints, by
+    modification time. The abort checkpoint is the state at the moment the run
+    was stopped and is preferred when it is the newest; an older one is from an
+    earlier interruption that the run has trained past since. Without it — a
+    SIGKILL at the end of the grace period writes none — the highest epoch kept
+    is the next best thing, and at most the epoch in progress is repeated.
+    """
+    directory = Path(checkpoint_dir)
+    candidates = [p for p in directory.glob("checkpoint_*.ckpt")
+                  if p.name == ABORT_CHECKPOINT or _CKPT_RE.match(p.name)]
+    if not candidates:
+        return None
+
+    def when(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return -1.0
+    return max(candidates, key=when)
 
 
 # ── report parsing ──────────────────────────────────────────────────────────
