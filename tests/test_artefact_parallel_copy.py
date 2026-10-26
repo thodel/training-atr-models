@@ -100,3 +100,56 @@ def test_put_stores_the_directory_through_the_parallel_copy(corpus, tmp_path, mo
     assert calls == [corpus]
     assert entry.bytes_ == sum(len(b) for b in tree(corpus).values())
     assert tree(entry.path / "data") == tree(corpus)
+
+
+# ── same filesystem: hard links, not copies (#238) ──────────────────────────
+#
+# On UBELIX the job directory and the cache are both on /scratch (st_dev 51 for
+# both, 26.10.2026), and storing xix-v2's 966,748 files took 14 of the job's
+# 16.5 hours as copies (#22). A hard link writes no data and leaves the job's
+# own paths where resume and the promotion gate read them.
+
+def test_on_one_filesystem_the_entry_shares_the_jobs_inodes(corpus, tmp_path):
+    cache = ac.ArtefactCache(tmp_path / "cache")
+    entry = cache.put(ac.ArtefactKey(digest="e" * 64, pinned=True), corpus,
+                      job_id="j", inner="data")
+    stored = entry.path / "data" / "crops" / "train" / "0000007.jpg"
+    original = corpus / "crops" / "train" / "0000007.jpg"
+    assert stored.stat().st_ino == original.stat().st_ino
+    assert original.stat().st_nlink == 2
+    assert original.exists(), "the job keeps its own path"
+    manifest = __import__("json").loads((entry.path / cache.MANIFEST).read_text())
+    assert manifest["linked_files"] == len(tree(corpus))
+    assert entry.bytes_ == sum(len(b) for b in tree(corpus).values())
+
+
+def test_a_refused_link_falls_back_to_copying_everything(corpus, tmp_path, monkeypatch):
+    def refuse(*a, **k):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(ac.os, "link", refuse)
+    counted = ac._Counter(link=True)
+    ac._copytree_parallel(corpus, tmp_path / "ours", counted, workers=4)
+    assert tree(tmp_path / "ours") == tree(corpus)
+    assert counted.link is False and counted.linked == 0
+    assert (corpus / "pages" / "a.xml").stat().st_nlink == 1
+
+
+def test_across_filesystems_nothing_is_linked(corpus, tmp_path, monkeypatch):
+    """asteraix: the share (CIFS) and the cache (NVMe) are two devices."""
+    monkeypatch.setattr(ac, "_same_filesystem", lambda a, b: False)
+    cache = ac.ArtefactCache(tmp_path / "cache")
+    entry = cache.put(ac.ArtefactKey(digest="d" * 64, pinned=True), corpus,
+                      job_id="j", inner="data")
+    stored = entry.path / "data" / "pages" / "a.xml"
+    assert stored.stat().st_ino != (corpus / "pages" / "a.xml").stat().st_ino
+    manifest = __import__("json").loads((entry.path / cache.MANIFEST).read_text())
+    assert manifest["linked_files"] == 0
+
+
+def test_evicting_a_linked_entry_leaves_the_job_its_files(corpus, tmp_path):
+    cache = ac.ArtefactCache(tmp_path / "cache")
+    entry = cache.put(ac.ArtefactKey(digest="c" * 64, pinned=True), corpus,
+                      job_id="j", inner="data")
+    shutil.rmtree(entry.path)
+    assert tree(corpus)["pages/a.xml"] == b"<x/>"

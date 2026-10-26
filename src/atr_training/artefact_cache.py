@@ -67,6 +67,14 @@ __all__ = [
 ]
 
 
+def _same_filesystem(a, b) -> bool:
+    """Do ``a`` and ``b`` live on one device — can a hard link join them?"""
+    try:
+        return os.stat(a).st_dev == os.stat(b).st_dev
+    except OSError:
+        return False
+
+
 def _size_of(path) -> int | None:
     """Bytes at ``path``, or None when it cannot be read.
 
@@ -98,14 +106,32 @@ class _Counter:
     a manifest claiming 0 bytes would make the cache evict the wrong entry first.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, link: bool = False) -> None:
         self.total: int | None = 0
-        # Called from COPY_WORKERS threads at once (#238); the sum is the only
-        # shared state.
+        # Called from COPY_WORKERS threads at once (#238); the sum and the link
+        # switch are the only shared state.
         self._lock = threading.Lock()
+        #: Hard-link instead of copying, when source and cache share a
+        #: filesystem — see :meth:`ArtefactCache.put`. Switched off for good at
+        #: the first refusal, and that file is copied instead.
+        self.link = link
+        self.linked = 0
 
     def __call__(self, src, dst, *, follow_symlinks: bool = True):
-        result = shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+        result = None
+        if self.link:
+            try:
+                os.link(src, dst, follow_symlinks=follow_symlinks)
+                result = dst
+                with self._lock:
+                    self.linked += 1
+            except OSError:
+                # EXDEV, EPERM, ENOTSUP: a filesystem that does not do it, or a
+                # mount boundary under the walk. Copying is always right.
+                with self._lock:
+                    self.link = False
+        if result is None:
+            result = shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
         written = _size_of(dst)
         with self._lock:
             if self.total is not None:
@@ -495,6 +521,7 @@ class ArtefactCache:
         # after the copy that had just touched every one of them. `None` means
         # "this path could not account for it", and only then is the walk done.
         size: int | None = 0
+        linked = 0
 
         if isinstance(source, (str, Path)):
             source = Path(source)
@@ -508,9 +535,19 @@ class ArtefactCache:
                 size = _tree_bytes(source)
                 shutil.move(str(source), str(target))
             else:
-                counted = _Counter()
+                # Same filesystem: hard links, not copies (#238). The job keeps
+                # its own paths — which resume, the promotion gate and the page
+                # manifests read, and which a move would take away (#22) — and
+                # the entry gets the same inodes under its own names. No byte is
+                # written twice and no byte is stored twice; on UBELIX, where the
+                # job directory and the cache are both on /scratch, storing
+                # xix-v2's 966,748 files took 14 of its 16.5 hours as copies.
+                # Nothing rewrites these files after compile, so sharing the
+                # inode cannot change the entry under a later reader.
+                counted = _Counter(link=_same_filesystem(source, self.root))
                 _copytree_parallel(source, target, counted)
                 size = counted.total
+                linked = counted.linked
         else:
             files = [Path(f) for f in source]
             missing = [f for f in files if not f.is_file()]
@@ -529,6 +566,11 @@ class ArtefactCache:
             "pinned": key.pinned,
             "built_at": time.time(),
             "bytes": size,
+            # How many of those bytes are hard links to the producing job's
+            # files (#238): they occupy no extra disk while that job directory
+            # exists, and the budget still counts them — the cache cannot know
+            # when the job directory goes.
+            "linked_files": linked,
             "last_used": time.time(),
             "job_id": job_id,
             "payload": dict(payload or {}),
