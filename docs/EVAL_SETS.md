@@ -226,6 +226,18 @@ it refuses too; `--allow-unchecked` overrides and says so. The outcome is kept
 beside the report as `eval_report.<label>.heldout.json`. The score itself goes to
 `eval_report.<label>.json`; the job record is not touched.
 
+**Training manifests outlive their job directories here, not on scratch.** The
+check needs the manifest of the corpus a run trained on, and for an adopting run
+that is often only in the builder's job directory, which scratch purges after 30
+days. Copies are kept under
+`<share>/archive/train-manifests/<builder job id>/` (the builder's `data/*.lst`,
+its `job.json` and `SHA256SUMS`), and `TRAIN_MANIFEST=<that>/pages_train.lst`
+(`--train-manifest`) points the check at one. The sidecar then records
+`train_manifest_given: true`. The first to be kept there is
+`20261001T093909Z-olmocr2-7b-medieval-german-page-v1`, the builder of
+`2ad500ee8414`, on which every medieval olmOCR page arm trained (8,104 pages,
+1,180 documents; #301 records when the copy was made and its checksums).
+
 ### Keeping it out of training
 
 The 350 document ids are reserved in `config/heldout_eval_documents.json`, and

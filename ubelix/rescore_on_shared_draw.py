@@ -33,6 +33,11 @@ reasoning of ``Pipeline._refuse_contaminated_benchmark``. A check that cannot ru
 unless ``--allow-unchecked`` takes that on the record. The outcome is written
 beside the report as ``eval_report.<label>.heldout.json``.
 
+``--train-manifest`` names the training manifest instead of looking for it. It
+is for the run whose builder's job directory is gone: scratch purges after 30
+days, and a manifest copied to the share before that is the one left. The
+sidecar says the manifest was given, not found.
+
     python ubelix/rescore_on_shared_draw.py --job <id> --heldout \
         --draw-file <eval_sets>/german-medieval-v1/vlm-pages-test/pages.jsonl \
         --data-root <eval_sets>/german-medieval-v1/vlm-pages-test \
@@ -171,6 +176,9 @@ def main(argv: list[str] | None = None) -> int:
                         "any of its documents (#301)")
     p.add_argument("--allow-unchecked", action="store_true",
                    help="with --heldout: score even when the overlap cannot be checked")
+    p.add_argument("--train-manifest", type=Path, default=None,
+                   help="with --heldout: the training manifest to check against, e.g. "
+                        "a copy saved before the builder's job directory was purged")
     args = p.parse_args(argv)
     if (args.draw_from is None) == (args.draw_file is None):
         print("give exactly one of --draw-from and --draw-file", file=sys.stderr)
@@ -181,6 +189,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.heldout and args.draw_file is None:
         print("--heldout needs --draw-file: another run's val draw is never held out "
               "from its siblings", file=sys.stderr)
+        return 2
+    if args.train_manifest is not None and not args.heldout:
+        print("--train-manifest is only read by --heldout", file=sys.stderr)
+        return 2
+    if args.train_manifest is not None and not args.train_manifest.is_file():
+        print(f"no training manifest at {args.train_manifest}", file=sys.stderr)
         return 2
 
     settings = get_settings()
@@ -217,11 +231,12 @@ def main(argv: list[str] | None = None) -> int:
 
     report = store.paths(args.job).data / f"eval_report.{label}.json"
     if args.heldout:
-        manifest = train_manifest_of(
+        manifest = args.train_manifest or train_manifest_of(
             store.paths(args.job).data, artefact_note=job.progress.artefact,
             cache_entry=corpus_root_of(store, settings, args.job),
             jobs_root=Path(settings.jobs_root))
         check = heldout_check(draw, manifest)
+        check["train_manifest_given"] = args.train_manifest is not None
         sidecar = report.with_name(f"eval_report.{label}.heldout.json")
         sidecar.write_text(json.dumps(check, indent=2) + "\n", encoding="utf-8")
         print(f"== held-out check: {check['draw_documents']} draw documents against "
