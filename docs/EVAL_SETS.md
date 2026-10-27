@@ -352,6 +352,13 @@ done
 Compare the result with the medieval arms on the same 695 pages
 (`docs/HELDOUT_BOUNDARY.md`), not with the XVI–XIX validation CER.
 
+**Measured 27.10.2026** (Slurm 20187794/20187795, both `checked: true`,
+`shared: []`): XVI–XIX `px4m-native` **0.3681** (`truncated_cer` 0.3354, 32
+pages at the token cap), XVI–XIX Qwen 3.5 4B **0.5405** (`truncated_cer`
+0.4168, 99 at the cap). The medieval `px4m-native` reads the same pages at
+0.3674. The table and what it does and does not say:
+[HELDOUT_BOUNDARY.md](HELDOUT_BOUNDARY.md#the-first-held-out-numbers-301).
+
 ### b) The Federal Council lines
 
 `score_federal_minutes.sbatch` asks every adapter with the **line** prompt at the
@@ -377,10 +384,27 @@ Nothing has shown that they share no pages with the Council minutes. Until
 something does, the number is a reading on known material, not a held-out
 number.
 
+**Measured 27.10.2026** (Slurm 20187796/20187797, `heldout: null`, as it has
+to be):
+
+| arm | CER | `truncated_cer` | `length_ratio` | at the token cap |
+|---|---:|---:|---:|---:|
+| XVI–XIX `px4m-native` | 0.2848 | 0.2024 | 1.129 | 2 of 2,751 |
+| XVI–XIX `qwen3.5-4b-…-page-v1` | 0.4363 | 0.2396 | 1.250 | 12 of 2,751 |
+
+Both write more than the line holds (`length_ratio` above 1), and
+`truncated_cer` lies far closer together than CER: most of the distance between
+the arms is text past the line, not misread characters. A page model on lines,
+on material that may be known — a ranking, not a held-out CER.
+
 ### c) A Kurrent page set of its own
 
 Drawn by document from the corpus the XVI–XIX arms trained on, then
 registered. From then on the trainer drops those documents from every run.
+
+**Started 27.10.2026.** Before step 1, the checkout on UBELIX has to be on
+`origin/main` (`submit.sh` refuses otherwise, and the scripts below are
+read from it): `cd ~/training-atr-models && git pull`.
 
 1. **Draw** (UBELIX, login node). The pool is the page manifests of a run that
    built the XVI–XIX page corpus with its own manifest
@@ -407,9 +431,15 @@ registered. From then on the trainer drops those documents from every run.
    `--write` it only prints.
 
    ```bash
-   python3 scripts/register_eval_set.py $OUT --name german-kurrent-xvi-xix-v1 \
+   # The 20 datasets, read from the run's own request rather than typed.
+   DS=$(python3 -c "import json,sys; print(' '.join(d['hf_repo'] for d in json.load(open(sys.argv[1]))['request']['datasets']))" $J/job.json)
+   # register_eval_set.py imports the trainer (loguru); the login node's
+   # python3 has none, the image has it.
+   apptainer exec --bind /storage/research --bind /scratch \
+     --env PYTHONPATH=$PWD/src ~/ubelix/vlm-train.sif \
+     python scripts/register_eval_set.py $OUT --name german-kurrent-xvi-xix-v1 \
        --source-job 20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1 \
-       --datasets <the 20 hf_repo of the run's request>
+       --datasets $DS
    ```
 
    `--write` is the step that costs something. These documents leave the
