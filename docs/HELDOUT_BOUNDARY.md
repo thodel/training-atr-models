@@ -296,10 +296,11 @@ Three readings, none of them about the XVI–XIX target:
   the by-page validation flattered them, as it is for the medieval arms: this
   draw sits at the early edge of the XVI–XIX corpus, so the gap mixes unknown
   hands with another period.
-* The Qwen arm hits `max_new_tokens=1536` on 99 pages — one in seven — so
-  part of its CER is cut-off text; `truncated_cer` (8 points behind olmOCR,
-  not 17) is the fairer reading of the reading itself. Under
-  `convention_normalized`: 0.3452 and 0.4910.
+* The Qwen arm runs to `max_new_tokens=1536` on 99 pages — one in seven: it
+  does not stop. `truncated_cer` clips every reading to the length of its
+  reference, so it scores the reading without the text written past the page
+  (about 12 of the Qwen arm's points); there it is 8 points behind olmOCR,
+  not 17. Under `convention_normalized`: 0.3452 and 0.4910.
 
 The XVI–XIX target itself needs a Kurrent page set of its own: way c in
 [EVAL_SETS.md](EVAL_SETS.md).
