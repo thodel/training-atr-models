@@ -337,6 +337,13 @@ class TrainerSettings(BaseSettings):
     #: then is looking somewhere else.
     gateway_registry_wait_s: float = Field(default=90.0, ge=0)
     gateway_registry_retry_s: float = Field(default=10.0, gt=0)
+    #: The gate runs only for a model whose held-out character accuracy reaches
+    #: this, in percent; below it, or without a measured score, the model stays
+    #: registered but disabled (#313). The gate itself only proves the gateway
+    #: returns *some* text: a collapsed kraken run (CER 0.99) passed it and was
+    #: advertised. 79 is the auto-publish threshold on asteraix, so nothing the
+    #: gateway lists reads worse than what would go to the hub. **0 disables it.**
+    promote_min_accuracy: float = Field(default=79.0, ge=0, le=100)
 
     # ── guards (serving-atr-inference/docs/TRAINING_PLAN.md §5) ─────────────────────────────────
     #: PHYSICAL GPU index. Both of asteraix's cards are free for training and a
