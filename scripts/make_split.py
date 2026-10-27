@@ -33,6 +33,18 @@ whole split. The pool is now cut by the registry first, and ``split.json``
 names the sets it was cut by — by name, so the draw can be repeated after the
 new set has joined the registry, which a "whatever is registered" default
 could not.
+
+And a fourth, from the second draw of that set: **only a page that names its
+document can be drawn.** The six imported datasets of the XVI–XIX corpus are
+materialised as ``<counter>_<original file name>``, so field 1 is whatever their
+own names start with — ``PPN643815198`` or ``agtck`` (a work, fine), but also
+``00000017.xml`` (page 17 of every book in the set) or ``11`` (a page number).
+Drawing those groups would hold out pages, not documents, and registering them
+would make the trainer drop page 17 of every such book from every later run.
+``--documents transkribus-or-named`` (the default) draws only documents whose
+field 1 is a Transkribus id (five or more digits) or a name (letters, then
+letters and digits); every other page stays on the training side, counted in
+``split.json`` under ``undrawable``.
 """
 
 from __future__ import annotations
@@ -40,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -55,6 +68,26 @@ DEFAULT_REGISTRY = Path(__file__).resolve().parents[1] / "config" / "heldout_eva
 
 def document_of(line: str) -> str:
     return Path(line).name.split("_")[DOC_FIELD]
+
+
+#: Which documents a draw may take (``--documents``). ``None`` — "any" — is the
+#: behaviour every set drawn before 27.10.2026 was drawn with, and what
+#: ``restore_eval_split.py`` replays for an entry that records no rule.
+DRAWABLE = {
+    "transkribus-or-named": re.compile(r"[0-9]{5,}|[A-Za-z][A-Za-z0-9]*"),
+}
+
+
+def drawable(line: str, rule: str | None) -> bool:
+    """Whether the page's document may be drawn under ``rule``. The first field
+    must be a number, as the trainer's ``heldout.document_of`` demands — a page
+    it cannot attribute could never be dropped from training."""
+    if rule is None:
+        return True
+    parts = Path(line).name.split("_")
+    if len(parts) <= DOC_FIELD or not parts[0].isdigit():
+        return False
+    return bool(DRAWABLE[rule].fullmatch(parts[DOC_FIELD]))
 
 
 def read_manifests(data_dir: Path, names: tuple[str, ...]) -> list[str]:
@@ -108,6 +141,7 @@ def build_split(
     test_docs: int,
     test_per_doc: int,
     shard_pages: int,
+    documents: str | None = None,
 ) -> tuple[dict[str, list[str]], list[list[str]], dict]:
     rng = random.Random(seed)
     groups: dict[str, list[str]] = defaultdict(list)
@@ -116,7 +150,12 @@ def build_split(
     for doc in groups:
         groups[doc].sort()
 
-    docs = sorted(groups)
+    # A document is drawable when every one of its pages is; the rest go to
+    # train whole and are never shuffled, so the draw over the drawable ones is
+    # the same whatever the undrawable pages are.
+    undrawable = sorted(doc for doc, pages in groups.items()
+                        if not all(drawable(page, documents) for page in pages))
+    docs = sorted(set(groups) - set(undrawable))
     rng.shuffle(docs)
 
     def draw(n_docs: int, per_doc: int) -> tuple[list[str], list[str], int]:
@@ -139,7 +178,7 @@ def build_split(
     # the target, but never inside a manuscript.
     shards: list[list[str]] = []
     current: list[str] = []
-    for doc in docs:
+    for doc in docs + undrawable:
         if current and len(current) + len(groups[doc]) > shard_pages:
             shards.append(current)
             current = []
@@ -163,6 +202,12 @@ def build_split(
         # the CER from this split cannot be published.
         "leak_documents_into_train": len((set(val_ids) | set(test_ids)) & train_ids),
     }
+    if documents is not None:
+        record["undrawable"] = {
+            "rule": documents, "documents": len(undrawable),
+            "pages": sum(len(groups[d]) for d in undrawable),
+            "examples": [Path(groups[d][0]).name for d in undrawable[:10]],
+        }
     return {"val": val, "test": test}, shards, record
 
 
@@ -183,7 +228,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exclude-sets", nargs="+", default=None, metavar="NAME",
                         help="the registered sets whose documents leave the pool "
                              "(default: every set the registry holds now)")
+    parser.add_argument("--documents", choices=[*DRAWABLE, "any"],
+                        default="transkribus-or-named",
+                        help="which documents may be drawn; 'any' is the rule "
+                             "of every set drawn before 27.10.2026")
     args = parser.parse_args(argv)
+    rule = None if args.documents == "any" else args.documents
 
     lines = read_manifests(args.data_dir, tuple(args.manifests))
     if not lines:
@@ -202,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         test_docs=args.test_docs,
         test_per_doc=args.test_per_doc,
         shard_pages=args.shard_pages,
+        documents=rule,
     )
 
     # All six parameters and the manifests, not only the seed: the first set's
@@ -212,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         "test_docs": args.test_docs, "test_per_doc": args.test_per_doc,
         "shard_pages": args.shard_pages, "manifests": list(args.manifests),
         "exclude_sets": exclude_sets,
+        "documents": rule,
     }
     record["excluded"] = {"sets": exclude_sets, **excluded}
 

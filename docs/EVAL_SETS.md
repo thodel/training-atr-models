@@ -438,6 +438,31 @@ read from it): `cd ~/training-atr-models && git pull`.
    bring the test side near the medieval set's 695 pages, at the price of 70
    more documents leaving training.
 
+   **Second draw, 27.10.2026 (170 test documents):** the cut removed **26**
+   `german-medieval-v1` documents (284 pages), all on the corpus's validation
+   side; test 656 pages, val 639. Not registered either: **48 of the 230
+   "documents" were not documents.** The six imported datasets are
+   materialised as `<counter>_<their own file name>`, so field 1 is whatever
+   that name starts with:
+
+   | field 1 | example page | a document? |
+   |---|---|---|
+   | a Transkribus id | `…_018187_0004_…` | yes |
+   | a work's name | `018786_PPN643815198_0002.xml`, `018204_agtck_1834_02_00002.xml` | yes, coarse |
+   | the page's own file name | `018426_00000017.xml`, `019000_813172837-0007.xml` | **no** — page 17 of every book |
+   | a page number | `018821_11_7175e_default.xml` | **no** |
+   | a year | `018116_1871_104_0417.xml` | not known |
+
+   In the whole pool 327 of 1,483 "documents" (4,156 of 15,315 pages) are of
+   the last three kinds. Holding them out would hold out pages, not hands, and
+   registering them would make the trainer drop page 17 of every such book
+   from every later run. `make_split.py --documents transkribus-or-named` (the
+   default since) draws only Transkribus ids and names; the other pages stay
+   on the training side, counted under `undrawable` in `split.json`. A
+   held-out number for those six datasets needs a document key from their
+   source, not from the materialised name. `restore_eval_split.py` replays
+   both the cut and the rule from the registry entry.
+
 2. **Register.** `scripts/register_eval_set.py` turns the split into a
    registry entry. It refuses a taken name, missing parameters, a leak into
    train, a document on both sides, or a document another set holds. Without

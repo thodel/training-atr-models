@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -80,7 +82,8 @@ def test_make_split_records_every_parameter(tmp_path):
     assert record["params"] == {"seed": 7, "val_docs": 3, "val_per_doc": 160,
                                 "test_docs": 5, "test_per_doc": 4, "shard_pages": 50000,
                                 "manifests": ["pages_train.lst", "pages_val.lst"],
-                                "exclude_sets": ["older-set"]}
+                                "exclude_sets": ["older-set"],
+                                "documents": "transkribus-or-named"}
 
 
 def test_a_document_another_set_holds_never_enters_the_draw(tmp_path):
@@ -101,7 +104,7 @@ def test_the_cut_split_registers_beside_the_older_set(tmp_path):
     registry = _registry(tmp_path, [OLDER])
     assert register.main(_args(split, registry, "--write")) == 0
     entry = json.loads(registry.read_text())["sets"][1]
-    assert entry["built_by"].endswith("--exclude-sets older-set"), \
+    assert "--exclude-sets older-set" in entry["built_by"], \
         "the draw is repeatable after the new set joins the registry"
 
 
@@ -204,3 +207,96 @@ def test_what_is_refused(tmp_path, capsys, breakage, why):
     assert register.main(args) == 3
     assert why in capsys.readouterr().err
     assert registry.read_text() == before, "a refusal writes nothing"
+
+
+# ── only a page that names its document is drawn (#301, the second draw) ────
+def _mixed_pool(tmp_path: Path) -> Path:
+    """Twenty Transkribus documents beside the four shapes the six imported
+    datasets of the XVI–XIX corpus are materialised with: a counter, then the
+    file's own name."""
+    data = tmp_path / "data"
+    data.mkdir()
+    counter = iter(range(10_000, 99_999))
+    lines = [f"/s/data/pages/{next(counter)}_{900000 + d}_{p:04d}_{d}{p}.xml"
+             for d in range(20) for p in range(5)]
+    for book in range(4):                     # page 17 of four different books
+        lines += [f"/s/data/pages/{next(counter)}_{page:08d}.xml" for page in range(1, 9)]  # 00000001…8
+        lines += [f"/s/data/pages/{next(counter)}_{page}_{book:x}a1b_default.xml"
+                  for page in range(1, 6)]
+    lines += [f"/s/data/pages/{next(counter)}_PPN643815198_{p:04d}.xml" for p in range(6)]
+    lines += [f"/s/data/pages/{next(counter)}_agtck_1834_02_{p:05d}.xml" for p in range(6)]
+    lines += [f"/s/data/pages/{next(counter)}_1871_104_{p:04d}.xml" for p in range(3)]
+    (data / "pages_train.lst").write_text("\n".join(lines) + "\n")
+    (data / "pages_val.lst").write_text("")
+    return data
+
+
+def _draw(tmp_path: Path, *extra) -> Path:
+    data = _mixed_pool(tmp_path)
+    registry = _registry(tmp_path, [], name="empty.json")
+    assert make_split.main([str(data), "--test-docs", "8", "--val-docs", "4",
+                            "--seed", "3", "--registry", str(registry), *extra]) == 0
+    return data / "split"
+
+
+def test_a_page_named_by_its_file_is_never_drawn(tmp_path):
+    """`00000003.xml` is page 3 of every book in an imported set and `11` a page
+    number: holding those out holds out pages, not hands, and registering them
+    would drop page 3 of every such book from every later run."""
+    split = _draw(tmp_path)
+    held = {register.document_of(line) for name in ("pages_test.lst", "pages_val.lst")
+            for line in (split / name).read_text().split()}
+    assert len(held) == 12
+    assert all(re.fullmatch(r"[0-9]{5,}|PPN643815198|agtck", doc) for doc in held), held
+    record = json.loads((split / "split.json").read_text())
+    assert record["params"]["documents"] == "transkribus-or-named"
+    assert record["undrawable"]["documents"] == 8 + 5 + 1     # 00000001…8, 1…5, 1871
+    assert record["undrawable"]["pages"] == 4 * 8 + 4 * 5 + 3
+    train = (split / "shard_00.lst").read_text().split()
+    assert sum(line.endswith("_00000003.xml") for line in train) == 4, "they stay in training"
+
+
+def test_the_rule_reaches_built_by_and_the_cut_split_registers(tmp_path):
+    split = _draw(tmp_path)
+    registry = _registry(tmp_path)
+    assert register.main(_args(split, registry, "--write")) == 0
+    (entry,) = json.loads(registry.read_text())["sets"]
+    assert entry["built_by"].endswith("--documents transkribus-or-named")
+    assert not any(d.endswith(".xml") or len(d) < 5 and d.isdigit()
+                   for d in entry["test_documents"] + entry["val_documents"])
+
+
+def test_any_is_the_old_rule_and_draws_the_same_as_before(tmp_path):
+    """Every set drawn before 27.10.2026 was drawn without a rule; `any` and a
+    `build_split` call without one must still give that draw."""
+    data = _mixed_pool(tmp_path)
+    lines = make_split.read_manifests(data, ("pages_train.lst",))
+    kwargs = dict(seed=3, val_docs=4, val_per_doc=160, test_docs=8, test_per_doc=220,
+                  shard_pages=50000)
+    old, _, record = make_split.build_split(lines, **kwargs)
+    assert "undrawable" not in record
+    registry = _registry(tmp_path, [], name="empty.json")
+    assert make_split.main([str(data), "--test-docs", "8", "--val-docs", "4", "--seed", "3",
+                            "--registry", str(registry), "--documents", "any"]) == 0
+    assert (data / "split" / "pages_test.lst").read_text().split() == old["test"]
+    assert json.loads((data / "split" / "split.json").read_text())["params"]["documents"] is None
+
+
+def test_a_restore_from_the_pool_replays_the_cut_and_the_rule(tmp_path):
+    """restore_eval_split.py draws a registered set again from its pool; without
+    the recorded exclusion and rule it would draw a different set under the
+    same name."""
+    data = _mixed_pool(tmp_path)
+    older = {"name": "older-set", "test_documents": ["900003"], "val_documents": []}
+    at_draw = _registry(tmp_path, [older], name="at_draw.json")
+    assert make_split.main([str(data), "--test-docs", "8", "--val-docs", "4", "--seed", "3",
+                            "--registry", str(at_draw)]) == 0
+    registry = _registry(tmp_path, [older])
+    assert register.main(_args(data / "split", registry, "--write")) == 0
+    out = tmp_path / "restored"
+    run = subprocess.run([sys.executable, str(ROOT / "scripts" / "restore_eval_split.py"),
+                          "--registry", str(registry), "--set", "german-kurrent-xvi-xix-v1",
+                          "--from-pool", str(data), "--out", str(out)],
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert (out / "pages_test.lst").read_text() == (data / "split" / "pages_test.lst").read_text()
