@@ -60,10 +60,15 @@ def test_a_document_is_held_out_whole():
 def test_the_german_set_is_in_the_registry():
     held = load_heldout()
     assert held.sets["german-medieval-v1"] == 350        # 200 test + 150 val
-    assert len(held.documents) == 350
-    entry = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))["sets"][0]
-    assert held.documents == frozenset(entry["test_documents"]) | frozenset(
-        entry["val_documents"])
+    assert held.sets["german-kurrent-xvi-xix-v1"] == 130  # 70 test + 60 val (#301)
+    sets = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))["sets"]
+    every = frozenset()
+    for entry in sets:
+        documents = frozenset(entry["test_documents"]) | frozenset(entry["val_documents"])
+        assert documents <= held.documents, entry["name"]
+        assert not documents & every, f"{entry['name']} shares a document with another set"
+        every |= documents
+    assert held.documents == every and len(every) == 480
 
 
 def test_the_committed_registry_is_well_formed():

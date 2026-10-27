@@ -71,7 +71,10 @@ data:
   train: medieval-german-v1 (four corpora, held-out documents dropped)
   eval: the 10 % validation partition of that corpus — identical for both cells
     and identical to sweep 1's, which is what makes the two comparable
-  digest: sha256:c8f420ec3cc0c244348b0400ca3de68dde7a6dd231ce5abaa9c69920583f14ca
+  # 27.10.2026: changed from c8f420ec3cc0… because german-kurrent-xvi-xix-v1
+  # joined the held-out registry (#301). The key fingerprints every reserved
+  # document, and the corpus loses whichever of its 130 documents it holds.
+  digest: sha256:d7a116349b94698756fe376d11cedfc5be88364171a850e54fe143f620b14736
   datasets:
   - hf_repo: dh-unibe/image-text_rats-und-richtebuecher_xv-xvi
     revision: 011e82080411a51bcb9e032e9329c919682e5f6c
