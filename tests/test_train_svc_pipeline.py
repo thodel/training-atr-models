@@ -606,6 +606,39 @@ def test_a_gate_whose_registration_vanished_does_not_claim_a_promotion(
     assert "no registration" in job.promotion_reason
 
 
+#: What the collapsed probe for #131 scored: the gate got text back and
+#: advertised it (#313).
+COLLAPSED_REPORT = REPORT.replace("95.00%\tCharacter Accuracy\n", "0.83%\tCharacter Accuracy\n")
+
+
+def test_a_model_below_the_promotion_threshold_is_not_promoted(
+        store, settings, monkeypatch):
+    """#313: non-empty text is not enough. Below the threshold the gateway is not
+    asked at all, and the registration stays disabled."""
+    asked = _gate_answers(monkeypatch, text="d\nd\nd\n¬")
+    settings = settings.model_copy(update={"gateway_api_key": "k"})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}),
+                       FakeRunner(report=COLLAPSED_REPORT))
+
+    assert job.status == "completed", job.error
+    assert job.metrics.char_accuracy == 0.83
+    assert job.promoted is False
+    assert "char_accuracy 0.83% is below the 79.00% promotion threshold" in job.promotion_reason
+    assert asked == []
+    assert read_registration(settings.registry_root, "kraken-thun-missiven-v1").enabled is False
+
+
+def test_a_promotion_threshold_of_zero_leaves_only_the_gate(store, settings, monkeypatch):
+    asked = _gate_answers(monkeypatch)
+    settings = settings.model_copy(update={"gateway_api_key": "k",
+                                           "promote_min_accuracy": 0.0})
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}),
+                       FakeRunner(report=COLLAPSED_REPORT))
+
+    assert job.promoted is True, job.promotion_reason
+    assert asked == ["kraken-thun-missiven-v1"]
+
+
 def test_the_gate_waits_until_the_gateway_has_read_the_registration(
         store, settings, monkeypatch):
     """The gateway learns of trained/<id>.yaml only from a look that a request

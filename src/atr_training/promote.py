@@ -7,7 +7,7 @@ registered ``enabled: false``, and only a **real transcription through the real
 engine** flips it: the trainer posts one held-out page to the gateway's ``/ocr``
 with the new model id, and non-empty text is the gate.
 
-Four properties worth stating, because each is a decision:
+Five properties worth stating, because each is a decision:
 
 * **The page comes from the run's own validation split.** Any page would prove
   the engine can load the weights, but a held-out page also exercises the
@@ -21,6 +21,13 @@ Four properties worth stating, because each is a decision:
   ``promoted`` is false, the reason is on the record, and ``/models`` stays quiet.
 * **Empty text is a failure, not a pass.** A 200 with ``""`` is exactly what #21
   was about: the gateway used to answer that way for a model it could not run.
+* **Non-empty text is not enough on its own (#313).** A collapsed kraken run
+  (held-out CER 0.99) answered a column of lone ``d`` and ``¬``, passed, and was
+  advertised.
+  So before the gate asks the gateway anything, :func:`score_gate` holds the
+  run's held-out ``char_accuracy`` against ``promote_min_accuracy``; below it,
+  or with no score at all, the model is not promoted. A score nobody measured
+  reads as "not checked", and that never reads as "it works".
 * **"Unknown model" is asked again, for a while.** The registration was written
   milliseconds before the gate runs, and the gateway learns of it only from a
   look at the share that a request starts, in a thread, while that request is
@@ -46,7 +53,7 @@ from typing import Protocol
 from atr_training.manifests import read_manifest
 
 __all__ = ["PROMOTION_GATE_HEADER", "NotYetVisible", "PromotionResult", "Recognizer",
-           "held_out_page", "promote", "http_recognizer"]
+           "held_out_page", "promote", "http_recognizer", "score_gate"]
 
 #: Sent with the gate's request, value ``1``. The model under test is registered
 #: ``enabled: false``, and the gateway refuses a disabled id to every caller — so
@@ -102,6 +109,27 @@ def held_out_page(data_dir: Path, manifest_name: str = "pages_val.lst") -> Path 
         image = Path(entry).with_suffix(".jpg")
         if image.exists():
             return image
+    return None
+
+
+def score_gate(char_accuracy: float | None, threshold: float) -> PromotionResult | None:
+    """Refuse a model whose held-out score is below ``threshold`` percent (#313).
+
+    None means the score does not stand in the way and the gate may run. A
+    threshold of 0 or less switches the check off.
+    """
+    if threshold <= 0:
+        return None
+    if char_accuracy is None:
+        return PromotionResult(
+            False, "the run reported no char_accuracy, so the "
+                   f"{threshold:.2f}% promotion threshold cannot be applied; the model "
+                   "stays registered but disabled")
+    if char_accuracy < threshold:
+        return PromotionResult(
+            False, f"char_accuracy {char_accuracy:.2f}% is below the {threshold:.2f}% "
+                   "promotion threshold (ATR_TRAIN_PROMOTE_MIN_ACCURACY); the gate did "
+                   "not run and the model stays registered but disabled")
     return None
 
 

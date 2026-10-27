@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from atr_training.promote import NotYetVisible, held_out_page, promote
+from atr_training.promote import NotYetVisible, held_out_page, promote, score_gate
 
 
 # ── the gate ────────────────────────────────────────────────────────────────
@@ -65,6 +65,30 @@ def page(tmp_path: Path) -> Path:
     p = tmp_path / "p.jpg"
     p.write_bytes(b"JPEG")
     return p
+
+
+# ── the score in front of the gate (#313) ──────────────────────────────────
+def test_a_score_below_the_threshold_refuses_and_names_both_numbers():
+    verdict = score_gate(0.83, 79.0)
+    assert verdict is not None and verdict.promoted is False
+    assert "0.83%" in verdict.reason and "79.00%" in verdict.reason
+
+
+@pytest.mark.parametrize("accuracy", [79.0, 95.0, 100.0])
+def test_a_score_at_or_above_the_threshold_lets_the_gate_run(accuracy):
+    assert score_gate(accuracy, 79.0) is None
+
+
+def test_no_score_is_not_a_pass():
+    """Unmeasured reads as "not checked", never as "it works"."""
+    verdict = score_gate(None, 79.0)
+    assert verdict is not None and verdict.promoted is False
+    assert "no char_accuracy" in verdict.reason
+
+
+@pytest.mark.parametrize("accuracy", [None, 0.0, 0.83])
+def test_a_threshold_of_zero_switches_the_check_off(accuracy):
+    assert score_gate(accuracy, 0.0) is None
 
 
 def test_the_gate_asks_again_until_the_gateway_has_read_the_registration(page):

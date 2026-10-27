@@ -65,7 +65,7 @@ from atr_training.prepare import (
     transcribed_lines_of,
 )
 from atr_training.pagexml import line_boxes
-from atr_training.promote import PromotionResult
+from atr_training.promote import PromotionResult, score_gate
 from atr_training.registration import (
     CorpusCount,
     RegistrationError,
@@ -2124,7 +2124,12 @@ class BasePipeline(ABC):
             # Outside the stage: a model that will not serve is not a failed run,
             # so this may not take the job down with it (see training/promote.py).
             try:
-                verdict = self._promote(job, model_path)
+                # Here, not in each backend's _promote: no engine advertises a
+                # model that reads worse than the threshold (#313).
+                verdict = score_gate(
+                    job.metrics.char_accuracy if job.metrics else None,
+                    self.settings.promote_min_accuracy,
+                ) or self._promote(job, model_path)
             except BaseException as exc:  # noqa: BLE001 - never let the gate fail a run
                 verdict = PromotionResult(False, f"{type(exc).__name__}: {exc}")
         job.promoted = verdict.promoted

@@ -396,7 +396,12 @@ the serving document.
    [OPERATIONS.md](OPERATIONS.md#registering-by-hand)). Between the split and
    #14, every registration went into a file the gateway never read, and the
    jobs still read `completed`.
-5. **The promotion gate** (after the stage; a failed gate never fails the job):
+5. **The promotion gate** (after the stage; a failed gate never fails the job).
+   It runs only when the run's `char_accuracy` reaches
+   `ATR_TRAIN_PROMOTE_MIN_ACCURACY` (default 79, the auto-publish threshold on
+   asteraix; 0 disables the check). Below it, or without a measured score, the
+   model stays registered but disabled and `promotion_reason` names the number
+   (#313: a collapsed kraken run with CER 0.99 had passed the gate):
 
    | Engine | Gate |
    |---|---|

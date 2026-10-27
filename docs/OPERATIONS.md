@@ -280,8 +280,11 @@ YAML on stdin.
 ## Promoting by hand
 
 A registered model that is still `enabled: false` is not in `/models`. That is
-where every trocr and vllm model ends, and a kraken model whose gate failed
-(`promoted: false`; `promotion_reason` on the record says why). A completed job
+where every trocr and vllm model ends, a kraken model whose gate failed, and
+any model whose `char_accuracy` is below `ATR_TRAIN_PROMOTE_MIN_ACCURACY` (79 by
+default, #313) or unmeasured (`promoted: false`; `promotion_reason` on the
+record says why). The threshold is not checked again here: promoting a model
+below it by hand overrides it, so do that only on purpose. A completed job
 has no registration command in its text, and none is needed: the file on the
 share is the complete entry, and only `enabled` changes.
 
