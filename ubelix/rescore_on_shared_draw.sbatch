@@ -17,6 +17,9 @@
 #       HELDOUT=1 ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=<…>
 #                                       # a held-out page set (#301): refuses on overlap.
 #       695 pages, four times the 164 above — size TIME from that run's log.
+#   TRAIN_MANIFEST=<file> with HELDOUT=1: check against this manifest instead of
+#       looking for one — the copy under archive/train-manifests/ once the
+#       builder's job directory is purged (docs/EVAL_SETS.md).
 #
 # Run from the checkout: ~/ubelix holds the container images, the logs and the
 # specs, and a helper copied there goes stale (tests/test_ubelix_layout.py).
@@ -37,13 +40,20 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 # shellcheck source=pin_code.sh
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
 export ATR_TRAIN_JOBS_ROOT=${ATR_TRAIN_JOBS_ROOT:-/scratch/network/users/$USER/runs/jobs}
+# Where an adopting run's corpus lives (experiment_a.sbatch). Unset, the default
+# was ~/atr-cache/artefacts inside the container, which holds nothing: --heldout
+# then never found the cache entry and fell back on the builder's job directory
+# alone, which scratch purges after 30 days (#301).
+export ATR_TRAIN_ARTEFACT_CACHE_ROOT=${ATR_TRAIN_ARTEFACT_CACHE_ROOT:-/scratch/network/users/$USER/expA/artefacts}
 export HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub
 if [ -s "$HOME/.hf_token" ]; then HF_TOKEN=$(tr -d '[:space:]' < "$HOME/.hf_token"); export HF_TOKEN; fi
 apptainer exec --nv --bind /storage --bind /scratch --bind /rs_scratch \
   --env PYTHONPATH="$REPO/src:$REPO/engines" --env HF_HOME="$HF_HOME" \
   --env HF_TOKEN="${HF_TOKEN:-}" --env ATR_TRAIN_JOBS_ROOT="$ATR_TRAIN_JOBS_ROOT" \
+  --env ATR_TRAIN_ARTEFACT_CACHE_ROOT="$ATR_TRAIN_ARTEFACT_CACHE_ROOT" \
   "$HOME/ubelix/vlm-train-tf5.sif" /opt/vlm-train/bin/python \
   "$REPO/ubelix/rescore_on_shared_draw.py" --job "$JOB" \
   ${DRAW_FILE:+--draw-file "$DRAW_FILE" --data-root "$DATA_ROOT" --label "$LABEL"} \
   ${HELDOUT:+--heldout} \
+  ${TRAIN_MANIFEST:+--train-manifest "$TRAIN_MANIFEST"} \
   ${DRAW_FROM:+--draw-from "$DRAW_FROM"}

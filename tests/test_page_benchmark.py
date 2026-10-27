@@ -235,3 +235,13 @@ def test_chunk_manifests_are_read_together(draw, tmp_path):
 
 def test_heldout_needs_a_draw_file():
     assert rescore.main(["--job", "x", "--draw-from", "y", "--heldout"]) == 2
+
+
+def test_a_given_manifest_needs_heldout_and_must_exist(tmp_path):
+    draw = tmp_path / "pages.jsonl"
+    draw.write_text("{}\n")
+    base = ["--job", "x", "--draw-file", str(draw), "--data-root", str(tmp_path),
+            "--label", "toy"]
+    assert rescore.main(base + ["--train-manifest", str(draw)]) == 2
+    assert rescore.main(base + ["--heldout", "--train-manifest",
+                                str(tmp_path / "gone.lst")]) == 2
