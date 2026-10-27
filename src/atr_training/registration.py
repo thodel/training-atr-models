@@ -128,6 +128,13 @@ SUFFIX = ".yaml"
 #: climb out of it. The gateway's ``_VENV_NAME``, restated (serving 58f678a).
 VENV_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
+#: The ``vllm serve`` flags the gateway's launcher sets itself
+#: (serving ``registry._LAUNCHER_OWNED_ARGS``): a registration overriding them
+#: would serve on a port or with a memory share the manager does not know.
+LAUNCHER_OWNED_ARGS = frozenset({
+    "--host", "--port", "--served-model-name", "--gpu-memory-utilization",
+})
+
 
 class RegistrationError(RuntimeError):
     """A registration could not be written or read. Carries the path and why."""
@@ -230,6 +237,15 @@ class Registration(BaseModel):
     vllm_venv: str | None = None
     #: ``--max-num-seqs`` for that launch: how many sequences the server batches.
     max_num_seqs: int | None = Field(default=None, ge=1)
+    #: Further ``vllm serve`` flags only this model needs (serving: Apertus 1.5's
+    #: ``--chat-template-content-format string``) — never the ones the launcher
+    #: owns (:data:`LAUNCHER_OWNED_ARGS`). None rather than the gateway's ``[]``,
+    #: so it is written only where a model needs it — absent reads as ``[]``
+    #: there, and every kraken registration does not grow an empty list.
+    vllm_args: list[str] | None = None
+    #: Seconds a cold start may take before the gateway gives up; None = the
+    #: gateway's box-wide default.
+    startup_timeout_s: int | None = Field(default=None, gt=0)
     #: The weights' identity (#259, serving#200): sha256 over the hashed files'
     #: lines, with ``host`` and ``measured_at``. Measured at the promotion gate
     #: on the file the gate just proved servable, and written in the same
@@ -277,10 +293,18 @@ class Registration(BaseModel):
         # (ModelSpec._check_vllm_venv). Kept here so a registration this repo
         # writes cannot be one the gateway refuses to read.
         if self.engine != "vllm":
-            for field in ("vllm_venv", "max_num_seqs"):
+            for field in ("vllm_venv", "max_num_seqs", "startup_timeout_s"):
                 if getattr(self, field) is not None:
                     raise ValueError(
                         f"model {self.id!r}: {field} is only meaningful for engine vllm")
+            if self.vllm_args:
+                raise ValueError(
+                    f"model {self.id!r}: vllm_args is only meaningful for engine vllm")
+        owned = {a.split("=", 1)[0] for a in self.vllm_args or ()} & LAUNCHER_OWNED_ARGS
+        if owned:
+            raise ValueError(
+                f"model {self.id!r}: vllm_args may not set {sorted(owned)}; "
+                "the launcher sets those itself")
         if self.vllm_venv is not None and (
                 not VENV_NAME_RE.fullmatch(self.vllm_venv) or self.vllm_venv in {".", ".."}):
             raise ValueError(

@@ -51,17 +51,23 @@ def _pool(tmp_path: Path, documents: int = 30, pages: int = 6) -> Path:
     return data
 
 
-def _split(tmp_path: Path) -> Path:
-    data = _pool(tmp_path)
-    assert make_split.main([str(data), "--test-docs", "5", "--val-docs", "3",
-                            "--test-per-doc", "4", "--seed", "7"]) == 0
-    return data / "split"
-
-
-def _registry(tmp_path: Path, sets=()) -> Path:
-    path = tmp_path / "heldout.json"
+def _registry(tmp_path: Path, sets=(), name: str = "heldout.json") -> Path:
+    path = tmp_path / name
     path.write_text(json.dumps({"_why": "test", "sets": list(sets)}, indent=2) + "\n")
     return path
+
+
+#: The registry the draw is cut by: one older set holding two documents of the pool.
+OLDER = {"name": "older-set", "test_documents": ["900003"], "val_documents": ["900011"]}
+
+
+def _split(tmp_path: Path, *extra) -> Path:
+    data = _pool(tmp_path)
+    drawn_against = _registry(tmp_path, [OLDER], name="registry_at_draw.json")
+    assert make_split.main([str(data), "--test-docs", "5", "--val-docs", "3",
+                            "--test-per-doc", "4", "--seed", "7",
+                            "--registry", str(drawn_against), *extra]) == 0
+    return data / "split"
 
 
 def _args(split: Path, registry: Path, *extra):
@@ -73,7 +79,57 @@ def test_make_split_records_every_parameter(tmp_path):
     record = json.loads((_split(tmp_path) / "split.json").read_text())
     assert record["params"] == {"seed": 7, "val_docs": 3, "val_per_doc": 160,
                                 "test_docs": 5, "test_per_doc": 4, "shard_pages": 50000,
-                                "manifests": ["pages_train.lst", "pages_val.lst"]}
+                                "manifests": ["pages_train.lst", "pages_val.lst"],
+                                "exclude_sets": ["older-set"]}
+
+
+def test_a_document_another_set_holds_never_enters_the_draw(tmp_path):
+    """27.10.2026: `034854` of german-medieval-v1 sat on the XVI–XIX corpus's
+    validation side, the draw took it, and the registration was refused."""
+    split = _split(tmp_path)
+    record = json.loads((split / "split.json").read_text())
+    drawn = [line for name in ("pages_test.lst", "pages_val.lst", "shard_00.lst")
+             for line in (split / name).read_text().split()]
+    assert {register.document_of(line) for line in drawn}.isdisjoint({"900003", "900011"})
+    assert record["excluded"] == {"sets": ["older-set"], "documents": 2, "pages": 12,
+                                  "which": ["900003", "900011"]}
+    assert record["total_documents"] == 28 and record["total_pages"] == 168
+
+
+def test_the_cut_split_registers_beside_the_older_set(tmp_path):
+    split = _split(tmp_path)
+    registry = _registry(tmp_path, [OLDER])
+    assert register.main(_args(split, registry, "--write")) == 0
+    entry = json.loads(registry.read_text())["sets"][1]
+    assert entry["built_by"].endswith("--exclude-sets older-set"), \
+        "the draw is repeatable after the new set joins the registry"
+
+
+def test_the_sets_are_named_so_the_draw_repeats_after_registration(tmp_path):
+    first = json.loads((_split(tmp_path) / "split.json").read_text())
+    later = _registry(tmp_path, [OLDER, {"name": "the-new-one", "test_documents": ["900000"]}],
+                      name="later.json")
+    data = tmp_path / "data"
+    assert make_split.main([str(data), "--test-docs", "5", "--val-docs", "3",
+                            "--test-per-doc", "4", "--seed", "7", "--registry", str(later),
+                            "--exclude-sets", "older-set", "--out", str(tmp_path / "again")]) == 0
+    again = json.loads((tmp_path / "again" / "split.json").read_text())
+    assert again["test"] == first["test"] and again["val"] == first["val"]
+    assert (tmp_path / "again" / "pages_test.lst").read_text() == \
+        (data / "split" / "pages_test.lst").read_text()
+
+
+@pytest.mark.parametrize("args,why", [
+    (["--exclude-sets", "no-such-set"], "no-such-set"),
+    (["--registry", "/nonexistent/heldout.json"], "cannot read the held-out registry"),
+])
+def test_an_unknown_set_or_a_missing_registry_stops_the_draw(tmp_path, capsys, args, why):
+    data = _pool(tmp_path)
+    registry = _registry(tmp_path, [OLDER], name="r.json")
+    with pytest.raises(SystemExit) as stop:
+        make_split.main([str(data), "--registry", str(registry), *args])
+    assert stop.value.code == 2 and why in capsys.readouterr().err
+    assert not (data / "split").exists(), "nothing drawn"
 
 
 def test_the_entry_holds_documents_digests_and_how_to_draw_it_again(tmp_path):

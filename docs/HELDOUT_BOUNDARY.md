@@ -276,6 +276,35 @@ measure of how much the by-page validation split flattered them: unknown hands
 are harder than the pages beside the training pages. Under
 `convention_normalized` the held-out CERs are 0.3433 and 0.3782.
 
+**The two XVI–XIX page arms on the same 695 pages** (way a of #301, read off
+UBELIX on 27.10.2026, Slurm 20187794/20187795 on code `448bef6`). Both reports
+say `checked: true` and `shared: []` against the corpus builder's training
+manifest (`20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1`, 13,606
+entries, 1,310 documents).
+
+| arm | validation CER (171 pages, drawn by page) | **held-out CER** | `truncated_cer` | `length_ratio` | at the token cap |
+|---|---:|---:|---:|---:|---:|
+| XVI–XIX `px4m-native` | 0.1571 | **0.3681** | 0.3354 | 0.937 | 32 of 695 |
+| XVI–XIX `qwen3.5-4b-…-page-v1` | 0.2704 | **0.5405** | 0.4168 | 1.011 | 99 of 695 |
+
+Three readings, none of them about the XVI–XIX target:
+
+* The XVI–XIX olmOCR arm reads these early pages as well as the medieval one
+  (0.368 against 0.367), though only four of its twenty datasets reach into
+  the XVI century.
+* The gap to validation (21 and 27 points) is **not** the measure of how much
+  the by-page validation flattered them, as it is for the medieval arms: this
+  draw sits at the early edge of the XVI–XIX corpus, so the gap mixes unknown
+  hands with another period.
+* The Qwen arm runs to `max_new_tokens=1536` on 99 pages — one in seven: it
+  does not stop. `truncated_cer` clips every reading to the length of its
+  reference, so it scores the reading without the text written past the page
+  (about 12 of the Qwen arm's points); there it is 8 points behind olmOCR,
+  not 17. Under `convention_normalized`: 0.3452 and 0.4910.
+
+The XVI–XIX target itself needs a Kurrent page set of its own: way c in
+[EVAL_SETS.md](EVAL_SETS.md).
+
 ### The full table
 
 <details>

@@ -106,7 +106,9 @@ def build_entry(split_dir: Path, *, name: str, source_job: str,
         "source_job": source_job,
         "seed": params["seed"],
         "built_by": f"scripts/make_split.py {flags} --manifests "
-                    + " ".join(params["manifests"]),
+                    + " ".join(params["manifests"])
+                    + (" --exclude-sets " + " ".join(params["exclude_sets"])
+                       if params.get("exclude_sets") else ""),
         "datasets": sorted(datasets),
         "test_documents": test_docs,
         "val_documents": val_docs,
