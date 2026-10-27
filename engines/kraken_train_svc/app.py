@@ -1045,9 +1045,15 @@ def _verify(request: TrainRequest) -> dict:
     # "valid" would be the same class of mistake the guard exists to prevent — and
     # each error is prefixed, because "project 'x' not found" is not actionable
     # when the job named three repos.
+    #
+    # Only a single dataset chunks: _prepare_multi never asks _chunked, so the
+    # size guard must not credit ATR_TRAIN_CHUNK_PAGES to a multi-dataset run.
+    # It did, and cleared each kraken dataset with eval_projects as "chunked"
+    # while the run materialized all of them at once (#28).
+    chunk_capable = _chunk_capable(request.engine) and len(request.datasets) == 1
     for spec in request.datasets:
         try:
-            found = check(spec, _settings(), chunk_capable=_chunk_capable(request.engine))
+            found = check(spec, _settings(), chunk_capable=chunk_capable)
         except DatasetSelectionError as exc:
             return {"valid": False, "checked": True,
                     "errors": [f"{spec.hf_repo}: {exc}"]}
@@ -1077,7 +1083,7 @@ def request_problems(request: TrainRequest) -> list[str]:
         lines = [spec.hf_repo for spec in request.datasets if spec.granularity == "line"]
         if lines:
             problems.append(
-                f"{len(request.datasets)} datasets with granularity 'line' in "
+                f"{len(request.datasets)} datasets, and granularity 'line' in "
                 f"{', '.join(lines)}: line-level selection across several datasets is "
                 "not implemented — a multi-dataset request takes the page path, where a "
                 "line-shaped dataset fails in prepare after the download. Submit the "

@@ -906,10 +906,11 @@ def _oversize_error(needed_gb: float, shard_count: int, settings,
             else " Free space at the jobs root could not be measured.")
 
     if chunk_pages > 0 and not chunk_capable:
-        return (f"{head}. ATR_TRAIN_CHUNK_PAGES is set, but this engine does not "
-                "chunk — only the kraken backend implements it, so every page "
-                f"would be materialized before compile runs.{room} Lower max_pages, "
-                "select fewer projects, or train this corpus with kraken.")
+        return (f"{head}. ATR_TRAIN_CHUNK_PAGES is set, but this run does not "
+                "chunk — only the kraken backend implements it, and only for a "
+                "single dataset, so every page would be materialized before compile "
+                f"runs.{room} Lower max_pages, select fewer projects, or train this "
+                "corpus on its own with kraken.")
 
     if chunk_pages > 0:
         return (f"{head}. ATR_TRAIN_CHUNK_PAGES is set, but chunking needs explicit "

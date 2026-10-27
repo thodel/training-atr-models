@@ -1220,6 +1220,20 @@ def test_chunk_size_with_several_datasets_is_refused_at_submit(client, app):
     assert "chunk_size with 2 datasets" in error and "dh-unibe/first (chunk_size=5000)" in error
 
 
+def test_the_size_guard_credits_chunking_only_to_a_single_kraken_dataset(client, app, spawn):
+    """_prepare_multi never chunks, so a multi-dataset run must be sized as the
+    run that materializes every page (#28). Before, each dataset was checked
+    with chunk_capable=True and an oversized one with eval_projects passed as
+    "chunked" on a trainer with ATR_TRAIN_CHUNK_PAGES set."""
+    seen = []
+    app.state.verify_spec = lambda spec, settings, **kw: seen.append(kw["chunk_capable"]) or []
+    assert client.post("/jobs/verify", json=_two({}, {})).json()["valid"] is True
+    assert seen == [False, False]
+    seen.clear()
+    assert client.post("/jobs/verify", json=BODY).json()["valid"] is True
+    assert seen == [True]
+
+
 def test_chunk_size_on_an_engine_that_cannot_chunk_is_refused_at_submit(client):
     """The real verifier, before any network: a vllm request with chunk_size
     gets an answer, not silence (#25)."""

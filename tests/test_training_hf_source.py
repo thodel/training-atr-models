@@ -1057,6 +1057,20 @@ def test_chunk_size_on_an_engine_that_cannot_chunk_is_an_error_before_the_hub_is
                                list_repo_files_fn=listing) == []
 
 
+def test_an_oversized_dataset_of_a_multi_dataset_run_is_not_cleared_as_chunked():
+    """chunk_pages set and eval_projects named, but the run does not chunk:
+    _prepare_multi never asks _chunked, so the app passes chunk_capable=False
+    for several datasets, and the guard must refuse, not clear the dataset as
+    chunked (#28)."""
+    spec = DatasetSpec(hf_repo=REPO, train_projects=[THUN_TRAIN], eval_projects=[THUN_TEST])
+    settings = FakeSettings(chunk_pages=5000)
+    assert verify_dataset_spec(spec, settings, chunk_capable=True, list_repo_files_fn=_listed,
+                               paths_size_fn=_hundred_gb) == []
+    errors = verify_dataset_spec(spec, settings, chunk_capable=False, list_repo_files_fn=_listed,
+                                 paths_size_fn=_hundred_gb)
+    assert len(errors) == 1 and "only for a single dataset" in errors[0]
+
+
 def test_chunk_size_on_a_line_dataset_is_an_error():
     spec = DatasetSpec(hf_repo=REPO, granularity="line", chunk_size=5000)
     errors = verify_dataset_spec(spec, FakeSettings(), list_repo_files_fn=_listed)
