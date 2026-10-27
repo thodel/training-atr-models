@@ -65,6 +65,7 @@ EVERY_FIELD = {
     #: vLLM-only (the gateway refuses them on another engine), which is why the
     #: tests that use EVERY_FIELD register a vllm model.
     "vllm_venv": "vllm-next", "max_num_seqs": 4,
+    "vllm_args": ["--chat-template-content-format", "string"], "startup_timeout_s": 900,
     "training_datasets": ["10.5281/zenodo.1234567"],
     "description": "Qwen3-VL fine-tuned on Thun missives",
     #: Measured on the gateway (serving#130); a runner never writes it.
@@ -800,9 +801,25 @@ def test_the_pinned_field_list_is_the_one_the_gateway_has_today():
     is for — nothing here compares a fixture against the gateway, only against
     :class:`Registration`."""
     fields = gateway_fields()
-    assert len(fields) == 25
+    assert len(fields) == 27
     assert fields[fields.index("prompt") + 1:fields.index("training_datasets")] == [
-        "vllm_venv", "max_num_seqs", "weights_digest"]
+        "vllm_venv", "max_num_seqs", "vllm_args", "startup_timeout_s", "weights_digest"]
+
+
+def test_the_two_launch_fields_follow_the_gateways_rules(tmp_path):
+    """``vllm_args`` and ``startup_timeout_s`` (serving 06ba832, Apertus 1.5):
+    vLLM only, and never a flag the launcher owns — a registration the gateway
+    would refuse to read is refused here, before it is written."""
+    base = {"id": "apertus-test-v1", "local_path": "/mnt/share/trained/apertus-test-v1"}
+    ok = Registration.model_validate({**base, "engine": "vllm", "startup_timeout_s": 900,
+                                      "vllm_args": ["--chat-template-content-format", "string"]})
+    assert ok.startup_timeout_s == 900 and ok.vllm_args[0] == "--chat-template-content-format"
+    for bad, why in (({"engine": "kraken", "startup_timeout_s": 900}, "only meaningful"),
+                     ({"engine": "kraken", "vllm_args": ["--enforce-eager"]}, "only meaningful"),
+                     ({"engine": "vllm", "vllm_args": ["--port=9000"]}, "launcher sets"),
+                     ({"engine": "vllm", "startup_timeout_s": 0}, "greater than 0")):
+        with pytest.raises(ValueError, match=why):
+            Registration.model_validate({**base, **bad})
 
 
 # ── vram_mb: a number or nothing, never 0 (#225) ────────────────────────────

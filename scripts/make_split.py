@@ -24,6 +24,15 @@ is dominated by which ones were drawn.
 
 Everything is derived from ``--seed``, so a split is reproducible from the
 record in ``split.json`` rather than from whatever was typed at a terminal.
+
+A third rule, from the first draw of a second set (#301, 27.10.2026): **a
+document another registered set already holds is not in the pool.** The
+XVI–XIX page corpus kept a `german-medieval-v1` document on its validation
+side, the draw put it into the new set, and `register_eval_set.py` refused the
+whole split. The pool is now cut by the registry first, and ``split.json``
+names the sets it was cut by — by name, so the draw can be repeated after the
+new set has joined the registry, which a "whatever is registered" default
+could not.
 """
 
 from __future__ import annotations
@@ -38,6 +47,10 @@ from pathlib import Path
 #: the document. Field 0 is unique per page and field 2 is the folio number, so
 #: neither groups anything.
 DOC_FIELD = 1
+
+#: The held-out registry the trainer reads (``atr_training.heldout``). Read
+#: here as plain JSON: this script runs with a login node's python3.
+DEFAULT_REGISTRY = Path(__file__).resolve().parents[1] / "config" / "heldout_eval_documents.json"
 
 
 def document_of(line: str) -> str:
@@ -56,6 +69,34 @@ def read_manifests(data_dir: Path, names: tuple[str, ...]) -> list[str]:
         if path.exists():
             lines += [ln.strip() for ln in path.read_text().splitlines() if ln.strip()]
     return sorted(set(lines))
+
+
+def registered_documents(registry: Path, names: list[str] | None) -> tuple[list[str], set[str]]:
+    """``(set names, their documents)`` — every set when ``names`` is None.
+
+    A name the registry does not hold is an error, not an empty set: a typo
+    would otherwise draw a held-out set that overlaps the one it meant.
+    """
+    data = json.loads(registry.read_text(encoding="utf-8"))
+    sets = {entry.get("name"): entry for entry in data.get("sets", [])}
+    chosen = sorted(sets) if names is None else list(names)
+    unknown = [n for n in chosen if n not in sets]
+    if unknown:
+        raise ValueError(f"not in {registry}: {', '.join(unknown)} (it holds: "
+                         f"{', '.join(sorted(sets)) or 'nothing'})")
+    documents: set[str] = set()
+    for name in chosen:
+        for side in ("test_documents", "val_documents"):
+            documents |= {str(d) for d in sets[name].get(side, [])}
+    return chosen, documents
+
+
+def exclude_documents(lines: list[str], documents: set[str]) -> tuple[list[str], dict]:
+    """The pool without the pages of ``documents``, and what was taken out."""
+    kept = [ln for ln in lines if document_of(ln) not in documents]
+    removed = {document_of(ln) for ln in lines} & documents
+    return kept, {"documents": len(removed), "pages": len(lines) - len(kept),
+                  "which": sorted(removed)}
 
 
 def build_split(
@@ -137,11 +178,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test-docs", type=int, default=35)
     parser.add_argument("--test-per-doc", type=int, default=220)
     parser.add_argument("--shard-pages", type=int, default=50000)
+    parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY,
+                        help="the held-out registry whose documents leave the pool")
+    parser.add_argument("--exclude-sets", nargs="+", default=None, metavar="NAME",
+                        help="the registered sets whose documents leave the pool "
+                             "(default: every set the registry holds now)")
     args = parser.parse_args(argv)
 
     lines = read_manifests(args.data_dir, tuple(args.manifests))
     if not lines:
         parser.error(f"no pages found in {args.data_dir} from {args.manifests}")
+    try:
+        exclude_sets, reserved = registered_documents(args.registry, args.exclude_sets)
+    except (OSError, ValueError) as exc:
+        parser.error(f"cannot read the held-out registry: {exc}")
+    lines, excluded = exclude_documents(lines, reserved)
 
     held, shards, record = build_split(
         lines,
@@ -160,7 +211,9 @@ def main(argv: list[str] | None = None) -> int:
         "seed": args.seed, "val_docs": args.val_docs, "val_per_doc": args.val_per_doc,
         "test_docs": args.test_docs, "test_per_doc": args.test_per_doc,
         "shard_pages": args.shard_pages, "manifests": list(args.manifests),
+        "exclude_sets": exclude_sets,
     }
+    record["excluded"] = {"sets": exclude_sets, **excluded}
 
     out = args.out or (args.data_dir / "split")
     out.mkdir(parents=True, exist_ok=True)

@@ -425,6 +425,19 @@ read from it): `cd ~/training-atr-models && git pull`.
    seed keeps every draw reproducible. `make_split.py` now writes all six
    parameters into `split.json`.
 
+   **First draw, 27.10.2026:** a pool of 15,315 pages in 1,483 documents; test
+   406 pages from 100 documents (about four per document, none dropped), val
+   587 from 60 (207 dropped at the cap). The registration was **refused**:
+   `german-medieval-v1` document `034854` sat on the corpus's validation
+   side — the trainer only takes reserved documents out of *train* — and the
+   draw had put it into the new set. Since then `make_split.py` cuts the pool
+   by the registry before drawing (`--registry`, `--exclude-sets`, default
+   every registered set) and records the sets by name in `split.json`, so the
+   draw repeats after the new set has joined the registry. Draw again with the
+   same command; at about four pages per document, `--test-docs 170` would
+   bring the test side near the medieval set's 695 pages, at the price of 70
+   more documents leaving training.
+
 2. **Register.** `scripts/register_eval_set.py` turns the split into a
    registry entry. It refuses a taken name, missing parameters, a leak into
    train, a document on both sides, or a document another set holds. Without
