@@ -151,12 +151,20 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(
                 f"no pages in {args.from_pool} from {list(identity.manifests)} — "
                 "the pool has to be materialised before the split can be drawn")
+        # A set drawn since 27.10.2026 records the sets its pool was cut by
+        # and which documents it could draw (#301); replayed as recorded, or
+        # the fresh draw is a different set under the same name.
+        if params.get("exclude_sets"):
+            _, reserved = make_split.registered_documents(
+                args.registry or make_split.DEFAULT_REGISTRY, params["exclude_sets"])
+            lines, _ = make_split.exclude_documents(lines, reserved)
         held, shards, record = make_split.build_split(
             lines,
             seed=params["seed"],
             val_docs=params["val_docs"], val_per_doc=params["val_per_doc"],
             test_docs=params["test_docs"], test_per_doc=params["test_per_doc"],
             shard_pages=params["shard_pages"],
+            documents=params.get("documents"),
         )
         test_pages, val_pages = held["test"], held["val"]
         source = f"a fresh draw over {len(lines)} pages from {args.from_pool}"
