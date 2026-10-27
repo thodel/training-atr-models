@@ -463,6 +463,26 @@ read from it): `cd ~/training-atr-models && git pull`.
    source, not from the materialised name. `restore_eval_split.py` replays
    both the cut and the rule from the registry entry.
 
+   **Registered, 27.10.2026, third draw:** with the rule, 170 documents came to
+   1,710 test pages (a real document averages ten pages, the page-named groups
+   one to five), so the size was cut to **70 test documents: 733 pages**
+   (141 dropped at the cap) and **60 val documents: 509 pages** (257 dropped).
+   Train keeps 13,391 of 15,031 pages; 310 page-named groups (699 pages) stay on
+   it as `undrawable`. The entry in `config/heldout_eval_documents.json` is the
+   one `register_eval_set.py` wrote on UBELIX into a copy of the registry
+   (`page_digests` test `22814f9ebb7b58cc`, val `d7e8b9a5bab890ea`), taken into
+   the repository by PR.
+
+   **What it costs, from the merge on.** The trainer drops these 130
+   documents from every run whose datasets hold them — the XVI–XIX corpus and
+   also the medieval one, which shares `aaeb-xiv-xvii`, `bullinger-autoren`,
+   the Königsfelden sets and `rats-und-richtebuecher_xv-xvi`. Every XIX,
+   XVI–XIX and medieval model trained before reads `crossed` against this set
+   in the held-out audit if it trained on one of them. And because the
+   artefact cache key fingerprints every reserved document, every compiled
+   corpus is built again on its next use; the two medieval sweep manifests
+   carry the new digest.
+
 2. **Register.** `scripts/register_eval_set.py` turns the split into a
    registry entry. It refuses a taken name, missing parameters, a leak into
    train, a document on both sides, or a document another set holds. Without

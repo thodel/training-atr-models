@@ -15,6 +15,7 @@ and still hold out a different set of pages. The caps are not in the registry's
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -125,13 +126,13 @@ def test_the_caps_do_change_which_pages_are_drawn():
 def test_the_registry_now_records_every_parameter_the_draw_needs():
     """It recorded seed, val_docs and test_docs; the three caps were defaults
     nobody wrote down. Missing any of them makes the split unreproducible."""
-    assert load_identity().missing_params == []
+    assert load_identity("german-medieval-v1").missing_params == []
 
 
 def test_the_recovered_parameters_are_marked_as_recovered():
     """They come from make_split.py's history, not from the record. A later
     reader must be able to tell those apart."""
-    recovered = load_identity().params.get("_recovered")
+    recovered = load_identity("german-medieval-v1").params.get("_recovered")
 
     assert "val_per_doc" in recovered and "test_per_doc" in recovered
 
@@ -141,8 +142,8 @@ def test_reading_the_registry_for_held_out_documents_is_unaffected():
     file must not change what it reserves."""
     held = load_heldout()
 
-    assert len(held.documents) == 350
-    assert held.sets == {"german-medieval-v1": 350}
+    assert held.sets == {"german-medieval-v1": 350, "german-kurrent-xvi-xix-v1": 130}
+    assert len(held.documents) == 480, "the two sets share no document"
 
 
 # ── verifying a rebuild ─────────────────────────────────────────────────────
@@ -296,7 +297,7 @@ def pool_dir(tmp_path: Path) -> Path:
 def test_locate_names_the_job_and_the_places_to_look():
     """The operator is on a laptop behind a VPN; the value of this is that the
     paths are right without anybody retyping them."""
-    result = _run("--locate")
+    result = _run("--locate", "--set", "german-medieval-v1")
 
     assert result.returncode == 0, result.stderr
     assert "20260905T190759Z-kraken-german-eval-pool-v1" in result.stdout
@@ -426,7 +427,7 @@ def test_the_registry_now_proves_its_pages():
     pages were dropped to the per-document cap, so `rng.sample` ran often, and
     the caps that shift which pages are drawn were never recorded.
     """
-    identity = load_identity()
+    identity = load_identity("german-medieval-v1")
 
     assert identity.proves_pages
     assert identity.test_page_digest == "7a3f839ff97da4fd"
@@ -435,7 +436,7 @@ def test_the_registry_now_proves_its_pages():
 
 def test_a_rebuild_that_draws_other_pages_is_now_refused():
     """What the pin buys: the check that document ids alone cannot make."""
-    identity = load_identity()
+    identity = load_identity("german-medieval-v1")
 
     verdict = identity.verify(
         test_pages=[f"1_{d}_0001_9.xml" for d in sorted(identity.test_documents)],
@@ -443,3 +444,28 @@ def test_a_rebuild_that_draws_other_pages_is_now_refused():
 
     assert not verdict.ok
     assert any("page digest" in c for c in verdict.complaints), verdict.complaints
+
+
+# ── the second set: registered from the record make_split wrote (#301) ──────
+def test_the_kurrent_set_is_registered_with_everything_a_redraw_needs():
+    """Drawn on UBELIX on 27.10.2026 and registered through register_eval_set.py:
+    every parameter, the registry sets its pool was cut by, the document rule,
+    and the page digests of that draw — no field recovered after the fact."""
+    identity = load_identity("german-kurrent-xvi-xix-v1")
+
+    assert identity.missing_params == [] and "_recovered" not in identity.params
+    assert identity.params["exclude_sets"] == ["german-medieval-v1"]
+    assert identity.params["documents"] == "transkribus-or-named"
+    assert identity.proves_pages
+    assert (identity.test_page_digest, identity.val_page_digest) == (
+        "22814f9ebb7b58cc", "d7e8b9a5bab890ea")
+    assert (len(identity.test_documents), len(identity.val_documents)) == (70, 60)
+
+
+def test_the_kurrent_set_holds_no_page_named_document():
+    """The second draw's 48 page-named groups (`00000017.xml`, `11`) are what
+    the documents rule exists for; none may reach the registry."""
+    identity = load_identity("german-kurrent-xvi-xix-v1")
+
+    for doc in identity.test_documents | identity.val_documents:
+        assert re.fullmatch(r"[0-9]{5,}|[A-Za-z][A-Za-z0-9]*", doc), doc
