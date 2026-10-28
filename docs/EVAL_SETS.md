@@ -520,9 +520,37 @@ read from it): `cd ~/training-atr-models && git pull`.
    entry belongs in the repository through a PR, not as a dirty checkout on
    UBELIX (`submit.sh` refuses one).
 
-3. **Freeze the draw**, as for the medieval set:
-   `scripts/build_page_benchmark.py --set german-kurrent-xvi-xix-v1 --side test`
-   with `--pages-list $OUT/pages_test.lst`, `--pages-dir $J/data/pages`, and
-   `--out` under `eval_sets/german-kurrent-xvi-xix-v1/vlm-pages-test`.
+3. **Freeze the draw**, as for the medieval set. It imports the trainer, so it
+   runs in the image — and needs `/rs_scratch` bound as well: on UBELIX
+   `/scratch/network/users/$USER` resolves there, the page lists name
+   `/rs_scratch/…`, and without the bind every page reads as missing (the
+   first attempt on 28.10. refused all 733 that way).
 
-4. **Train again, then measure** with `rescore_on_shared_draw.py --heldout`.
+   ```bash
+   J=/scratch/network/users/$USER/runs/jobs/20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1
+   OUT=/storage/research/wbkolleg_dh_1/Textrecognition_Training/eval_sets/german-kurrent-xvi-xix-v1
+   for SIDE in test val; do
+     apptainer exec --bind /storage/research --bind /scratch --bind /rs_scratch \
+       --env PYTHONPATH=$PWD/src ~/ubelix/vlm-train.sif \
+       python scripts/build_page_benchmark.py --set german-kurrent-xvi-xix-v1 --side $SIDE \
+         --pages-list $OUT/split/pages_$SIDE.lst --pages-dir $J/data/pages \
+         --out $OUT/vlm-pages-$SIDE
+   done
+   ```
+
+   **Frozen, 28.10.2026**, under
+   `eval_sets/german-kurrent-xvi-xix-v1/vlm-pages-{test,val}/`, so the draw
+   no longer depends on the scratch job directory:
+
+   | side | documents | pages = samples | reference characters | page digest | `draw_md5` |
+   |---|---:|---:|---:|---|---|
+   | test | 70 | 733 | 977,707 | `22814f9ebb7b58cc` | `ae8bf1fd315e3a06eee272bb3ca7c7ad` |
+   | val | 60 | 509 | 760,695 | `d7e8b9a5bab890ea` | `4ade0622afbfe4e5a836d63772d6f3ad` |
+
+   Every page carries a transcription, and both digests are the registry's.
+
+4. **Train again, then measure** with `rescore_on_shared_draw.py --heldout`,
+   `DRAW_FILE=$OUT/vlm-pages-test/pages.jsonl DATA_ROOT=$OUT/vlm-pages-test
+   LABEL=german-kurrent-xvi-xix-v1-test`. The two XVI–XIX page arms of
+   October trained on these documents and read `crossed`; only a run whose
+   corpus was built after #319 can be measured here.
