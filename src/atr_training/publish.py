@@ -641,7 +641,17 @@ def _energy_section(model: TrainedModel) -> list[str]:
 
     lines: list[str] = []
     if isinstance(energy_wh, (int, float)) and energy_wh > 0:
-        fp = from_energy(float(energy_wh), shared=bool(progress.get("gpu_shared")))
+        gpu_hours = progress.get("gpu_hours")
+        fp = from_energy(float(energy_wh), shared=bool(progress.get("gpu_shared")),
+                         gpu_hours=(float(gpu_hours)
+                                    if isinstance(gpu_hours, (int, float)) else 0.0))
+        embodied = [
+            f"| hardware manufacture (SCI's M) | {fp.embodied_g:.0f} g "
+            f"over {fp.gpu_hours:.1f} card-hours at "
+            f"{fp.embodied_g_per_gpu_hour:.0f} g/card-hour |",
+            f"| SCI per trained model | **{fp.sci_g:.0f} g** "
+            "(location-based + manufacture) |",
+        ] if fp.counts_embodied else []
         lines += [
             "## Energy and carbon",
             "",
@@ -652,6 +662,7 @@ def _energy_section(model: TrainedModel) -> list[str]:
             f"at {fp.factor_g_per_kwh:.0f} g/kWh |",
             f"| CO2e, location-based | {fp.gco2e_grid:.0f} g "
             f"at {GRID_FACTOR_G_PER_KWH:.0f} g/kWh (Swiss consumer mix) |",
+            *embodied,
             "",
             f"Since 2016 the university has procured electricity from "
             f"{MIX_DESCRIPTION} ([source]({MIX_SOURCE})), which is the "

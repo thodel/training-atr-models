@@ -773,6 +773,22 @@ def test_the_card_says_the_figure_is_a_floor(tmp_path: Path):
     assert "manufacture" in card
 
 
+def test_the_card_prints_m_and_the_sci_only_once_both_are_known(tmp_path: Path, monkeypatch):
+    """No rate configured: no M row, and the manufacture caveat stays. With one,
+    M and the SCI per model appear and the caveat goes."""
+    meta = {**KRAKEN_META, "progress": {"energy_wh": 10_000.0, "gpu_hours": 25.0}}
+    monkeypatch.delenv("ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR", raising=False)
+    card = card_for(tmp_path / "a", meta)
+    assert "SCI per trained model" not in card
+    assert "manufacture of the hardware is not apportioned" in card
+
+    monkeypatch.setenv("ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR", "40")
+    card = card_for(tmp_path / "b", meta)
+    assert "1000 g over 25.0 card-hours at 40 g/card-hour" in card
+    assert "**2150 g**" in card, "1150 g location-based + 1000 g manufacture"
+    assert "not apportioned" not in card
+
+
 def test_a_shared_card_is_disclosed_on_the_card(tmp_path: Path):
     meta = {**KRAKEN_META,
             "progress": {"energy_wh": 500.0, "gpu_shared": True}}

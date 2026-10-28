@@ -15,7 +15,7 @@ has cost so far.
 | attempts that were preempted or requeued | **yes, since this page** — before it, no | see below |
 | CPU, memory, storage, network | no | not metered; 3 022 CPU-hours against 163.5 GPU-hours on 08.10.2026 says it is not nothing |
 | data-centre overhead (PUE) | no | unknown, asked in #185; `ATR_TRAIN_PUE` takes it once known |
-| manufacture of the hardware | no | needs a lifetime and a utilisation nobody here has fixed (#185, point 4) |
+| manufacture of the hardware | **not by default** | needs a lifetime and an embodied figure nobody here has fixed (#185, point 4); `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR` takes the quotient once known, see below |
 | runs started by hand outside the runner | no | measurement scripts, rescorings run outside a job |
 
 Every figure is therefore a **floor**, and the card says so in words.
@@ -115,11 +115,23 @@ SCI is a rate, `(E × I + M) per R`. Mapped onto this repository:
 |---|---|
 | E, energy | `progress.energy_wh`, × PUE once known (#185) |
 | I, carbon intensity | **115 g/kWh only**: SCI is location-based and does not let renewable purchases lower the score, so the 20 g figure belongs in the dual report, not in an SCI value |
-| M, embodied hardware | **0, not counted** (#185, point 4) |
+| M, embodied hardware | card-hours (`progress.gpu_hours`) × `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR`; **0 until that rate is set** (#185, point 4) |
 | R, functional unit | one trained model; for inference, 1 000 lines or pages transcribed |
 
-Because M is missing, say "follows the structure of SCI, without its embodied
-term", not "SCI-conformant". R is the useful part: per-model and per-page rates
+While the rate is unset, say "follows the structure of SCI, without its
+embodied term", not "SCI-conformant".
+
+**Setting M.** The rate is the card's embodied emissions divided by its
+expected lifetime in hours, apportioned by time as the SCI does. Card-hours
+are counted by the sampler over the same intervals as the energy, interrupted
+attempts included, so the two halves of `E × I + M` cover the same work.
+Records written before 28.10.2026 carry 0 card-hours and keep the
+"not apportioned" caveat even after a rate is set. For scale only, not as a
+value: #185's own range of 1–2 t for an H100, over four years of continuous
+use, is 29–57 g per card-hour. At ~390 W and 115 g/kWh, operation costs about
+45 g per card-hour, so M is plausibly the same size as E × I and not a rounding
+term. Both the embodied figure and the lifetime need a source before the rate
+is set; the card prints M and an "SCI per trained model" row once it is. R is the useful part: per-model and per-page rates
 make a 4B and a 27B run comparable on cost per CER point.
 
 **Green Algorithms** (University of Cambridge; the computing calculator listed
