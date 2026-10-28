@@ -151,3 +151,28 @@ def test_a_draw_file_is_scored_whole_not_capped_at_the_runs_eval_samples(tmp_pat
                        adapter_dir=tmp_path, val_jsonl=draw, data_root=tmp_path,
                        report=tmp_path / "r.json")
     assert cmd[cmd.index("--max-samples") + 1] == "3890"
+
+
+def test_a_raised_cap_reaches_the_evaluator_and_changes_nothing_else(tmp_path):
+    """#301: 29–47 of 695 held-out pages per olmOCR arm stopped at the run's
+    1536. The rescore may lift the cap; the pixel budget and the rest stay."""
+    from atr_training.contracts import VlmTrainParams
+    from atr_training.vlm_cmd import evaluate_cmd
+
+    run = VlmTrainParams(max_new_tokens=1536, max_pixels=4_194_304)
+    params = rescore.params_with_cap(run, 3072)
+
+    assert params.model_dump(exclude={"max_new_tokens"}) == run.model_dump(
+        exclude={"max_new_tokens"})
+    cmd = evaluate_cmd("python", params=params, base_model="Qwen/Qwen3.5-4B",
+                       adapter_dir=tmp_path, val_jsonl=tmp_path / "d.jsonl",
+                       data_root=tmp_path, report=tmp_path / "r.json")
+    assert cmd[cmd.index("--max-new-tokens") + 1] == "3072"
+
+
+@pytest.mark.parametrize("cap", ["0", "-5"])
+def test_a_cap_below_one_is_refused_before_the_job_is_read(tmp_path, cap):
+    draw = tmp_path / "pages.jsonl"
+    draw.write_text("{}\n")
+    assert rescore.main(["--job", "x", "--draw-file", str(draw), "--data-root",
+                         str(tmp_path), "--label", "toy", "--max-new-tokens", cap]) == 2

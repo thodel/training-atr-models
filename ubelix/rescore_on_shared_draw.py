@@ -33,6 +33,12 @@ reasoning of ``Pipeline._refuse_contaminated_benchmark``. A check that cannot ru
 unless ``--allow-unchecked`` takes that on the record. The outcome is written
 beside the report as ``eval_report.<label>.heldout.json``.
 
+``--max-new-tokens`` raises (or lowers) the generation cap for this score only.
+A page arm that runs into the run's own cap is cut off, and its CER mixes pages
+it could not finish with pages it did not stop on (#301: 29–47 of 695 pages per
+medieval olmOCR arm at 1536). Everything else stays the run's own; give a
+``--label`` of its own, or the report overwrites the one at the run's cap.
+
 ``--train-manifest`` names the training manifest instead of looking for it. It
 is for the run whose builder's job directory is gone: scratch purges after 30
 days, and a manifest copied to the share before that is the one left. The
@@ -158,6 +164,15 @@ def params_for_draw_file(params, draw: Path):
     return params.model_copy(update={"eval_samples": max(rows, 1)})
 
 
+def params_with_cap(params, max_new_tokens: int):
+    """The run's params with the generation cap replaced, nothing else.
+
+    ``evaluate_cmd`` reads the cap through ``generation_budget()``, which takes
+    ``max_new_tokens`` whenever it is set — so setting it is the whole override.
+    """
+    return params.model_copy(update={"max_new_tokens": max_new_tokens})
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--job", required=True, help="the run whose adapter is scored")
@@ -179,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--train-manifest", type=Path, default=None,
                    help="with --heldout: the training manifest to check against, e.g. "
                         "a copy saved before the builder's job directory was purged")
+    p.add_argument("--max-new-tokens", type=int, default=None,
+                   help="generation cap for this score instead of the run's own")
     args = p.parse_args(argv)
     if (args.draw_from is None) == (args.draw_file is None):
         print("give exactly one of --draw-from and --draw-file", file=sys.stderr)
@@ -192,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.train_manifest is not None and not args.heldout:
         print("--train-manifest is only read by --heldout", file=sys.stderr)
+        return 2
+    if args.max_new_tokens is not None and args.max_new_tokens < 1:
+        print("--max-new-tokens must be at least 1", file=sys.stderr)
         return 2
     if args.train_manifest is not None and not args.train_manifest.is_file():
         print(f"no training manifest at {args.train_manifest}", file=sys.stderr)
@@ -209,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         draw = Path(settings.jobs_root) / args.draw_from / "data" / "val_eval.jsonl"
         data_root, label = corpus_root_of(store, settings, args.draw_from), args.draw_from
+    if args.max_new_tokens is not None:
+        params = params_with_cap(params, args.max_new_tokens)
     if not draw.is_file():
         print(f"no draw at {draw}", file=sys.stderr)
         return 2
