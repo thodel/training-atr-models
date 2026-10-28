@@ -17,6 +17,8 @@
 #       HELDOUT=1 ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=<…>
 #                                       # a held-out page set (#301): refuses on overlap.
 #       695 pages, four times the 164 above — size TIME from that run's log.
+#   MAX_NEW_TOKENS=<n>: generation cap for this score instead of the run's own;
+#       give LABEL a name of its own, or the report at the run's cap is overwritten.
 #   TRAIN_MANIFEST=<file> with HELDOUT=1: check against this manifest instead of
 #       looking for one — the copy under archive/train-manifests/ once the
 #       builder's job directory is purged (docs/EVAL_SETS.md).
@@ -56,4 +58,5 @@ apptainer exec --nv --bind /storage --bind /scratch --bind /rs_scratch \
   ${DRAW_FILE:+--draw-file "$DRAW_FILE" --data-root "$DATA_ROOT" --label "$LABEL"} \
   ${HELDOUT:+--heldout} \
   ${TRAIN_MANIFEST:+--train-manifest "$TRAIN_MANIFEST"} \
+  ${MAX_NEW_TOKENS:+--max-new-tokens "$MAX_NEW_TOKENS"} \
   ${DRAW_FROM:+--draw-from "$DRAW_FROM"}
