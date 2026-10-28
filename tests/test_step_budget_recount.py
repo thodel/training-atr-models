@@ -211,3 +211,21 @@ def test_the_dry_run_writes_nothing(tmp_path, capsys):
     assert not (job / SIDECAR).exists()
     out = capsys.readouterr().out
     assert "4 → 2" in out and "dry run, nothing written" in out
+
+
+def test_without_pydantic_the_script_says_where_to_run_it(tmp_path):
+    """The login node's python3 has no pydantic. The first --apply died there
+    with a traceback from contracts.py; it should name the way that works."""
+    import subprocess
+    import sys
+    script = Path(__file__).resolve().parents[1] / "scripts" / "recount_step_budget.py"
+    blocked = ("import sys, runpy; sys.modules['pydantic'] = None; "
+               f"sys.argv = [{str(script)!r}, '--store', {str(tmp_path)!r}, '--apply']; "
+               f"runpy.run_path({str(script)!r}, run_name='__main__')")
+    done = subprocess.run([sys.executable, "-c", blocked], capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin"})
+
+    assert done.returncode != 0
+    assert "Traceback" not in done.stderr
+    assert "inside the container" in done.stderr
+    assert "Nothing was read or written" in done.stderr
