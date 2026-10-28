@@ -274,7 +274,7 @@ on. Read off UBELIX (`eval_report.german-medieval-v1-test.json`): the two
 | `px4m-native-r16` | 4 Mpx, olmOCR's, LoRA r16 | 0.3214 | **0.4186** | 0.3780 | 0.919 | 37 of 695 |
 | `medieval-german-page-v1` (baseline) | 2 Mpx, ours | 0.3492 | **0.4630** | 0.4194 | 0.881 | 47 of 695 |
 
-Three readings:
+Four readings:
 
 * **The ranking holds held out**, in the same order as on validation. Every
   arm loses 9–11 points from validation to held-out, which is the measure of
@@ -282,10 +282,19 @@ Three readings:
   harder than the pages beside the training pages.
 * **The pixel budget (O1) carries the gain.** From the baseline to `px4m`,
   2 Mpx to 4 Mpx with the same prompt, the CER falls by 9.3 points held out
-  (7.2 on validation).
-* **olmOCR's own prompt (O2) adds next to nothing.** From `px4m` to
+  (7.2 on validation); 95 % interval [−12.3, −6.8], better on 169 of 200
+  documents.
+* **olmOCR's own prompt (O2) adds nothing measurable.** From `px4m` to
   `px4m-native` the CER falls by 0.2 points held out, against 1.2 on
-  validation. The rank of `px4m-native` first rests on that margin alone.
+  validation; 95 % interval [−2.0, +1.6], better on 96 documents and worse on
+  101. `px4m-native` and `px4m` are tied; the rank between them is not a
+  finding.
+* **LoRA r16 (O5) costs 5.1 points** against `px4m-native`, [+3.0, +7.5],
+  worse on 167 of 200 documents.
+
+The intervals are paired differences of the pooled CER, bootstrapped over the
+200 documents (2,000 resamples, seed 42), from the per-page readings in each
+job's `eval_report.german-medieval-v1-test.raw.jsonl`.
 
 Under `convention_normalized` the held-out CERs are, in table order, 0.3433,
 0.3464, 0.3782 and 0.4329.
