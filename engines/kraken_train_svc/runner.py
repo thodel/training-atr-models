@@ -38,8 +38,8 @@ from atr_training.ketos_cmd import (
     train_cmd,
     weights_suffix,
 )
-from atr_training.collapse_watch import CollapseWatch
-from atr_training.convergence import COLLAPSE_PATIENCE, FLOOR_FROM_SCRATCH
+from atr_training.collapse_watch import CollapseWatch, LengthProbe
+from atr_training.convergence import COLLAPSE_LENGTH_RATIO, COLLAPSE_PATIENCE, FLOOR_FROM_SCRATCH
 from atr_training.curves import CURVE_FILENAME, curve_from_checkpoints, write_training_json
 from atr_training.chunking import (chunk_record, chunks, finished_chunk,
                                    is_plan, read_plan)
@@ -637,6 +637,9 @@ class Pipeline(BasePipeline):
                         from_scratch: bool) -> CollapseWatch | None:
         """The watch that stops a collapsed run from scratch (#131), or None.
 
+        It measures each checkpoint past the floor on a sample of this job's
+        validation pages, on the job's own card, beside the training.
+
         Only from scratch: a fine-tune starts from weights that already read,
         and its zero would mean something else. Not with ``force``, which is how
         a run from scratch is let go on regardless. Not without a step count,
@@ -648,9 +651,17 @@ class Pipeline(BasePipeline):
                 logger.info("collapse watch: off ({})", "force" if job.request.force
                             else "no steps_per_epoch to place the floor")
             return None
-        logger.info("collapse watch: on — stops at {} checkpoints at exactly 0 past {:,} steps "
-                    "({} steps/epoch)", COLLAPSE_PATIENCE, FLOOR_FROM_SCRATCH, steps)
-        return CollapseWatch(ckpt_dir, steps, poll_s=COLLAPSE_POLL_S)
+        logger.info("collapse watch: on — stops at {} checkpoints past {:,} steps with a length "
+                    "ratio at or below {:.2f} ({} steps/epoch)", COLLAPSE_PATIENCE, FLOOR_FROM_SCRATCH,
+                    COLLAPSE_LENGTH_RATIO, steps)
+        params = job.request.params
+        # Inside the checkpoint directory, so DELETE /jobs/{id} takes it along; the
+        # globs for checkpoints and best weights do not descend into it.
+        probe = LengthProbe(self.settings.ketos, self.store.paths(job.id).data / "pages_val.lst",
+                            ckpt_dir / "collapse_probe", device=params.device,
+                            workers=params.workers, normalization=params.normalization,
+                            env=self.settings.env_for_child(job.gpus))
+        return CollapseWatch(ckpt_dir, steps, probe, poll_s=COLLAPSE_POLL_S)
 
     def _test(self, job: TrainJob, weights: Path, val_bin: Path,
               record: StageRecord) -> Metrics:

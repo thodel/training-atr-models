@@ -56,6 +56,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Mapping
+
+from atr_training.noise_floor import COLLAPSE_LENGTH_RATIO
 
 __all__ = [
     "StepBudget",
@@ -68,6 +71,8 @@ __all__ = [
     "floor_for",
     "check_convergence",
     "COLLAPSE_PATIENCE",
+    "COLLAPSE_LENGTH_RATIO",
+    "past_the_floor",
     "collapse_reason",
 ]
 
@@ -89,20 +94,23 @@ FLOOR_FINETUNE = 500
 #: pretrained VLM: the one real run converged usefully in 38 steps, so a floor in
 #: the hundreds would refuse work that demonstrably functions.
 FLOOR_BY_ENGINE: dict[str, int] = {"vllm": 25}
-#: How many checkpoints past the floor must all read exactly 0 before a run from
-#: scratch is stopped as collapsed (#131). Exactly 0, not "low": a validation
-#: accuracy of 0.0000 is not one character right — nothing is being read, and a
-#: run that is merely bad shows a number. Three, so a single late epoch on the
-#: plateau before CTC breaks through does not end a run: on the 10,186-step
-#: corpus that is epochs 3–5 of 11, about 4,600 steps, where the full run took
-#: 4.9 h for CER 0.985.
+#: How many checkpoints past the floor must all show a collapsed length ratio
+#: before a run from scratch is stopped (#131). The length ratio — hypothesis
+#: characters over reference characters, on a sample of the validation pages —
+#: and not the validation accuracy: a CTC network in blank collapse emits almost
+#: nothing, and the accuracy only says how little of that little is right.
+#: Three, so a single late epoch on the plateau before CTC breaks through does
+#: not end a run.
 #:
-#: Exactly 0 also means a collapse that creeps is not caught. The probe for #131
-#: (``20261027T072036Z-kraken-collapse-probe-131``, 197,083 lines, batch 256)
-#: read 0, 0, then 0.0001 at step 2,310 — the first checkpoint past the floor —
-#: and crept to 0.0083 over ten epochs: CER 0.9917, length ratio 0.0098, after
-#: 2 h 26 of training and six hours for the whole job. The watch never fired. Whether to stop on "below a small
-#: threshold" or on the length ratio is open on #131.
+#: The rule was "validation accuracy exactly 0" until the probe for #131
+#: (``20261027T072036Z-kraken-collapse-probe-131``, 197,083 lines, batch 256,
+#: 770 steps an epoch) showed a collapse that creeps: 0.0000 at step 2,310, the
+#: first checkpoint past the floor, then 0.0001, 0.0007 … 0.0083 after ten
+#: epochs — CER 0.9917, length ratio 0.0098, 2 h 26 of training and six hours
+#: for the job. The watch never fired. Its ten checkpoints, measured afterwards
+#: on 58 validation pages (53,331 characters), read length ratios of 0.0000,
+#: 0.0000, 0.0001, 0.0008, 0.0044, 0.0080 … 0.0106 for epochs 1–10: under
+#: this rule epochs 2–4 are the three, and the run stops at 3,850 steps.
 COLLAPSE_PATIENCE = 3
 
 
@@ -223,35 +231,43 @@ def check_convergence(
     )
 
 
-def collapse_reason(points, steps_per_epoch: int, floor: int = FLOOR_FROM_SCRATCH,
-                    patience: int = COLLAPSE_PATIENCE) -> str | None:
+def past_the_floor(epoch: int, steps_per_epoch: int, floor: int = FLOOR_FROM_SCRATCH) -> bool:
+    """Is the checkpoint of ``epoch`` (from 0, as Lightning names it) past the floor?
+
+    The checkpoint of epoch ``e`` is ``(e + 1) * steps_per_epoch`` steps in.
+    Before the floor, reading nothing is what learning looks like, so only
+    checkpoints past it are measured and judged.
+    """
+    return steps_per_epoch >= 1 and (epoch + 1) * steps_per_epoch >= floor
+
+
+def collapse_reason(ratios: Mapping[int, float], steps_per_epoch: int,
+                    floor: int = FLOOR_FROM_SCRATCH, patience: int = COLLAPSE_PATIENCE,
+                    threshold: float = COLLAPSE_LENGTH_RATIO) -> str | None:
     """Why a run from scratch should stop now, or None (#131).
 
-    ``points`` are the run's :class:`~atr_training.curves.EpochPoint` so far —
-    epoch numbers as Lightning writes them, from 0, so the checkpoint of epoch
-    ``e`` is ``(e + 1) * steps_per_epoch`` steps in. Only checkpoints past the
-    floor count: before it, a zero is what learning looks like.
-
-    The stop needs ``patience`` such checkpoints, every one at exactly 0, and
-    none above 0 anywhere: one character right at any epoch means the run is
-    reading something, and that is a bad run to judge afterwards, not a
-    collapse to end. kraken keeps the ten best checkpoints only, so a run whose
-    floor lies beyond its tenth epoch may never show three; it is then not
-    stopped — not seeing enough is not a reason to end anything.
+    ``ratios`` maps an epoch number to the length ratio its checkpoint read on
+    the validation sample. Only checkpoints past the floor count. The stop needs
+    ``patience`` of them, every one at or below ``threshold`` — the length at which
+    :func:`~atr_training.noise_floor.is_collapsed` calls a hypothesis no reading —
+    and none above it anywhere: a run that once wrote a reading's worth of
+    characters is reading something, and that is a bad run to judge afterwards,
+    not a collapse to end. A checkpoint that could not be measured is simply
+    absent; not seeing enough is not a reason to end anything.
     """
     if steps_per_epoch < 1 or patience < 1:
         return None
-    points = sorted(points, key=lambda p: p.epoch)
-    if any(p.val_metric > 0 for p in points):
+    if any(r > threshold for r in ratios.values()):
         return None
-    past = [p for p in points if (p.epoch + 1) * steps_per_epoch >= floor]
+    past = sorted(e for e in ratios if past_the_floor(e, steps_per_epoch, floor))
     if len(past) < patience:
         return None
     last = past[-1]
-    return (f"collapsed: validation accuracy exactly 0 at {len(past)} checkpoint(s) past "
-            f"the floor of {floor:,} steps (epochs {past[0].epoch}–{last.epoch}, "
-            f"{(last.epoch + 1) * steps_per_epoch:,} steps). A CTC network that has read "
-            f"no character by now emits blanks; on the German sweep corpus 10,186 steps "
+    read = ", ".join(f"{ratios[e]:.4f}" for e in past)
+    return (f"collapsed: length ratio at or below {threshold:.2f} at {len(past)} checkpoint(s) past "
+            f"the floor of {floor:,} steps (epochs {past[0]}–{last}, "
+            f"{(last + 1) * steps_per_epoch:,} steps; {read}). A CTC network that writes "
+            f"this little by now emits blanks; on the German sweep corpus 10,186 steps "
             f"from scratch still ended at CER 0.985 (#131). Fine-tune from a base model "
             f'(`base_model` + `resize: "union"`), or submit with "force": true to let a '
             f"run from scratch go on regardless.")

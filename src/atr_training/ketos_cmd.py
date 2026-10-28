@@ -27,6 +27,7 @@ __all__ = [
     "compile_workers",
     "train_cmd",
     "evaluate_cmd",
+    "convert_cmd",
     "find_best_weights",
     "latest_checkpoint",
     "resume_point",
@@ -230,6 +231,20 @@ def evaluate_cmd(
     if normalization is not None:
         cmd += ["--normalization", normalization]
     return cmd
+
+
+def convert_cmd(ketos: str | Path, *, checkpoint: str | Path, output: str | Path,
+                weights_format: str = "coreml") -> list[str]:
+    """``ketos convert`` — a Lightning checkpoint → a weights file ``ketos test`` reads.
+
+    Needed because ``ketos test --model x.ckpt`` fails on kraken 7.0.2: it loads
+    the checkpoint without ``weights_only=False`` and torch 2.6 refuses kraken's
+    config class. ``coreml``, because a ``safetensors`` file converted from a
+    checkpoint fails to load again on a shared LSTM weight — both measured on
+    asteraix, 28.10.2026 (#131).
+    """
+    return [str(ketos), "convert", "--output", str(output),
+            "--weights-format", weights_format, str(checkpoint)]
 
 
 # ── artifacts ───────────────────────────────────────────────────────────────
