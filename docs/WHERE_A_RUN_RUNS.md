@@ -197,9 +197,10 @@ pin holds across the queue but not across that resume.
   **trocr still has no number, and gets one by sampling rather than by
   plumbing.** Its runner does not read its own `training_summary.json`, so torch
   marks written there would be a number nobody reads; the external sampler covers
-  it through `_run` instead. Two smoke runs exist (`trocr-thun-smoke-v3`,
-  `trocr-thun-smoke-asteraix-v2`, CER 0.96 and 0.98), no real one (#37), so the
-  first point arrives with the first real run — and until then the tree sends it
+  it through `_run` instead. Real runs exist since 26.10.2026, all on
+  asteraix ([TROCR.md](TROCR.md)): 53,008 lines in 3 epochs took 86–88 min and
+  0.43–0.44 kWh, 473,549 lines in one epoch 3 h 29 of training and 1.2 kWh for
+  the whole job. None of them recorded a peak, so the tree still sends trocr
   to UBELIX.
 
   `scripts/measure_vlm_arms.py --worst-case` is the other half: it replaces the

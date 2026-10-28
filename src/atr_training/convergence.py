@@ -96,6 +96,13 @@ FLOOR_BY_ENGINE: dict[str, int] = {"vllm": 25}
 #: plateau before CTC breaks through does not end a run: on the 10,186-step
 #: corpus that is epochs 3–5 of 11, about 4,600 steps, where the full run took
 #: 4.9 h for CER 0.985.
+#:
+#: Exactly 0 also means a collapse that creeps is not caught. The probe for #131
+#: (``20261027T072036Z-kraken-collapse-probe-131``, 197,083 lines, batch 256)
+#: read 0, 0, then 0.0001 at step 2,310 — the first checkpoint past the floor —
+#: and crept to 0.0083 over ten epochs: CER 0.9917, length ratio 0.0098, after
+#: 2 h 26 of training and six hours for the whole job. The watch never fired. Whether to stop on "below a small
+#: threshold" or on the length ratio is open on #131.
 COLLAPSE_PATIENCE = 3
 
 
