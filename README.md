@@ -74,6 +74,11 @@ Beschrieben in acht Dokumenten (englisch):
   asteraix' Dienst schreibt: dreizehn Werkzeuge mit `host` je Zeile, `live`
   für den asteraix-Stand ohne Slurm, eine Sonde für Python 3.9 auf dem
   Login-Knoten, kein `ssh` im Prompt (#156, #174).
+- [`docs/TROCR.md`](docs/TROCR.md) — TrOCR auf deutscher Handschrift
+  XVI–XIX (#37): die drei Läufe, der Loss-Fehler davor (#306), und T4 — TrOCR
+  und der VLM-Zeilenarm mit demselben Korpus auf einer Ziehung, die keiner
+  gesehen hat. Gleichauf insgesamt, TrOCR vorn ohne Königsfelden, der VLM vorn
+  bei den Urkunden.
 - [`docs/GEMMA_TUNING.md`](docs/GEMMA_TUNING.md) — Gemma liest 3.2 Punkte
   schlechter als Qwen; was davon an unseren eigenen Einstellungen liegt (halbes
   Token-Budget, ein Prompt-Block, den das Training nie sah), was die offizielle

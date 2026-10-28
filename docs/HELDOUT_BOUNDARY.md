@@ -261,20 +261,43 @@ rests on them. **They stay open, and that is the result, not a missing one.**
 document, as a VLM draw under
 `eval_sets/german-medieval-v1/vlm-pages-test/` (`scripts/build_page_benchmark.py`).
 Scored with `ubelix/rescore_on_shared_draw.py --heldout`, each adapter at its
-own pixel budget and with its own prompt. Both reports say `checked: true` and
-`shared: []`: no document of the draw is among the 1,180 the corpus trained on.
-Read off UBELIX on 26.10.2026 (`eval_report.german-medieval-v1-test.json`).
+own pixel budget and with its own prompt. All four reports say `checked: true`
+and `shared: []`: no document of the draw is among the 1,180 the corpus trained
+on. Read off UBELIX (`eval_report.german-medieval-v1-test.json`): the two
+`px4m-native` arms on 26.10.2026, `px4m` and the baseline on 28.10.2026 (Slurm
+20227752/20227753 on code `a8df9fd`). All four read with `max_new_tokens=1536`.
 
-| arm | validation CER (164 pages, drawn by page) | **held-out CER** | `truncated_cer` | `length_ratio` | at the token cap |
-|---|---:|---:|---:|---:|---:|
-| `px4m-native` | 0.2659 | **0.3674** | 0.3475 | 0.898 | 38 of 695 |
-| `px4m-native-r16` | 0.3214 | **0.4186** | 0.3780 | 0.919 | 37 of 695 |
+| arm | pixels, prompt | validation CER (164 pages, drawn by page) | **held-out CER** | `truncated_cer` | `length_ratio` | at the token cap |
+|---|---|---:|---:|---:|---:|---:|
+| `px4m-native` | 4 Mpx, olmOCR's | 0.2659 | **0.3674** | 0.3475 | 0.898 | 38 of 695 |
+| `px4m` | 4 Mpx, ours | 0.2775 | **0.3697** | 0.3479 | 0.903 | 29 of 695 |
+| `px4m-native-r16` | 4 Mpx, olmOCR's, LoRA r16 | 0.3214 | **0.4186** | 0.3780 | 0.919 | 37 of 695 |
+| `medieval-german-page-v1` (baseline) | 2 Mpx, ours | 0.3492 | **0.4630** | 0.4194 | 0.881 | 47 of 695 |
 
-Two readings. The ranking holds held out: `px4m-native` ahead by ~5 points
-either way. And both lose ~10 points from validation to held-out, which is the
-measure of how much the by-page validation split flattered them: unknown hands
-are harder than the pages beside the training pages. Under
-`convention_normalized` the held-out CERs are 0.3433 and 0.3782.
+Four readings:
+
+* **The ranking holds held out**, in the same order as on validation. Every
+  arm loses 9–11 points from validation to held-out, which is the measure of
+  how much the by-page validation split flattered them: unknown hands are
+  harder than the pages beside the training pages.
+* **The pixel budget (O1) carries the gain.** From the baseline to `px4m`,
+  2 Mpx to 4 Mpx with the same prompt, the CER falls by 9.3 points held out
+  (7.2 on validation); 95 % interval [−12.3, −6.8], better on 169 of 200
+  documents.
+* **olmOCR's own prompt (O2) adds nothing measurable.** From `px4m` to
+  `px4m-native` the CER falls by 0.2 points held out, against 1.2 on
+  validation; 95 % interval [−2.0, +1.6], better on 96 documents and worse on
+  101. `px4m-native` and `px4m` are tied; the rank between them is not a
+  finding.
+* **LoRA r16 (O5) costs 5.1 points** against `px4m-native`, [+3.0, +7.5],
+  worse on 167 of 200 documents.
+
+The intervals are paired differences of the pooled CER, bootstrapped over the
+200 documents (2,000 resamples, seed 42), from the per-page readings in each
+job's `eval_report.german-medieval-v1-test.raw.jsonl`.
+
+Under `convention_normalized` the held-out CERs are, in table order, 0.3433,
+0.3464, 0.3782 and 0.4329.
 
 **The two XVI–XIX page arms on the same 695 pages** (way a of #301, read off
 UBELIX on 27.10.2026, Slurm 20187794/20187795 on code `448bef6`). Both reports
@@ -320,12 +343,12 @@ The XVI–XIX target itself needs a Kurrent page set of its own: way c in
 | `20261013T100004Z-ladder-med-qwen38-27b-v3` | scratch | 0.1215 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261013T043436Z-ladder-med-qwen35-27b-v2` | scratch | 0.1224 | 3173 | clean | 0 | 8104 of 8104 entries name a document; none reserved |
 | `20261010T111013Z-ladder-med-qwen38-27b-v2` | scratch | 0.1215 | 3173 | clean | 0 | 8104 of 8104 entries name a document; none reserved |
-| `20261009T174425Z-olmocr2-7b-medieval-page-px4m` | scratch | 0.2775 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
+| `20261009T174425Z-olmocr2-7b-medieval-page-px4m` | scratch | 0.2775 | 3173 | clean | 0 | held-out CER on `german-medieval-v1/test` 0.3697, added 28.10. (#301); adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261009T174425Z-olmocr2-7b-medieval-page-nativeprompt` | scratch | 0.3438 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261009T150138Z-qwen3.5-4b-german-kurrent-xvi-xix-v1` | scratch | 0.0882 | 1318 | clean | 0 | 13606 of 13606 entries name a document; none reserved |
 | `20261008T103636Z-olmocr2-7b-medieval-page-px1288` | scratch | 0.4114 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261008T103636Z-olmocr2-7b-medieval-page-cap3072` | scratch | 0.4674 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
-| `20261001T093909Z-olmocr2-7b-medieval-german-page-v1` | scratch | 0.3492 | 3173 | clean | 0 | 8104 of 8104 entries name a document; none reserved |
+| `20261001T093909Z-olmocr2-7b-medieval-german-page-v1` | scratch | 0.3492 | 3173 | clean | 0 | held-out CER on `german-medieval-v1/test` 0.4630, added 28.10. (#301); 8104 of 8104 entries name a document; none reserved |
 | `20261001T085321Z-ladder-med-olmocr2-7b` | scratch | 0.7465 | None | crossed | 3091 | 3091 of 11448 training pages are reserved today (345 documents) |
 | `20260930T211455Z-ladder-med-qwen35-9b` | scratch | 0.1213 | None | crossed | 3091 | 3091 of 11448 training pages are reserved today (345 documents) |
 | `20260930T210559Z-gemma4-12b-medieval-german-page-v1` | scratch | 0.9620 | 3173 | clean | 0 | adopted 2439ac90f727 from 20261001T090507Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
