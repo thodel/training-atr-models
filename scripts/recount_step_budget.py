@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """Rewrite ``steps_per_epoch`` / ``total_steps`` of page runs in samples (#264).
 
-    # dry run: what each record says, and what it should say
-    python scripts/recount_step_budget.py --store … [--cache …]
-    # write the rewrites (terminal job records only, sidecar first)
-    python scripts/recount_step_budget.py --store … --apply
+On UBELIX, from the checkout, inside the container — ``atr_training`` needs
+pydantic, and the login node's ``python3`` has none::
+
+    apptainer exec --bind /storage/research --bind /scratch --bind /rs_scratch \
+      --env PYTHONPATH=$HOME/training-atr-models/src:$HOME/training-atr-models/engines \
+      $HOME/ubelix/vlm-train.sif python3 scripts/recount_step_budget.py \
+      --store /scratch/network/users/th19c587/runs/jobs \
+      --store /storage/research/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs \
+      --cache /scratch/network/users/th19c587/expA/artefacts
+
+That is the dry run: what each record says, and what it should say. ``--apply``
+writes the rewrites (terminal job records only, sidecar first).
 
 See :mod:`atr_training.step_budget_recount` for what is rewritten, from what
 evidence, and what is never touched.
@@ -19,10 +27,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from atr_training.step_budget_recount import (  # noqa: E402
-    apply_to_job,
-    recount_job,
-)
+try:
+    from atr_training.step_budget_recount import (  # noqa: E402
+        apply_to_job,
+        recount_job,
+    )
+except ModuleNotFoundError as exc:          # the login node: no pydantic
+    raise SystemExit(
+        f"cannot import atr_training ({exc}). Run this inside the container — "
+        "see the command at the top of scripts/recount_step_budget.py. Nothing "
+        "was read or written.") from None
 
 
 def default_caches() -> list:

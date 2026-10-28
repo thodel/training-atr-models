@@ -39,8 +39,12 @@ What is never done:
 * **touching a live job.** Only terminal records, and only the two fields —
   the old values go into the sidecar.
 
-Python 3.9-compatible on purpose: it runs on the UBELIX login node, where the
-scratch store is mounted.
+It runs on UBELIX, where the scratch store is mounted, and **inside the
+container**: importing ``atr_training`` imports ``contracts``, which needs
+pydantic, and the login node's ``python3`` (3.9) has none. The first ``--apply``
+on 28.10.2026 died of exactly that, at import, before reading a record. The
+dry run of 19.10. had passed only because it ran from a copy with an empty
+package ``__init__``. The command is in ``scripts/recount_step_budget.py``.
 """
 
 from __future__ import annotations
