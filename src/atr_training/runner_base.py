@@ -562,8 +562,9 @@ class BasePipeline(ABC):
                 if read is None:
                     logger.warning("energy ledger {} is unreadable; not counted", path.name)
                     continue
-                wh, shared = read
+                wh, shared, hours = read
                 job.progress.energy_wh = round(job.progress.energy_wh + wh, 2)
+                job.progress.gpu_hours = round(job.progress.gpu_hours + hours, 4)
                 job.progress.energy_recovered_wh = round(
                     job.progress.energy_recovered_wh + wh, 2)
                 job.progress.gpu_shared = job.progress.gpu_shared or shared
@@ -620,6 +621,8 @@ class BasePipeline(ABC):
                 record.gpu_shared = peak.cards_shared
                 job.progress.energy_wh = round(
                     job.progress.energy_wh + peak.total_energy_wh, 2)
+                job.progress.gpu_hours = round(
+                    job.progress.gpu_hours + peak.total_card_hours, 4)
                 job.progress.gpu_shared = job.progress.gpu_shared or peak.cards_shared
             if job.progress.slurm_job_id is None:
                 job.progress.slurm_job_id = self._slurm_job_id

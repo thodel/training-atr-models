@@ -13,6 +13,7 @@ import time
 from atr_training import gpu
 from atr_training.contracts import Progress, StageRecord
 from atr_training.footprint import (
+    DEFAULT_EMBODIED_G_PER_GPU_HOUR,
     DEFAULT_FACTOR_G_PER_KWH,
     GRID_FACTOR_G_PER_KWH,
     UBELIX_CREDIT,
@@ -192,6 +193,41 @@ def test_the_factor_is_overridable_from_the_environment(monkeypatch):
     assert fp.pue == 1.4
 
 
+def test_manufacture_is_not_counted_by_default():
+    """0 g per card-hour means "nobody gave us a lifetime", like a PUE of 1.0,
+    and the card must say so rather than print an SCI that lacks its M."""
+    assert DEFAULT_EMBODIED_G_PER_GPU_HOUR == 0.0
+    fp = Footprint(energy_wh=1000.0, gpu_hours=2.5)
+    assert not fp.counts_embodied
+    assert fp.embodied_g == 0.0
+    assert any("manufacture" in c for c in fp.caveats())
+
+
+def test_m_is_card_hours_times_the_rate_and_adds_to_the_grid_figure():
+    """SCI = E × I + M, with I location-based: the market factor never enters."""
+    fp = Footprint(energy_wh=1000.0, factor_g_per_kwh=20.0, gpu_hours=2.5,
+                   embodied_g_per_gpu_hour=40.0)
+    assert fp.counts_embodied
+    assert abs(fp.embodied_g - 100.0) < 1e-9
+    assert abs(fp.sci_g - (GRID_FACTOR_G_PER_KWH + 100.0)) < 1e-9
+    assert not any("manufacture" in c for c in fp.caveats())
+
+
+def test_a_rate_without_hours_is_not_a_counted_m():
+    """Every record before card-hours were kept has 0 h: a rate set since must
+    not make those cards claim a manufacture share of zero."""
+    fp = Footprint(energy_wh=1000.0, gpu_hours=0.0, embodied_g_per_gpu_hour=40.0)
+    assert not fp.counts_embodied
+    assert any("manufacture" in c for c in fp.caveats())
+
+
+def test_the_embodied_rate_is_overridable_from_the_environment(monkeypatch):
+    monkeypatch.setenv("ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR", "40")
+    fp = from_energy(1000.0, gpu_hours=3.0)
+    assert fp.embodied_g_per_gpu_hour == 40.0
+    assert abs(fp.embodied_g - 120.0) < 1e-9
+
+
 def test_a_nonsense_factor_falls_back_rather_than_crashing(monkeypatch):
     monkeypatch.setenv("ATR_TRAIN_CO2_G_PER_KWH", "viel")
     assert from_energy(1.0).factor_g_per_kwh == DEFAULT_FACTOR_G_PER_KWH
@@ -203,6 +239,7 @@ def test_the_record_has_somewhere_to_put_it():
     assert StageRecord(name="train").gpu_shared is False
     p = Progress()
     assert p.energy_wh == 0.0
+    assert p.gpu_hours == 0.0
     assert p.slurm_job_id is None
 
 

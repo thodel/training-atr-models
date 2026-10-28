@@ -53,7 +53,7 @@ def test_a_flush_writes_the_running_total(tmp_path, monkeypatch):
 
     sampler.flush()
 
-    assert gpu.read_ledger(ledger) == (800.0, False)
+    assert gpu.read_ledger(ledger) == (800.0, False, 2.0)
     assert not ledger.with_name(ledger.name + ".tmp").exists(), "written atomically"
 
 
@@ -81,6 +81,13 @@ def test_the_loop_flushes_on_its_own(tmp_path, monkeypatch):
     sampler.stop()
 
     assert ledger.exists()
+
+
+def test_card_hours_are_counted_only_where_a_wattage_was_read(monkeypatch):
+    """The time M is apportioned by follows the energy: a card answering 0 W
+    or [N/A] was not observed, so its interval is not counted either."""
+    assert sampled(monkeypatch, watts=400.0, hours=2.0).peak.card_hours == {0: 2.0}
+    assert sampled(monkeypatch, watts=0.0, hours=2.0).peak.card_hours == {}
 
 
 def test_a_damaged_ledger_reads_as_none_not_zero(tmp_path):
@@ -162,7 +169,17 @@ def test_the_next_attempt_adds_a_dead_attempts_energy(tmp_path, monkeypatch):
 
     assert job.progress.energy_wh == 1170.0
     assert job.progress.energy_recovered_wh == 1170.0
+    assert job.progress.gpu_hours == 3.0, "the dead attempt's card-hours too"
     assert not ledger.exists(), "counted once, then gone"
+
+
+def test_a_ledger_from_before_card_hours_reads_as_zero_hours(tmp_path):
+    """Written by a sampler that predates the field: its energy still counts,
+    and the missing hours under-count M rather than failing the read."""
+    ledger = tmp_path / "energy-pending.train.1.json"
+    ledger.write_text(json.dumps({"energy_wh": {"0": 50.0}, "cards_shared": False}),
+                      encoding="utf-8")
+    assert gpu.read_ledger(ledger) == (50.0, False, 0.0)
 
 
 def test_an_ordered_stage_leaves_no_ledger_to_count_twice(tmp_path, monkeypatch):

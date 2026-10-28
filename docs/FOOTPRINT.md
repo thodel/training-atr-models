@@ -15,7 +15,7 @@ has cost so far.
 | attempts that were preempted or requeued | **yes, since this page** — before it, no | see below |
 | CPU, memory, storage, network | no | not metered; 3 022 CPU-hours against 163.5 GPU-hours on 08.10.2026 says it is not nothing |
 | data-centre overhead (PUE) | no | unknown, asked in #185; `ATR_TRAIN_PUE` takes it once known |
-| manufacture of the hardware | no | needs a lifetime and a utilisation nobody here has fixed (#185, point 4) |
+| manufacture of the hardware | **not by default** | needs a lifetime and an embodied figure nobody here has fixed (#185, point 4); `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR` takes the quotient once known, see below |
 | runs started by hand outside the runner | no | measurement scripts, rescorings run outside a job |
 
 Every figure is therefore a **floor**, and the card says so in words.
@@ -93,3 +93,73 @@ not in it. The **measured** part, eight records since 13.10., is 24.0 kWh.
 asteraix has no scheduler and so no `sacct`. Its runs are in the job store with
 a measured `energy_wh` where the runner ran them, and absent where a
 measurement was run by hand.
+
+## Method and framing
+
+How the figures above relate to the published frameworks, and how to describe
+them in a paper or a card. None of the frameworks replaces the method; they
+name it.
+
+**What the method is.** Activity-based, bottom-up accounting of operational
+electricity: GPU draw is measured per stage and per attempt, carbon is computed
+from it with factors kept as parameters. It is reported twice, as the GHG
+Protocol Scope 2 Guidance asks when a renewable supply is claimed: market-based
+at 20 g CO2e/kWh (the university's 100 % renewable procurement; the factor is
+our order-of-magnitude choice, see `footprint.py`) and location-based at
+115 g CO2e/kWh (Swiss consumer mix).
+
+**Software Carbon Intensity (SCI, ISO/IEC 21031), Green Software Foundation.**
+SCI is a rate, `(E × I + M) per R`. Mapped onto this repository:
+
+| term | here |
+|---|---|
+| E, energy | `progress.energy_wh`, × PUE once known (#185) |
+| I, carbon intensity | **115 g/kWh only**: SCI is location-based and does not let renewable purchases lower the score, so the 20 g figure belongs in the dual report, not in an SCI value |
+| M, embodied hardware | card-hours (`progress.gpu_hours`) × `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR`; **0 until that rate is set** (#185, point 4) |
+| R, functional unit | one trained model; for inference, 1 000 lines or pages transcribed |
+
+While the rate is unset, say "follows the structure of SCI, without its
+embodied term", not "SCI-conformant".
+
+**Setting M.** The rate is the card's embodied emissions divided by its
+expected lifetime in hours, apportioned by time as the SCI does. Card-hours
+are counted by the sampler over the same intervals as the energy, interrupted
+attempts included, so the two halves of `E × I + M` cover the same work.
+Records written before 28.10.2026 carry 0 card-hours and keep the
+"not apportioned" caveat even after a rate is set. For scale only, not as a
+value: #185's own range of 1–2 t for an H100, over four years of continuous
+use, is 29–57 g per card-hour. At ~390 W and 115 g/kWh, operation costs about
+45 g per card-hour, so M is plausibly the same size as E × I and not a rounding
+term. Both the embodied figure and the lifetime need a source before the rate
+is set; the card prints M and an "SCI per trained model" row once it is. R is the useful part: per-model and per-page rates
+make a 4B and a 27B run comparable on cost per CER point.
+
+**Green Algorithms** (University of Cambridge; the computing calculator listed
+on SPARKHub). The same equation, runtime × power × PUE × carbon intensity, with
+power *estimated* from the hardware's rated draw and core usage instead of
+measured. The modelled baseline above (119–315 kWh) is an estimate of exactly
+that kind; the run records are measured. Its CPU and memory terms are the
+obvious way to fill the gap in the first table without a new meter.
+
+**Green DiSC** (Software Sustainability Institute, hosted on SPARKHub). A
+certification for research groups, not a calculation method. Measured per-run
+energy with stated caveats is evidence for its reporting criteria; whether it
+satisfies a given level has to be read against the current criteria.
+
+**DPC Carbon Footprint Toolkit** (Digital Preservation Coalition, 2026). Scoped
+to digital preservation: on-premise and cloud storage, networking, travel. It
+does not fit training, but it fits what this page leaves out: artefacts on the
+research storage, the Hugging Face copies, the corpus caches (#185, point 4).
+
+A sentence that can stand in a paper:
+
+> We report the operational electricity of model training as a measured,
+> bottom-up figure: GPU power is sampled during every attempt of every run,
+> including preempted and requeued ones. Carbon is reported market-based
+> (20 g CO2e/kWh, the university's renewable procurement) and location-based
+> (115 g CO2e/kWh, Swiss consumer mix), following the GHG Protocol Scope 2
+> Guidance, and per trained model following the structure of the Software
+> Carbon Intensity specification (ISO/IEC 21031) without its embodied term.
+> Hours not covered by measurement are estimated as in Green Algorithms
+> (runtime × assumed draw). CPU, memory, storage, data-centre overhead and
+> hardware manufacture are excluded, so all figures are lower bounds.

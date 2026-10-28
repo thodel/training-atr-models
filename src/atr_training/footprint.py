@@ -37,9 +37,16 @@ number an *under*-estimate:
 * **Only the GPUs are metered.** CPU, memory, storage and network draw power that
   `power.draw` does not see. For a GPU training run the cards dominate, but
   3,022 CPU-hours against 163.5 GPU-hours (#184) says it is not nothing.
-* **Hardware manufacture is not counted.** Scope 3 for an H100 is on the order of
-  a tonne; apportioning it needs a lifetime and a utilisation assumption nobody
-  here has made yet.
+* **Hardware manufacture is not counted by default.** Scope 3 for an H100 is on
+  the order of a tonne; apportioning it needs a lifetime and a utilisation
+  assumption nobody here has made yet (#185). The Software Carbon Intensity
+  specification calls this term M and apportions it by time: the card's embodied
+  emissions divided by its expected lifetime in hours, times the hours this run
+  held it. :data:`DEFAULT_EMBODIED_G_PER_GPU_HOUR` is that quotient, and 0.0
+  for the reason the PUE is 1.0 — a lifetime and a manufacturing figure we have
+  not been given would dress a guess as a fact. Once they are, it is one value
+  in ``ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR``, and the card hours it multiplies are
+  already in the record (``progress.gpu_hours``).
 
 So a published figure is a floor, and the card states that in words rather than
 leaving a reader to assume completeness.
@@ -58,6 +65,11 @@ GRID_FACTOR_G_PER_KWH = 115.0
 #: 1.0 = the data centre's own overhead is NOT included, because nobody has given
 #: us its PUE. Overridable with ``ATR_TRAIN_PUE``.
 DEFAULT_PUE = 1.0
+#: g CO2e of hardware manufacture per card-hour: embodied emissions ÷ expected
+#: lifetime in hours (the SCI's M, apportioned by time). 0.0 = NOT counted, for
+#: the reason ``DEFAULT_PUE`` is 1.0. Overridable with
+#: ``ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR``.
+DEFAULT_EMBODIED_G_PER_GPU_HOUR = 0.0
 
 #: Where the claim about the electricity comes from.
 MIX_SOURCE = "https://klima.unibe.ch/betrieb/energie/index_ger.html"
@@ -84,6 +96,9 @@ class Footprint:
     energy_wh: float
     factor_g_per_kwh: float = DEFAULT_FACTOR_G_PER_KWH
     pue: float = DEFAULT_PUE
+    #: Card-hours the run held, over the same intervals as ``energy_wh``.
+    gpu_hours: float = 0.0
+    embodied_g_per_gpu_hour: float = DEFAULT_EMBODIED_G_PER_GPU_HOUR
     #: True when a card's wattage was shared with another process, so the energy
     #: is the card's and not only this job's.
     shared: bool = False
@@ -106,6 +121,25 @@ class Footprint:
         """Location-based: what the local grid mix would have cost."""
         return self.kwh * GRID_FACTOR_G_PER_KWH
 
+    @property
+    def counts_embodied(self) -> bool:
+        """Both halves of M are known: a rate, and hours to apply it to."""
+        return self.embodied_g_per_gpu_hour > 0 and self.gpu_hours > 0
+
+    @property
+    def embodied_g(self) -> float:
+        """M: the share of the hardware's manufacture this run used up."""
+        return self.gpu_hours * self.embodied_g_per_gpu_hour
+
+    @property
+    def sci_g(self) -> float:
+        """E × I + M for one run, the SCI numerator with R = one trained model.
+
+        Location-based only: the SCI does not let a renewable purchase lower the
+        score, so the market-based factor never enters it.
+        """
+        return self.gco2e_grid + self.embodied_g
+
     def both(self) -> str:
         """The dual report, in one line, with the larger figure visible."""
         return (f"{self.gco2e:.0f} g CO2e market-based "
@@ -121,8 +155,9 @@ class Footprint:
                        "values 1.1–1.6 would raise it by that factor)")
         out.append("counts GPU draw only — CPU, memory, storage and network are "
                    "not metered")
-        out.append("counts operation only — manufacture of the hardware is not "
-                   "apportioned")
+        if not self.counts_embodied:
+            out.append("counts operation only — manufacture of the hardware is "
+                       "not apportioned")
         if self.shared:
             out.append("a card was shared with another process, so part of this "
                        "energy is not this run's")
@@ -131,7 +166,8 @@ class Footprint:
 
 def from_energy(energy_wh: float, *, shared: bool = False,
                 factor_g_per_kwh: float | None = None,
-                pue: float | None = None) -> Footprint:
+                pue: float | None = None, gpu_hours: float = 0.0,
+                embodied_g_per_gpu_hour: float | None = None) -> Footprint:
     """A footprint from a sampled energy figure, with the configured parameters.
 
     ``energy_wh`` of 0 yields ``measured=False``: `power.draw` answers ``[N/A]``
@@ -154,6 +190,11 @@ def from_energy(energy_wh: float, *, shared: bool = False,
         factor_g_per_kwh=(factor_g_per_kwh if factor_g_per_kwh is not None
                           else _env("ATR_TRAIN_CO2_G_PER_KWH", DEFAULT_FACTOR_G_PER_KWH)),
         pue=pue if pue is not None else _env("ATR_TRAIN_PUE", DEFAULT_PUE),
+        gpu_hours=gpu_hours,
+        embodied_g_per_gpu_hour=(
+            embodied_g_per_gpu_hour if embodied_g_per_gpu_hour is not None
+            else _env("ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR",
+                      DEFAULT_EMBODIED_G_PER_GPU_HOUR)),
         shared=shared,
         measured=energy_wh > 0,
     )

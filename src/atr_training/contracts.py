@@ -1086,6 +1086,11 @@ class Progress(BaseModel):
     #: every minute (#184). Before it existed an interrupted run kept only the
     #: energy of its last attempt — 880 Wh for a run that drew on ~46 GPU-hours.
     energy_recovered_wh: float = 0.0
+    #: Card-hours over the same intervals as ``energy_wh``, recovered attempts
+    #: included: what :mod:`atr_training.footprint` apportions the hardware's
+    #: manufacture by (the SCI's M). 0.0 on every record written before it was
+    #: kept, which reads as "not counted", not as "no hardware used".
+    gpu_hours: float = 0.0
     #: True when any stage shared a card, so part of ``energy_wh`` is not this
     #: job's. Reported and labelled rather than dropped.
     gpu_shared: bool = False

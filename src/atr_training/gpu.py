@@ -423,6 +423,11 @@ class Peak:
     #: under-report. This is the CARD's energy, which is the job's only when the
     #: job has the card to itself; `cards_shared` says when it did not.
     energy_wh: dict[int, float] = field(default_factory=dict)
+    #: Hours each card was observed drawing power, over the same intervals as
+    #: `energy_wh` — the time the embodied term of the footprint is apportioned
+    #: by. An interval in which a card read 0 W or [N/A] is not counted, for the
+    #: reason its energy is not: 0 there means "not read".
+    card_hours: dict[int, float] = field(default_factory=dict)
     #: Another process was seen holding memory on a card we were using, so part
     #: of `energy_wh` is somebody else's.
     cards_shared: bool = False
@@ -459,22 +464,30 @@ class Peak:
     def total_energy_wh(self) -> float:
         return sum(self.energy_wh.values())
 
+    @property
+    def total_card_hours(self) -> float:
+        return sum(self.card_hours.values())
+
 
 #: Seconds between two writes of a sampler's energy ledger. What an interrupted
 #: stage loses is at most this much of its draw — about 6 Wh on an H100 at 390 W.
 LEDGER_FLUSH_S = 60.0
 
 
-def read_ledger(path: Path) -> tuple[float, bool] | None:
-    """``(watt-hours, cards_shared)`` from a ledger :class:`PeakSampler` left, or None.
+def read_ledger(path: Path) -> tuple[float, bool, float] | None:
+    """``(watt-hours, cards_shared, card-hours)`` from a ledger :class:`PeakSampler`
+    left, or None.
 
     None for a file that cannot be read or parsed: it is reported by the caller
-    and not counted, because an unreadable figure is not 0 Wh (#165).
+    and not counted, because an unreadable figure is not 0 Wh (#165). A ledger
+    written before card-hours were kept reads as 0 h, which under-counts the
+    embodied term and so keeps the figure a floor.
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         total = sum(float(v) for v in data["energy_wh"].values())
-        return total, bool(data.get("cards_shared"))
+        hours = sum(float(v) for v in (data.get("card_hours") or {}).values())
+        return total, bool(data.get("cards_shared")), hours
     except Exception:  # noqa: BLE001 — a damaged ledger is reported, not raised
         return None
 
@@ -561,6 +574,8 @@ class PeakSampler:
             tmp.write_text(json.dumps({
                 "energy_wh": {str(i): round(wh, 3)
                               for i, wh in sorted(self.peak.energy_wh.items())},
+                "card_hours": {str(i): round(h, 4)
+                               for i, h in sorted(self.peak.card_hours.items())},
                 "cards_shared": self.peak.cards_shared,
                 "readings": self.peak.readings,
             }), encoding="utf-8")
@@ -594,6 +609,9 @@ class PeakSampler:
                 mean_w = (previous + w) / 2.0
                 self.peak.energy_wh[index] = (
                     self.peak.energy_wh.get(index, 0.0) + mean_w * hours)
+                if mean_w > 0:
+                    self.peak.card_hours[index] = (
+                        self.peak.card_hours.get(index, 0.0) + hours)
         self._last_at = now
         self._last_watts = dict(enumerate(watts))
 
