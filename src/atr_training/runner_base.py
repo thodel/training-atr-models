@@ -182,7 +182,10 @@ class SubprocessRunner:
         from it would lose a running child, so the caller must not.
         """
         share_log.parent.mkdir(parents=True, exist_ok=True)
-        full_env = {**os.environ, **(env or {})}
+        # Unbuffered (#328): a Python child's own `print` goes to a pipe here and
+        # is block-buffered, so its warnings would arrive hours after the
+        # progress lines around them, or only at exit.
+        full_env = {**os.environ, "PYTHONUNBUFFERED": "1", **(env or {})}
         header = f"\n$ {' '.join(cmd)}\n".encode()
 
         local_path = self._local_path(share_log)
@@ -373,11 +376,18 @@ def _mirror(reader, local, share) -> None:
 
     Local first, deliberately: it is the copy that has to survive, and a share
     write that blocks must not delay it.
+
+    ``read1``, not ``read`` (#328). ``read(65536)`` on a buffered pipe returns
+    only once 64 KiB are together or the child has exited: a VLM page run at
+    64 s a step writes some 70 bytes a step, and its ``train.log`` stayed empty
+    for 12.7 hours on UBELIX, then arrived at once when the wall killed it.
+    ``read1`` hands over whatever the child has written, as it writes it.
     """
+    read = getattr(reader, "read1", reader.read)
     try:
         with reader:
             while True:
-                chunk = reader.read(65536)
+                chunk = read(65536)
                 if not chunk:
                     return
                 _write_best_effort(local, chunk)

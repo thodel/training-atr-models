@@ -153,3 +153,55 @@ def test_a_local_root_without_a_share_root_writes_one_file(tmp_path):
     assert runner.run(_PAYLOAD, log) == 0
 
     assert log.read_text(encoding="utf-8").count("PAYLOAD") == 1
+
+
+# ── #328: the log is live while the child runs, not when it exits ───────────
+
+def _appears_while_running(cmd: list[str], needle: str, tmp_path: Path,
+                           within_s: float = 2.0) -> bool:
+    """Run ``cmd`` in a thread and say whether ``needle`` reached the local log
+    before the child exited. The child sleeps well past ``within_s``. The
+    needle must not occur in ``cmd``: the log's header line is the command."""
+    assert needle not in " ".join(cmd), "the header would match, not the output"
+    import threading
+
+    runner, share_log, local_log = _runner(tmp_path)
+    done = threading.Event()
+    thread = threading.Thread(target=lambda: (runner.run(cmd, share_log), done.set()))
+    thread.start()
+    try:
+        deadline = time.monotonic() + within_s
+        while time.monotonic() < deadline:
+            if local_log.exists() and needle in local_log.read_text(encoding="utf-8"):
+                return not done.is_set()
+            time.sleep(0.05)
+        return False
+    finally:
+        thread.join(timeout=30)
+
+
+def test_a_flushed_line_reaches_the_log_before_the_child_ends(tmp_path):
+    """olmOCR on UBELIX, 64 s a step: `read(65536)` waited for 64 KiB, and the
+    log stayed empty for 12.7 hours. tqdm flushes; the mirror must pass it on."""
+    child = ("import sys, time\n"
+             "sys.stderr.write('st' + 'ep 1/2841\\n'); sys.stderr.flush()\n"
+             "time.sleep(4)\n")
+    assert _appears_while_running([sys.executable, "-c", child], "step 1/2841", tmp_path)
+
+
+def test_an_unflushed_print_is_not_held_back_by_the_child(tmp_path, monkeypatch):
+    """The `warning: a sample tokenized to …` lines are plain prints to stdout:
+    without PYTHONUNBUFFERED they sit in the child's own buffer. Taken out of
+    this process's environment first, so a shell that sets it proves nothing."""
+    monkeypatch.delenv("PYTHONUNBUFFERED", raising=False)
+    child = ("import time\n"
+             "print('warning: a sample tokenized to 73' + '61 tokens')\n"
+             "time.sleep(4)\n")
+    assert _appears_while_running([sys.executable, "-c", child], "7361 tokens", tmp_path)
+
+
+def test_a_caller_can_still_set_the_buffering_itself(tmp_path):
+    runner, share_log, local_log = _runner(tmp_path)
+    cmd = [sys.executable, "-c", "import os; print('PU=' + os.environ.get('PYTHONUNBUFFERED', ''))"]
+    runner.run(cmd, share_log, env={"PYTHONUNBUFFERED": ""})
+    assert "PU=\n" in local_log.read_text(encoding="utf-8")
