@@ -1,0 +1,25 @@
+Loading from w_checkpoint_04-0.0007.mlmodel.
+=== report  ===
+
+53331	Characters
+53306	Errors
+0.05%	Character Accuracy
+0.05%	Character Accuracy (Case-insensitive)
+0.00%	Word Accuracy
+
+53291	Insertions
+0	Deletions
+15	Substitutions
+
+Count	Missed	%Right
+9359	9349	0.11%	Common
+43427	43412	0.03%	Latin
+545	545	0.00%	Inherited
+
+Errors	Correct-Generated
+7688	{ SPACE } - {  }
+5623	{ e } - {  }
+3759	{ n } - {  }
+3749	{ i } - {  }
+3035	{ t } - {  }
+3022	{ s } - {  }
