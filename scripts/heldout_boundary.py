@@ -5,6 +5,7 @@
     python scripts/heldout_boundary.py --markdown   # the Results table, to paste
     python scripts/heldout_boundary.py --json | jq '.summary'
     python scripts/heldout_boundary.py --store /scratch/.../jobs --all
+    python scripts/heldout_boundary.py --job /scratch/.../jobs/<id>   # one run, before its GPU stage
 
 Applies **today's** held-out registry (``config/heldout_eval_documents.json``)
 to the manifest each completed run actually trained on, and says per run whether
@@ -32,6 +33,12 @@ Four verdicts, and the two that are not verdicts about the number:
 
 This refuses to guess. A run it cannot check is never counted as unaffected,
 which is the one way a census like this gets quietly optimistic.
+
+``--job`` checks one run and answers in its exit status: 0 only for ``clean``.
+It is the check between prepare and the GPU stage (#341): a corpus built after a
+set joined the registry must not hold a page of it, and finding out after two
+GPU days is the expensive way. A run that adopted its corpus is resolved through
+its builder in ``--store`` (default: the run's own store).
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from atr_training.heldout_boundary import (  # noqa: E402
     Verdict,
+    check_run,
     check_store,
     load_today,
     resolve_adoptions,
@@ -84,6 +92,32 @@ def default_stores(settings: TrainerSettings) -> list[tuple[str, Path]]:
     return unique
 
 
+def check_one(job_dir: Path, held, stores: list[Path] | None) -> int:
+    """One run against today's registry; the exit status is the verdict.
+
+    Every registered set is applied, not only the one the run is meant to be
+    scored on: a page of any held-out document in training is a number that
+    cannot be published as held out on that set.
+    """
+    if not (job_dir / "job.json").is_file():
+        print(f"{job_dir} holds no job.json", file=sys.stderr)
+        return 2
+    check = check_run(job_dir, store=job_dir.parent.name, held=held)
+    roots = stores or [job_dir.parent]
+    check = resolve_adoptions([check], [(str(r), Path(r)) for r in roots], held=held)[0]
+    print(f"{check.verdict.value}: {check.job_id}")
+    print(f"  {check.why}")
+    print(f"  manifest {check.manifest or '-'}: {check.entries} entries, "
+          f"{check.identified} name a document; reserved_pages in the record: "
+          f"{check.recorded_reserved}")
+    print(f"  registry: {len(held.documents)} documents in "
+          f"{', '.join(f'{n} ({c})' for n, c in sorted(held.sets.items()))}")
+    if check.verdict is Verdict.CROSSED:
+        print(f"  {check.reserved} training pages from {len(check.documents)} held-out "
+              f"documents, e.g. {', '.join(check.documents[:5])}")
+    return 0 if check.verdict is Verdict.CLEAN else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--store", action="append", type=Path, default=None,
@@ -95,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
                              "recovered by re-scoring lives outside it")
     parser.add_argument("--markdown", action="store_true", help="the table for the docs page")
     parser.add_argument("--json", action="store_true", help="machine-readable")
+    parser.add_argument("--job", type=Path, default=None,
+                        help="check this one job directory; exit 0 only if clean")
     args = parser.parse_args(argv)
 
     held = load_today(args.registry)
@@ -102,6 +138,9 @@ def main(argv: list[str] | None = None) -> int:
         print("the held-out registry holds nothing — every run would read as clean, "
               "which is the one answer this script must not give", file=sys.stderr)
         return 2
+
+    if args.job is not None:
+        return check_one(args.job, held, args.store)
 
     settings = TrainerSettings()
     stores = ([(str(p), p) for p in args.store] if args.store

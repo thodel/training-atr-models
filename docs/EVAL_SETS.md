@@ -554,3 +554,24 @@ read from it): `cd ~/training-atr-models && git pull`.
    LABEL=german-kurrent-xvi-xix-v1-test`. The two XVI–XIX page arms of
    October trained on these documents and read `crossed`; only a run whose
    corpus was built after #319 can be measured here.
+
+   The two arms again (#341):
+   `ubelix/specs/olmocr2-7b-german-kurrent-xvi-xix-page-px4m-native-v2.json` and
+   `ubelix/specs/qwen3.5-4b-german-kurrent-xvi-xix-page-v2.json`, the October
+   recipes with a new `model_id` and `max_new_tokens` 3072. Both describe the
+   same corpus, so one prepare builds it and the other adopts it: submit the
+   second prepare only after the first has finished, or both build. Between
+   prepare and train, one check per run, minutes on the login node instead of
+   GPU days later:
+
+   ```bash
+   apptainer exec --bind /storage/research --bind /scratch --bind /rs_scratch \
+     --env PYTHONPATH=$PWD/src ~/ubelix/vlm-train.sif \
+     python scripts/heldout_boundary.py --job /scratch/network/users/$USER/runs/jobs/<id>
+   ```
+
+   It applies today's registry to the run's `pages_train.lst` (or its
+   builder's, for the adopting arm) and exits 0 only on `clean`; `crossed`,
+   `uncheckable` and `gone` are all reasons not to submit the GPU stage.
+   `reserved_pages` in the record should have grown past the October corpus's
+   1318, by the pages of the 130 new documents.
