@@ -22,7 +22,7 @@ except ImportError:  # mcp 1.x: the same decorator API under its old name
 from .remote import SshTransport, Transport, TransportError
 
 TOOL_NAMES = ("queue", "live", "finished", "job", "results", "draw", "prepared", "deadlines",
-              "log", "report", "slurm_job", "storage", "checkout")
+              "log", "report", "slurm_job", "storage", "checkout", "energy")
 
 INSTRUCTIONS = (
     "Read-only view of the ATR training programme on UBELIX (Slurm) and asteraix "
@@ -235,5 +235,16 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
         behind counts, dirty files. submit.sh refuses a checkout that is behind or
         dirty, and a job runs the code of this HEAD."""
         return ask("checkout")
+
+    @server.tool()
+    def energy() -> dict:
+        """The programme's running energy counter over both stores (#335): measured
+        watt-hours per host and in total, the records whose GPU stage ran without
+        a measurement (the hole in the count — the sum is a floor), the share
+        recovered from preempted or requeued attempts (#184's lever), and any
+        record that shared a card. Watt-hours only, GPU only, no PUE; carbon is
+        computed by atr_training.footprint with the factor beside the result.
+        The daily report's energy line reads from here."""
+        return ask("energy")
 
     return server

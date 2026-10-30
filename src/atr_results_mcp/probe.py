@@ -610,6 +610,53 @@ def runtime_of(record: Dict[str, Any]) -> Dict[str, Any]:
                                      "recorded before #206, or the stage never ran"}
 
 
+GPU_STAGES = ("train", "test")
+#: When the power sampler reached the job records (#184, PR of 13.10.2026). A
+#: record whose GPU stage ran before this is an expected hole; one after it is a
+#: defect to look at — the daily line counts the two apart.
+SAMPLER_SINCE = "2026-10-13T00:00:00Z"
+
+
+def energy_of(record: Dict[str, Any]) -> Dict[str, Any]:
+    """The measured energy of a record, as the sampler wrote it (#184, #335).
+
+    Watt-hours, never carbon: the conversion lives in ``atr_training.footprint``
+    with its factors beside the result, and the MCP hands out measurements.
+
+    ``measured`` is the field a reader must look at before the number. A record
+    written before the sampler, or one whose card answered ``[N/A]``, carries no
+    ``energy_wh`` at all — and a 0 there is "not measured", never "no energy"
+    (#165). ``gpu_stage_ran`` says whether a train or test stage started, so an
+    unmeasured record with a GPU stage is a hole in the count, while a record
+    that never reached a card is not.
+    """
+    progress = record.get("progress") or {}
+    wh = progress.get("energy_wh") or 0.0
+    per_stage: Dict[str, Optional[float]] = {}
+    ran = False
+    gpu_started: Optional[str] = None
+    for stage in record.get("stages") or []:
+        if stage.get("name") not in GPU_STAGES:
+            continue
+        if stage.get("started_at"):
+            ran = True
+            started = str(stage["started_at"])
+            gpu_started = started if gpu_started is None or started < gpu_started else gpu_started
+        cards = stage.get("energy_wh")
+        per_stage[stage["name"]] = (round(sum(cards.values()), 2)
+                                    if isinstance(cards, dict) and cards else None)
+    return {
+        "energy_wh": round(float(wh), 2) if wh else None,
+        "energy_recovered_wh": round(float(progress.get("energy_recovered_wh") or 0.0), 2),
+        "gpu_hours": round(float(progress.get("gpu_hours") or 0.0), 3) or None,
+        "gpu_shared": bool(progress.get("gpu_shared")),
+        "measured": bool(wh),
+        "gpu_stage_ran": ran,
+        "gpu_stage_since_sampler": bool(gpu_started and gpu_started >= SAMPLER_SINCE),
+        "per_stage_wh": per_stage,
+    }
+
+
 def summarise_job(job_dir: Path, record: Dict[str, Any], with_draw: bool = True) -> Dict[str, Any]:
     request = record.get("request") or {}
     params = _params(record)
@@ -658,6 +705,9 @@ def summarise_job(job_dir: Path, record: Dict[str, Any], with_draw: bool = True)
         # Oktober-Korpus 3173 — 28 % weniger Trainingszeilen bei identischer
         # Spezifikation, drei Wochen unbemerkt (#98, gefunden 14.10.2026).
         "heldout": _heldout_of(record),
+        # Watt-hours as measured, with `measured` beside them: an absent figure is
+        # a record from before the sampler, not a run that drew nothing (#335).
+        "energy": energy_of(record),
         "store": record.get("_store"),
         "metrics": {k: metrics.get(k) for k in
                     ("cer", "wer", "length_ratio", "truncated_cer", "samples",
@@ -1317,6 +1367,11 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
             "reserved_pages": summary["heldout"]["reserved_pages"],
             "heldout_fp": summary["heldout"]["fingerprint"],
             "runtime": summary["runtime"]["text"],
+            "energy_wh": summary["energy"]["energy_wh"],
+            "energy_recovered_wh": summary["energy"]["energy_recovered_wh"],
+            "gpu_hours": summary["energy"]["gpu_hours"],
+            "gpu_shared": summary["energy"]["gpu_shared"],
+            "energy_measured": summary["energy"]["measured"],
         })
     rows.sort(key=lambda r: (r["finished_cest"] or "", r["id"]))
     return {"jobs_root": str(paths.jobs_root), "stores": store_states(paths), "rows": rows,
@@ -1330,7 +1385,93 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
                     "says which machine trained the row; runtime says in which "
                     "image and transformers the number was measured — 'unknown' "
                     "on every record from before 22.10.2026, which is not 'no "
-                    "container' (#206)"}
+                    "container' (#206). energy_wh is what the sampler measured "
+                    "over every stage and attempt (#184); energy_measured False "
+                    "with a finished row is a record from before the sampler, not "
+                    "a run that drew nothing"}
+
+
+def energy(paths: Paths) -> Dict[str, Any]:
+    """The programme's running counter: measured watt-hours over both stores (#335).
+
+    What the tutorial calls tracking before reducing. Three numbers matter more
+    than the sum, and each has its own field: the records whose GPU stage ran
+    **without** a measurement (the hole in the count — a sum over the rest is a
+    floor), the share recovered from attempts that were preempted or requeued
+    before their stage ended (#184 names redone work as the lever), and whether
+    any record shared a card. Watt-hours only; carbon is ``footprint``'s job.
+    """
+    hosts: Dict[str, Dict[str, Any]] = {}
+    unmeasured: List[Dict[str, Any]] = []
+    before_sampler = 0
+    in_flight = 0
+    shared: List[str] = []
+    first: Optional[str] = None
+    last: Optional[str] = None
+    for job_dir, record in iter_jobs(paths):
+        e = energy_of(record)
+        host = record["host"]
+        tally = hosts.setdefault(host, {"energy_wh": 0.0, "energy_recovered_wh": 0.0,
+                                        "gpu_hours": 0.0, "records_measured": 0,
+                                        "records_unmeasured_with_gpu_stage": 0})
+        if e["measured"]:
+            tally["energy_wh"] += e["energy_wh"]
+            tally["energy_recovered_wh"] += e["energy_recovered_wh"]
+            tally["gpu_hours"] += e["gpu_hours"] or 0.0
+            tally["records_measured"] += 1
+            stamp = record.get("finished_at") or record.get("updated_at") or record.get("created_at")
+            if stamp:
+                first = stamp if first is None or stamp < first else first
+                last = stamp if last is None or stamp > last else last
+            if e["gpu_shared"]:
+                shared.append(record.get("id") or job_dir.name)
+        elif e["gpu_stage_ran"] and not e["gpu_stage_since_sampler"]:
+            before_sampler += 1
+        elif e["gpu_stage_ran"] and record.get("status") in LIVE_STATUSES:
+            # The ledger holds its energy until the stage ends: not a hole yet.
+            in_flight += 1
+        elif e["gpu_stage_ran"]:
+            tally["records_unmeasured_with_gpu_stage"] += 1
+            unmeasured.append({"id": record.get("id") or job_dir.name, "host": host,
+                               "status": record.get("status"),
+                               "finished_cest": utc_to_cest(record.get("finished_at"))})
+    for tally in hosts.values():
+        for key in ("energy_wh", "energy_recovered_wh"):
+            tally[key] = round(tally[key], 2)
+        tally["gpu_hours"] = round(tally["gpu_hours"], 2)
+        tally["kwh"] = round(tally["energy_wh"] / 1000.0, 3)
+    total_wh = sum(t["energy_wh"] for t in hosts.values())
+    recovered = sum(t["energy_recovered_wh"] for t in hosts.values())
+    measured = sum(t["records_measured"] for t in hosts.values())
+    return {
+        "stores": store_states(paths),
+        "hosts": hosts,
+        "total": {"energy_wh": round(total_wh, 2), "kwh": round(total_wh / 1000.0, 3),
+                  "energy_recovered_wh": round(recovered, 2),
+                  "recovered_share": (round(recovered / total_wh, 4) if total_wh else None),
+                  "records_measured": measured,
+                  "records_unmeasured_with_gpu_stage": len(unmeasured),
+                  "records_before_sampler": before_sampler,
+                  "records_in_flight": in_flight,
+                  "sampler_since_cest": utc_to_cest(SAMPLER_SINCE),
+                  "first_measured_cest": utc_to_cest(first),
+                  "last_measured_cest": utc_to_cest(last)},
+        "unmeasured": unmeasured,
+        "shared_card": shared,
+        "note": "watt-hours as gpu.PeakSampler integrated nvidia-smi power.draw over "
+                "every stage and attempt (#184), GPU only, no CPU, no PUE: a floor. "
+                "A record in `unmeasured` ran a GPU stage since sampler_since_cest and "
+                "carries no figure (the card answered [N/A], or the run was started "
+                "outside the runner) — the sum does not cover it, which is not the "
+                "same as 0 Wh (#165); records_before_sampler ran before there was a "
+                "sampler and are expected holes; records_in_flight are still running "
+                "and their figure arrives when the stage ends. gpu_hours 0 is a record from before "
+                "28.10.2026, when card-hours were not kept. recovered_share is "
+                "the part of the energy that attempts spent before being preempted "
+                "or requeued, read back from the ledger; #184 names that redone work "
+                "as the lever. No carbon here: atr_training.footprint converts, with "
+                "the factor beside the result.",
+    }
 
 
 def draw(paths: Paths, job_id: str) -> Dict[str, Any]:
@@ -1723,6 +1864,8 @@ def dispatch(cmd: str, args: Dict[str, Any], run: Runner, paths: Paths) -> Dict[
                        base_model=args.get("base_model"))
     if cmd == "draw":
         return draw(paths, str(args["job_id"]))
+    if cmd == "energy":
+        return energy(paths)
     if cmd == "prepared":
         return prepared(paths)
     if cmd == "live":

@@ -1641,3 +1641,117 @@ def test_home_usage_that_could_not_be_measured_says_why(cluster):
     assert "df could not be read" in answer["home_why"] and "not canned" in answer["home_why"]
     measured = probe.deadlines(canned({"df": "fs 1 1 1 1% /\n"}), cluster)
     assert measured["home"]["use_percent"] == "1%" and measured["home_why"] is None
+
+
+# ── energy: the running counter, with its holes named (#335) ────────────────
+MEASURED = {"progress": {"artefact": None, "energy_wh": 2377.38, "energy_recovered_wh": 0.0,
+                         "gpu_hours": 6.2, "gpu_shared": False},
+            "stages": [{"name": "train", "status": "completed",
+                        "started_at": "2026-10-15T15:57:00Z", "finished_at": "2026-10-15T22:01:58Z",
+                        "energy_wh": {"gpu0": 2368.8}},
+                       {"name": "test", "status": "completed",
+                        "started_at": "2026-10-15T22:01:58Z", "finished_at": "2026-10-15T22:06:34Z",
+                        "energy_wh": {"gpu0": 8.58}}]}
+
+
+#: The Qwen3.5-27B arm: train stage ran on 13.10., nothing measured.
+UNMEASURED_OCTOBER = {"stages": [{"name": "train", "status": "completed",
+                                  "started_at": "2026-10-13T10:00:56Z",
+                                  "finished_at": "2026-10-14T07:24:02Z", "exit_code": 0}]}
+
+
+def test_job_and_results_carry_the_measured_energy_beside_the_cer(cluster):
+    """`energy_wh` sat in every record since #184 and no tool showed it — the
+    draft of #333 paired a 27B arm's kilowatt-hours with another arm's CER
+    because the only way to see the figure was ssh (#335)."""
+    write_job(cluster.scratch, "20261014T194417Z-ladder-med-qwen35-4b-v2", extra=MEASURED,
+              finished="2026-10-15T22:06:38Z")
+    summary = probe.job(cluster, "20261014T194417Z-ladder-med-qwen35-4b-v2")
+    assert summary["energy"] == {"energy_wh": 2377.38, "energy_recovered_wh": 0.0,
+                                 "gpu_hours": 6.2, "gpu_shared": False, "measured": True,
+                                 "gpu_stage_ran": True, "gpu_stage_since_sampler": True,
+                                 "per_stage_wh": {"train": 2368.8, "test": 8.58}}
+    [row] = probe.results(cluster)["rows"]
+    assert row["energy_wh"] == 2377.38 and row["energy_measured"] is True
+    assert row["gpu_hours"] == 6.2 and row["gpu_shared"] is False
+    assert "energy_wh" in probe.results(cluster)["note"]
+
+
+def test_a_record_before_the_sampler_reads_as_unmeasured_never_as_zero(cluster):
+    """The Qwen3.5-27B arm of the medieval ladder: train stage ran, no energy
+    field at all. Its row must say "not measured", and the counter must name
+    it as a hole rather than fold it into the sum as 0 Wh (#165)."""
+    write_job(cluster.scratch, "20261013T043436Z-ladder-med-qwen35-27b-v2",
+              finished="2026-10-14T07:32:59Z", extra=UNMEASURED_OCTOBER)
+    [row] = probe.results(cluster)["rows"]
+    assert row["energy_wh"] is None and row["energy_measured"] is False
+    summary = probe.job(cluster, "20261013T043436Z-ladder-med-qwen35-27b-v2")
+    assert summary["energy"]["measured"] is False
+    assert summary["energy"]["gpu_stage_ran"] is True
+    assert summary["energy"]["gpu_stage_since_sampler"] is True
+    assert summary["energy"]["per_stage_wh"] == {"train": None}
+
+
+def test_energy_counts_per_host_names_the_holes_and_the_recovered_share(cluster):
+    write_job(cluster.scratch, "20261014T194417Z-ladder-med-qwen35-4b-v2", extra=MEASURED,
+              finished="2026-10-15T22:06:38Z")
+    recovered = {"progress": {"artefact": None, "energy_wh": 4000.9, "energy_recovered_wh": 1000.0,
+                              "gpu_hours": 13.8, "gpu_shared": False},
+                 "stages": MEASURED["stages"]}
+    write_job(cluster.scratch, "20261019T180118Z-olmocr2-7b-page-px4m-native", extra=recovered,
+              finished="2026-10-24T12:33:23Z")
+    # the hole: a GPU stage ran, nothing measured
+    write_job(cluster.scratch, "20261013T043436Z-ladder-med-qwen35-27b-v2",
+              finished="2026-10-14T07:32:59Z", extra=UNMEASURED_OCTOBER)
+    # an expected hole: the GPU stage ran before there was a sampler (13.10.2026)
+    write_job(cluster.scratch, "20260930T211455Z-ladder-med-qwen35-9b",
+              finished="2026-10-02T10:00:00Z")
+    # not a hole yet: still training, its energy sits in the ledger until the stage ends
+    write_job(cluster.scratch, "20261029T133027Z-kurrent-page-v2", status="training",
+              stage="train", cer=None, finished=None, extra=UNMEASURED_OCTOBER)
+    # not a hole: never reached a card (prepare only, no train stage)
+    write_job(cluster.scratch, "20261020T000000Z-prepared-only", status="training",
+              stage="prepare", cer=None, stage_commit=None, finished=None)
+    # asteraix, a shared card
+    shared = {"progress": {"artefact": None, "energy_wh": 150.54, "gpu_shared": True},
+              "stages": MEASURED["stages"]}
+    write_job(cluster.share, "20261017T114213Z-throughput-qwen35-4b-a40", store="share",
+              host="asteraix", extra=shared, finished="2026-10-17T13:00:00Z")
+    answer = probe.energy(cluster)
+    assert answer["hosts"]["ubelix"] == {"energy_wh": 6378.28, "energy_recovered_wh": 1000.0,
+                                         "gpu_hours": 20.0, "records_measured": 2,
+                                         "records_unmeasured_with_gpu_stage": 1,
+                                         "kwh": 6.378}
+    assert answer["hosts"]["asteraix"]["energy_wh"] == 150.54
+    assert answer["hosts"]["asteraix"]["records_measured"] == 1
+    total = answer["total"]
+    assert total["energy_wh"] == pytest.approx(6528.82)
+    assert total["kwh"] == pytest.approx(6.529)
+    assert total["recovered_share"] == pytest.approx(1000.0 / 6528.82, abs=1e-4)
+    assert total["records_measured"] == 3
+    assert total["records_unmeasured_with_gpu_stage"] == 1
+    assert total["records_before_sampler"] == 1
+    assert total["records_in_flight"] == 1
+    assert total["sampler_since_cest"] == "2026-10-13 02:00 CEST"
+    # 22:06 UTC is 00:06 CEST the next day
+    assert total["first_measured_cest"] == "2026-10-16 00:06 CEST"
+    assert total["last_measured_cest"].startswith("2026-10-24 ")
+    assert [u["id"] for u in answer["unmeasured"]] == ["20261013T043436Z-ladder-med-qwen35-27b-v2"]
+    assert answer["shared_card"] == ["20261017T114213Z-throughput-qwen35-4b-a40"]
+    assert "floor" in answer["note"] and "No carbon" in answer["note"]
+    assert answer["stores"]["share"]["mounted"] is True
+
+
+def test_energy_with_an_absent_share_says_so_and_an_empty_store_is_no_sum(tmp_path):
+    paths = Paths(user="u", home=tmp_path / "home", scratch=tmp_path / "scratch",
+                  share=tmp_path / "not-mounted")
+    (paths.scratch / "runs" / "jobs").mkdir(parents=True)
+    answer = probe.energy(paths)
+    assert answer["total"]["energy_wh"] == 0.0 and answer["total"]["recovered_share"] is None
+    assert answer["total"]["records_measured"] == 0
+    assert answer["hosts"] == {}
+    assert answer["stores"]["share"]["mounted"] is False
+
+
+def test_energy_is_a_dispatchable_command(cluster):
+    assert probe.dispatch("energy", {}, canned({}), cluster)["total"]["records_measured"] == 0
