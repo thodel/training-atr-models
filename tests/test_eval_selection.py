@@ -22,7 +22,6 @@ def ev(monkeypatch):
                         types.SimpleNamespace(set_seed=lambda seed: None))
     from vlm_train_svc import evaluate_qlora as module
     monkeypatch.setattr(module, "load_model", lambda args: (None, None))
-    monkeypatch.setattr(module, "_looks_truncated", lambda text, processor, cap: False)
     return module
 
 
@@ -37,7 +36,7 @@ def write_val(tmp_path, rows):
 
 def run(ev, tmp_path, val, monkeypatch, max_samples, transcribe=None):
     monkeypatch.setattr(ev, "transcribe",
-                        transcribe or (lambda *a, **k: "prediction"))
+                        transcribe or (lambda *a, **k: ("prediction", False)))
     report = tmp_path / "report.json"
     ev.main(["--no-adapter", "--val-jsonl", str(val), "--report", str(report),
              "--base-model", "Qwen/Qwen3-VL-8B-Instruct", "--data-root", str(tmp_path),
@@ -57,7 +56,7 @@ def test_the_first_n_pages_are_not_what_gets_scored(ev, tmp_path, monkeypatch):
 
     scored: list[str] = []
     report = run(ev, tmp_path, val, monkeypatch, max_samples=6,
-                 transcribe=lambda model, processor, path, *a, **k: scored.append(path.name) or "x")
+                 transcribe=lambda model, processor, path, *a, **k: scored.append(path.name) or ("x", False))
 
     assert len(scored) == 6
     assert scored != [r["image"] for r in rows[:6]]
@@ -83,7 +82,7 @@ def test_the_same_seed_scores_the_same_pages_so_a_baseline_is_comparable(
     def scored_images():
         seen: list[str] = []
         run(ev, tmp_path, val, monkeypatch, max_samples=5,
-            transcribe=lambda model, processor, path, *a, **k: seen.append(path.name) or "x")
+            transcribe=lambda model, processor, path, *a, **k: seen.append(path.name) or ("x", False))
         return seen
 
     assert scored_images() == scored_images()
@@ -97,7 +96,7 @@ def test_the_report_breaks_the_cer_down_by_source(ev, tmp_path, monkeypatch):
     val = write_val(tmp_path, rows)
     report = run(ev, tmp_path, val, monkeypatch, max_samples=200,
                  transcribe=lambda model, processor, path, *a, **k:
-                     "gut" if path.name.startswith("a") else "zzz")
+                     ("gut" if path.name.startswith("a") else "zzz", False))
 
     assert report["by_source"]["missiven"]["cer"] == 0.0
     assert report["by_source"]["ratsbuecher"]["cer"] == 1.0

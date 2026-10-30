@@ -43,11 +43,11 @@ def run(tmp_path, monkeypatch):
 
     def fake_transcribe(model, processor, image_path, prompt, max_new_tokens, system=None, **kwargs):
         seen.append({"prompt": prompt, "system": system})
-        return next(outputs)
+        out = next(outputs)
+        return out, out == CUT
 
     monkeypatch.setattr(ev, "load_model", lambda args: (None, None))
     monkeypatch.setattr(ev, "transcribe", fake_transcribe)
-    monkeypatch.setattr(ev, "_looks_truncated", lambda text, processor, cap: text == CUT)
 
     report = tmp_path / "report.json"
     ev.main(["--no-adapter", "--val-jsonl", str(val), "--report", str(report),
@@ -86,6 +86,8 @@ def test_the_raw_xml_is_kept_beside_the_report(run):
     _, _, path = run
     raw = [json.loads(line) for line in path.with_suffix(".raw.jsonl").read_text().splitlines()]
     assert [r["raw"] for r in raw] == [GOOD, CUT]
+    # Per page, so a later reading can tell which pages a larger cap would change.
+    assert [r["at_cap"] for r in raw] == [False, True]
 
 
 def test_the_report_names_its_template_and_resolution(run):
@@ -114,11 +116,11 @@ def test_the_plain_template_scores_exactly_as_before(tmp_path, monkeypatch):
 
     def fake_transcribe(model, processor, image_path, prompt, max_new_tokens, system=None, **kwargs):
         seen.append((prompt, system))
-        return "<HistoricalDocument><Page><Body><Line>abc</Line></Body></Page></HistoricalDocument>"
+        return ("<HistoricalDocument><Page><Body><Line>abc</Line></Body></Page></HistoricalDocument>",
+                False)
 
     monkeypatch.setattr(ev, "load_model", lambda args: (None, None))
     monkeypatch.setattr(ev, "transcribe", fake_transcribe)
-    monkeypatch.setattr(ev, "_looks_truncated", lambda *a: False)
     out = tmp_path / "r.json"
     ev.main(["--adapter", "/ckpt", "--val-jsonl", str(val), "--report", str(out),
              "--base-model", "Qwen/Qwen3-VL-8B-Instruct", "--data-root", str(tmp_path),
