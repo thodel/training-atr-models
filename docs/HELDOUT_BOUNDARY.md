@@ -265,7 +265,8 @@ own pixel budget and with its own prompt. All four reports say `checked: true`
 and `shared: []`: no document of the draw is among the 1,180 the corpus trained
 on. Read off UBELIX (`eval_report.german-medieval-v1-test.json`): the two
 `px4m-native` arms on 26.10.2026, `px4m` and the baseline on 28.10.2026 (Slurm
-20227752/20227753 on code `a8df9fd`). All four read with `max_new_tokens=1536`.
+20227752/20227753 on code `a8df9fd`). All four read with `max_new_tokens=1536`;
+the same four read again at 3072 further down.
 
 | arm | pixels, prompt | validation CER (164 pages, drawn by page) | **held-out CER** | `truncated_cer` | `length_ratio` | at the token cap |
 |---|---|---:|---:|---:|---:|---:|
@@ -298,6 +299,54 @@ job's `eval_report.german-medieval-v1-test.raw.jsonl`.
 
 Under `convention_normalized` the held-out CERs are, in table order, 0.3433,
 0.3464, 0.3782 and 0.4329.
+
+**The same four at `max_new_tokens=3072`.** Same draw, same pixels and
+prompts, only the token cap doubled (`--max-new-tokens 3072`, #322). Read off
+UBELIX on 29.10.2026 (`eval_report.german-medieval-v1-test-cap3072.json`,
+Slurm 20390099–20390102 on code `57032f2`, 4 h 25 to 4 h 51 each); all four
+again `checked: true`, `shared: []` against the 1,180 training documents.
+
+| arm | held-out CER at 1536 | **held-out CER at 3072** | `truncated_cer` | `length_ratio` | at the token cap | `convention_normalized` |
+|---|---:|---:|---:|---:|---:|---:|
+| `px4m-native` | 0.3674 | **0.3565** | 0.3122 | 0.987 | 15 of 695 | 0.3257 |
+| `px4m` | 0.3697 | **0.3594** | 0.3155 | 0.984 | 9 of 695 | 0.3312 |
+| `px4m-native-r16` | 0.4186 | **0.4427** | 0.3485 | 1.040 | 23 of 695 | 0.3758 |
+| `medieval-german-page-v1` (baseline) | 0.4630 | **0.5093** | 0.4016 | 1.022 | 33 of 695 | 0.4647 |
+
+Four readings:
+
+* **The cap only lets pages go on.** 47, 46, 60 and 60 pages (table order)
+  read differently at 3072, and every one of them continues its 1536 reading;
+  no other page changed. That is more than the 38, 29, 37 and 47 "at the token
+  cap" of the 1536 table: the count re-tokenises the decoded text
+  (`_looks_truncated`, `engines/vlm_train_svc/evaluate_qlora.py:145`), which
+  comes out shorter than what was generated, so the column is a lower bound
+  at either cap.
+* **The two arms that stop gain about a point; the two that do not lose.**
+  `px4m-native` −1.1 points [−3.5, +1.3], better on 31 documents and worse on
+  13; `px4m` −1.0 [−3.4, +1.3], 31 against 12. `px4m-native-r16` +2.4
+  [−0.2, +5.1], 28 against 26; the baseline +4.6 [+1.8, +8.0], 25 against 29:
+  with more room their runaway pages write more, and `length_ratio` goes past
+  1. Both gains have intervals that include zero; the baseline's loss does
+  not.
+  `truncated_cer` falls for all four (3.5, 3.2, 3.0 and 1.8 points), so the
+  reading itself is no worse — what the cap changes is how much is written
+  past the page.
+* **The knobs keep their sign and grow where stopping differs.** O1, baseline
+  to `px4m`: −15.0 points [−20.8, −10.0], better on 172 of 200 documents
+  (−9.3 at 1536). O2, `px4m` to `px4m-native`: −0.3 [−3.8, +3.2], 96 better,
+  101 worse — still nothing. O5, r16: +8.6 [+4.6, +12.9], worse on 176
+  (+5.1 at 1536). O1 and O5 grow because the arm on the worse side of each is
+  one that does not stop; on `truncated_cer` they move far less (O1 −7.2 to
+  −8.6, O5 +3.1 to +3.6).
+* **The best held-out reading of the medieval set is now `px4m-native` at
+  3072, 0.3565**, tied with `px4m` (0.3594) as before. 1536 is too short for
+  about one page in fifteen of this draw; for the arms that stop, 3072 does
+  no harm.
+
+Intervals as above: paired, over the 200 documents, 2,000 resamples, seed 42,
+from each job's `eval_report.german-medieval-v1-test-cap3072.raw.jsonl`
+against the 1536 readings.
 
 **The two XVI–XIX page arms on the same 695 pages** (way a of #301, read off
 UBELIX on 27.10.2026, Slurm 20187794/20187795 on code `448bef6`). Both reports
