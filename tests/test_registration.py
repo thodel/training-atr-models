@@ -65,6 +65,9 @@ EVERY_FIELD = {
     #: vLLM-only (the gateway refuses them on another engine), which is why the
     #: tests that use EVERY_FIELD register a vllm model.
     "vllm_venv": "vllm-next", "max_num_seqs": 4,
+    #: Line level only (the gateway refuses them at page level), so EVERY_FIELD
+    #: registers a line model.
+    "level": "line", "lines_per_crop": 4, "crop_scale": 2.0,
     "vllm_args": ["--chat-template-content-format", "string"], "startup_timeout_s": 900,
     "training_datasets": ["10.5281/zenodo.1234567"],
     "description": "Qwen3-VL fine-tuned on Thun missives",
@@ -792,7 +795,7 @@ def test_a_registration_with_a_venv_can_be_written_and_then_enabled(root: Path):
 
 
 def test_the_pinned_field_list_is_the_one_the_gateway_has_today():
-    """Both sides at 25 fields, and the fixture says which commit it was copied
+    """Both sides at 29 fields, and the fixture says which commit it was copied
     from — the failure mode this pin exists for is two stale copies agreeing.
 
     The copy from 21.09. had 22 and was a month behind when #259 refreshed it:
@@ -801,9 +804,29 @@ def test_the_pinned_field_list_is_the_one_the_gateway_has_today():
     is for — nothing here compares a fixture against the gateway, only against
     :class:`Registration`."""
     fields = gateway_fields()
-    assert len(fields) == 27
+    assert len(fields) == 29
     assert fields[fields.index("prompt") + 1:fields.index("training_datasets")] == [
         "vllm_venv", "max_num_seqs", "vllm_args", "startup_timeout_s", "weights_digest"]
+    assert fields[fields.index("max_pixels") + 1:fields.index("residency")] == [
+        "lines_per_crop", "crop_scale"]
+
+
+def test_the_strip_fields_follow_the_gateways_rules():
+    """``lines_per_crop`` and ``crop_scale`` (serving bdbecf7, #315/#317): line
+    level and vLLM only, within the gateway's bounds — refused here, before a
+    registration the gateway would not read is written."""
+    base = {"id": "apertus-strip-v1", "local_path": "/mnt/share/trained/apertus-strip-v1",
+            "engine": "vllm", "level": "line"}
+    ok = Registration.model_validate({**base, "lines_per_crop": 4, "crop_scale": 2.0})
+    assert (ok.lines_per_crop, ok.crop_scale) == (4, 2.0)
+    for bad, why in (({"level": "page", "lines_per_crop": 4}, "only meaningful at level line"),
+                     ({"level": "page", "crop_scale": 2.0}, "only meaningful at level line"),
+                     ({"engine": "kraken", "crop_scale": 2.0}, "only served for engine vllm"),
+                     ({"lines_per_crop": 1}, "greater than or equal to 2"),
+                     ({"crop_scale": 1.0}, "greater than 1"),
+                     ({"crop_scale": 4.5}, "less than or equal to 4")):
+        with pytest.raises(ValueError, match=why):
+            Registration.model_validate({**base, **bad})
 
 
 def test_the_two_launch_fields_follow_the_gateways_rules(tmp_path):

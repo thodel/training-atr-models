@@ -1,5 +1,5 @@
 # The fields of the gateway's ModelSpec, in its order: serving-atr-inference
-# src/atr_serving/registry.py at a617604 (main, 2026-10-27).
+# src/atr_serving/registry.py at bdbecf7 (main, 2026-10-30).
 #
 # Written by scripts/refresh_gateway_fixtures.py — do not edit by hand; re-run it.
 # tests/test_registration.py then says what atr_training.registration.Registration
@@ -23,6 +23,8 @@ vram_mb
 vram_measured
 max_new_tokens
 max_pixels
+lines_per_crop
+crop_scale
 residency
 gpu_affinity
 prompt

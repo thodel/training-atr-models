@@ -227,6 +227,12 @@ class Registration(BaseModel):
     #: the gateway. The VLM runner writes the budget the job trained at, because
     #: serving at another scale is a silent distribution shift (serving#140).
     max_pixels: int | None = None
+    #: Line level and vLLM only: read this many consecutive lines as one strip
+    #: (serving ``ModelSpec.lines_per_crop``, training-atr-models#315/#317).
+    lines_per_crop: int | None = Field(default=None, ge=2)
+    #: Line level and vLLM only: enlarge every crop this many times before it is
+    #: sent (serving ``ModelSpec.crop_scale``).
+    crop_scale: float | None = Field(default=None, gt=1.0, le=4.0)
     residency: Literal["pinned", "lazy"] = "lazy"
     gpu_affinity: int | None = None
     prompt: str | None = None
@@ -289,6 +295,12 @@ class Registration(BaseModel):
             raise ValueError(
                 f"local_path {self.local_path!r} is relative. It must be an absolute path "
                 "under the shared mount, valid on both machines.")
+        # The gateway's own rule for the strip fields (ModelSpec._check_strips).
+        for field in ("lines_per_crop", "crop_scale"):
+            if getattr(self, field) is not None and self.level != "line":
+                raise ValueError(f"model {self.id!r}: {field} is only meaningful at level line")
+            if getattr(self, field) is not None and self.engine != "vllm":
+                raise ValueError(f"model {self.id!r}: {field} is only served for engine vllm")
         # The gateway's own rules for the two vLLM launch fields
         # (ModelSpec._check_vllm_venv). Kept here so a registration this repo
         # writes cannot be one the gateway refuses to read.
