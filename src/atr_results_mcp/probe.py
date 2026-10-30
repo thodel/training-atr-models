@@ -610,7 +610,7 @@ def runtime_of(record: Dict[str, Any]) -> Dict[str, Any]:
                                      "recorded before #206, or the stage never ran"}
 
 
-GPU_STAGES = ("train", "test")
+CARD_STAGES = ("train", "test")
 #: When the power sampler reached the job records (#184, PR of 13.10.2026). A
 #: record whose GPU stage ran before this is an expected hole; one after it is a
 #: defect to look at — the daily line counts the two apart.
@@ -636,7 +636,7 @@ def energy_of(record: Dict[str, Any]) -> Dict[str, Any]:
     ran = False
     gpu_started: Optional[str] = None
     for stage in record.get("stages") or []:
-        if stage.get("name") not in GPU_STAGES:
+        if stage.get("name") not in CARD_STAGES:
             continue
         if stage.get("started_at"):
             ran = True
