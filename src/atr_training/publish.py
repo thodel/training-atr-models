@@ -538,6 +538,9 @@ def _frontmatter(model: TrainedModel, licence: str | None) -> str:
                     "metrics": result_metrics,
                 }],
             }]
+    co2 = _co2_frontmatter(model)
+    if co2 is not None:
+        header["co2_eq_emissions"] = co2
     body = yaml.safe_dump(header, sort_keys=False, allow_unicode=True).rstrip()
     return f"---\n{body}\n---"
 
@@ -611,6 +614,62 @@ def _corpus_defects(model: TrainedModel) -> list[str]:
     return lines
 
 
+def _progress(model: TrainedModel) -> dict[str, Any]:
+    progress = model.metadata.get("progress") or {}
+    return progress if isinstance(progress, dict) else {}
+
+
+def _footprint(model: TrainedModel):
+    """The run's :class:`~atr_training.footprint.Footprint`, or None when no
+    wattage was measured — a zero is "not read", never "drew nothing" (#165)."""
+    from atr_training.footprint import from_energy
+
+    progress = _progress(model)
+    energy_wh = progress.get("energy_wh")
+    if not isinstance(energy_wh, (int, float)) or energy_wh <= 0:
+        return None
+    gpu_hours = progress.get("gpu_hours")
+    return from_energy(float(energy_wh), shared=bool(progress.get("gpu_shared")),
+                       gpu_hours=(float(gpu_hours)
+                                  if isinstance(gpu_hours, (int, float)) else 0.0))
+
+
+def _co2_frontmatter(model: TrainedModel) -> dict[str, Any] | None:
+    """The hub's ``co2_eq_emissions`` block (#330), or None for an unmeasured run.
+
+    One number is all the schema takes, and it is the **location-based** one:
+    the hub defines the field by the grid where the compute ran, which is what
+    CodeCarbon and every other card on the hub report. The market-based figure
+    would be unlike every neighbour and happens to be the flattering one; it
+    stays in the prose, beside this one. The factor rides in ``source`` so the
+    number can be recomputed after a correction to the factor (#336).
+
+    ``hardware_used`` says what the record knows. The card model is not in it,
+    and a guessed "H100" would be a claim nobody measured.
+    """
+    from atr_training.footprint import GRID_FACTOR_DESCRIPTION, GRID_FACTOR_G_PER_KWH
+
+    fp = _footprint(model)
+    if fp is None:
+        return None
+    progress = _progress(model)
+    where = ("UBELIX, the HPC cluster of the University of Bern"
+             if progress.get("slurm_job_id") else "a GPU server of the University of Bern")
+    hardware = f"NVIDIA GPU(s) on {where}; card model not recorded"
+    if fp.gpu_hours > 0:
+        hardware += f"; {fp.gpu_hours:.1f} card-hours"
+    return {
+        "emissions": round(fp.gco2e_grid, 1),
+        "source": (f"measured GPU draw (nvidia-smi power.draw, sampled every 2 s "
+                   f"during every attempt), {fp.kwh:.3f} kWh × "
+                   f"{GRID_FACTOR_G_PER_KWH:.0f} g CO2e/kWh ({GRID_FACTOR_DESCRIPTION}); "
+                   "GPU only, no PUE — a floor; see 'Energy and carbon' on this card"),
+        "training_type": "fine-tuning" if model.base_model else "pre-training",
+        "geographical_location": "Bern, Switzerland",
+        "hardware_used": hardware,
+    }
+
+
 def _energy_section(model: TrainedModel) -> list[str]:
     """Energy drawn, carbon computed, and the acknowledgement UBELIX asks for (#184).
 
@@ -621,7 +680,7 @@ def _energy_section(model: TrainedModel) -> list[str]:
 
     Both halves of the dual report appear. Procuring certified renewable
     electricity is a market instrument, and the GHG Protocol asks for the grid
-    figure beside the supplier's — here about five times larger. Printing only the
+    figure beside the supplier's — here about six times larger. Printing only the
     flattering one would be the kind of number this project does not publish.
 
     The cluster sentence is not decoration: using UBELIX comes with the condition
@@ -629,22 +688,18 @@ def _energy_section(model: TrainedModel) -> list[str]:
     job id, which is the one signal that cannot be true off the cluster.
     """
     from atr_training.footprint import (
-        GRID_FACTOR_G_PER_KWH, MIX_DESCRIPTION, MIX_SOURCE, UBELIX_CREDIT,
-        from_energy,
+        FACTOR_DESCRIPTION, FACTOR_SOURCE, GRID_FACTOR_DESCRIPTION,
+        GRID_FACTOR_G_PER_KWH, GRID_FACTOR_SOURCE, MIX_DESCRIPTION, MIX_SOURCE,
+        UBELIX_CREDIT,
     )
 
-    progress = model.metadata.get("progress") or {}
-    if not isinstance(progress, dict):
-        progress = {}
+    progress = _progress(model)
     energy_wh = progress.get("energy_wh")
     slurm = progress.get("slurm_job_id")
 
     lines: list[str] = []
-    if isinstance(energy_wh, (int, float)) and energy_wh > 0:
-        gpu_hours = progress.get("gpu_hours")
-        fp = from_energy(float(energy_wh), shared=bool(progress.get("gpu_shared")),
-                         gpu_hours=(float(gpu_hours)
-                                    if isinstance(gpu_hours, (int, float)) else 0.0))
+    fp = _footprint(model)
+    if fp is not None:
         embodied = [
             f"| hardware manufacture (SCI's M) | {fp.embodied_g:.0f} g "
             f"over {fp.gpu_hours:.1f} card-hours at "
@@ -661,15 +716,20 @@ def _energy_section(model: TrainedModel) -> list[str]:
             f"| CO2e, market-based | **{fp.gco2e:.0f} g** "
             f"at {fp.factor_g_per_kwh:.0f} g/kWh |",
             f"| CO2e, location-based | {fp.gco2e_grid:.0f} g "
-            f"at {GRID_FACTOR_G_PER_KWH:.0f} g/kWh (Swiss consumer mix) |",
+            f"at {GRID_FACTOR_G_PER_KWH:.0f} g/kWh ({GRID_FACTOR_DESCRIPTION}) |",
             *embodied,
             "",
             f"Since 2016 the university has procured electricity from "
-            f"{MIX_DESCRIPTION} ([source]({MIX_SOURCE})), which is the "
-            f"market-based factor. The "
+            f"{MIX_DESCRIPTION} ([source]({MIX_SOURCE})). The market-based "
+            f"factor of {fp.factor_g_per_kwh:.0f} g/kWh is our choice for that "
+            f"procurement: {FACTOR_DESCRIPTION} ([source]({FACTOR_SOURCE})). The "
             "location-based figure is what the local grid mix would have cost and "
             "is reported beside it, as the GHG Protocol asks when a market "
-            "instrument is used.",
+            f"instrument is used; its factor is the {GRID_FACTOR_DESCRIPTION} "
+            f"([source]({GRID_FACTOR_SOURCE})), not the Swiss production mix of "
+            "about 32–35 g/kWh that country-level tools such as CodeCarbon apply "
+            "— the same run measured with one of those would read about a quarter "
+            "of the location-based figure above.",
             "",
             "**This is a floor.** It " + "; it ".join(fp.caveats()) + ".",
         ]

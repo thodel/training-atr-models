@@ -85,14 +85,47 @@ Qwen training draws:
 | A100 | 150–400 W | 1–3 kWh |
 | **total** | | **119–315 kWh** |
 
-At the factors `footprint` uses (#185) that is **2.4–6.3 kg CO2e market-based**
-(20 g/kWh, the university's renewable procurement) and **14–36 kg
-location-based** (115 g/kWh, Swiss consumer mix). PUE, CPUs and asteraix are
-not in it. The **measured** part, eight records since 13.10., is 24.0 kWh.
+At the factors `footprint` uses (#185, sources below) that is **2.4–6.3 kg CO2e
+market-based** (20 g/kWh, the university's renewable procurement) and
+**15–40 kg location-based** (127 g/kWh, Swiss consumer mix 2021–2023). PUE,
+CPUs and asteraix are not in it. The **measured** part, eight records since
+13.10., is 24.0 kWh.
 
 asteraix has no scheduler and so no `sacct`. Its runs are in the job store with
 a measured `energy_wh` where the runner ran them, and absent where a
 measurement was run by hand.
+
+## Where the factors come from (#336)
+
+Every factor on a card has a source and a named mix; a number without either
+cannot be corrected, only replaced. Until 30.10.2026 the grid factor was 115 g,
+"a round figure from published ranges". It is now read from a document.
+
+| factor | value | what it is | source |
+|---|---:|---|---|
+| location-based (`GRID_FACTOR_G_PER_KWH`) | **127 g CO2e/kWh** | Swiss **consumer mix** 2021–2023: domestic production plus commercial trade, hour by hour, at the low-voltage socket; the mix Swiss accounting rules (KBOB) prescribe when the product is unknown | Frischknecht (treeze) for the BFE, *Energieetikette für Personenwagen: Umweltkennwerte 2025 der Strom- und Treibstoffbereitstellung*, Bern, 4 June 2025, section 4.5.2 — [pubdb.bfe.admin.ch/…/12224](https://pubdb.bfe.admin.ch/de/publication/download/12224) |
+| market-based (`DEFAULT_FACTOR_G_PER_KWH`) | **20 g CO2e/kWh** | our choice for the university's procurement (100 % renewable: hydro, biomass, solar, predominantly Swiss — [klima.unibe.ch](https://klima.unibe.ch/betrieb/energie/index_ger.html)), anchored on the KBOB life-cycle factors and rounded **up** | treeze for KBOB/BAFU/AHB, *Umweltkennwerte und Primärenergiefaktoren von Energiesystemen*, 9 March 2022, Tab. 2.1 — [ecobau.ch/…/KBOB_BAFU_AHB_2022_Energiesysteme_v1_0.pdf](https://www.ecobau.ch/resources/uploads/Oekobilanzdaten/Hintergrundberichte/KBOB_BAFU_AHB_2022_Energiesysteme_v1_0.pdf) |
+
+The KBOB table (kg CO2-eq per MJ, at the building's socket) gives the pieces the
+20 g rounds from: hydro 0.003 (≈ 11 g/kWh), photovoltaics 0.013–0.015
+(47–54 g/kWh), the certified renewable product mix 0.004 (≈ 14 g/kWh), the
+certificate-based supplier mix 0.015 (54 g/kWh, 2018 basis). The BFE's 2025
+figure for the certificate-based supplier mix 2023 is 29 g CO2e/kWh. The
+university's portfolio is not that mix — it buys renewables only — but its
+biomass and solar shares are unpublished, so 20 is an anchored upper rounding
+of 14, not a measurement. It stays overridable (`ATR_TRAIN_CO2_G_PER_KWH`).
+
+**Why the grid factor is not 35 g.** The Swiss *production* mix — what the
+country's plants emit, imports excluded — is 0.009 kg/MJ (≈ 32 g/kWh) in the
+same KBOB table, and CodeCarbon's country file
+(`codecarbon/data/private_infra/global_energy_mix.json`, checked 30.10.2026)
+carries 34.843 g CO2e/kWh for Switzerland, year 2023, derived from production
+by source. Both are "location-based" in a loose sense and they differ from 127
+by about 3.6×. We use the consumer mix because the electricity is consumed in
+Bern, not produced there, and because it is what Swiss rules prescribe. The
+difference is a choice of mix, not a measurement: a run measured with
+CodeCarbon on the same card publishes about a quarter of our location-based
+figure, and the card says so.
 
 ## Method and framing
 
@@ -105,8 +138,8 @@ electricity: GPU draw is measured per stage and per attempt, carbon is computed
 from it with factors kept as parameters. It is reported twice, as the GHG
 Protocol Scope 2 Guidance asks when a renewable supply is claimed: market-based
 at 20 g CO2e/kWh (the university's 100 % renewable procurement; the factor is
-our order-of-magnitude choice, see `footprint.py`) and location-based at
-115 g CO2e/kWh (Swiss consumer mix).
+our anchored choice, see below) and location-based at 127 g CO2e/kWh (Swiss
+consumer mix 2021–2023).
 
 **Software Carbon Intensity (SCI, ISO/IEC 21031), Green Software Foundation.**
 SCI is a rate, `(E × I + M) per R`. Mapped onto this repository:
@@ -114,7 +147,7 @@ SCI is a rate, `(E × I + M) per R`. Mapped onto this repository:
 | term | here |
 |---|---|
 | E, energy | `progress.energy_wh`, × PUE once known (#185) |
-| I, carbon intensity | **115 g/kWh only**: SCI is location-based and does not let renewable purchases lower the score, so the 20 g figure belongs in the dual report, not in an SCI value |
+| I, carbon intensity | **127 g/kWh only**: SCI is location-based and does not let renewable purchases lower the score, so the 20 g figure belongs in the dual report, not in an SCI value |
 | M, embodied hardware | card-hours (`progress.gpu_hours`) × `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR`; **0 until that rate is set** (#185, point 4) |
 | R, functional unit | one trained model; for inference, 1 000 lines or pages transcribed |
 
@@ -128,8 +161,8 @@ attempts included, so the two halves of `E × I + M` cover the same work.
 Records written before 28.10.2026 carry 0 card-hours and keep the
 "not apportioned" caveat even after a rate is set. For scale only, not as a
 value: #185's own range of 1–2 t for an H100, over four years of continuous
-use, is 29–57 g per card-hour. At ~390 W and 115 g/kWh, operation costs about
-45 g per card-hour, so M is plausibly the same size as E × I and not a rounding
+use, is 29–57 g per card-hour. At ~390 W and 127 g/kWh, operation costs about
+50 g per card-hour, so M is plausibly the same size as E × I and not a rounding
 term. Both the embodied figure and the lifetime need a source before the rate
 is set; the card prints M and an "SCI per trained model" row once it is. R is the useful part: per-model and per-page rates
 make a 4B and a 27B run comparable on cost per CER point.
@@ -157,7 +190,8 @@ A sentence that can stand in a paper:
 > bottom-up figure: GPU power is sampled during every attempt of every run,
 > including preempted and requeued ones. Carbon is reported market-based
 > (20 g CO2e/kWh, the university's renewable procurement) and location-based
-> (115 g CO2e/kWh, Swiss consumer mix), following the GHG Protocol Scope 2
+> (127 g CO2e/kWh, Swiss consumer mix 2021–2023 per the Federal Office of
+> Energy), following the GHG Protocol Scope 2
 > Guidance, and per trained model following the structure of the Software
 > Carbon Intensity specification (ISO/IEC 21031) without its embodied term.
 > Hours not covered by measurement are estimated as in Green Algorithms
