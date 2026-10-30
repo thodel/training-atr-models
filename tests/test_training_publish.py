@@ -758,7 +758,7 @@ def test_the_card_states_kwh_and_both_carbon_figures(tmp_path: Path):
 
     assert "10.000 kWh" in card
     assert "200 g" in card, "10 kWh at 20 g/kWh, market-based"
-    assert "1150 g" in card, "and the location-based figure beside it"
+    assert "1270 g" in card, "and the location-based figure beside it (127 g/kWh)"
     assert "market-based" in card and "location-based" in card
     assert "klima.unibe.ch" in card, "the mix claim names its source"
 
@@ -785,8 +785,57 @@ def test_the_card_prints_m_and_the_sci_only_once_both_are_known(tmp_path: Path, 
     monkeypatch.setenv("ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR", "40")
     card = card_for(tmp_path / "b", meta)
     assert "1000 g over 25.0 card-hours at 40 g/card-hour" in card
-    assert "**2150 g**" in card, "1150 g location-based + 1000 g manufacture"
+    assert "**2270 g**" in card, "1270 g location-based + 1000 g manufacture"
     assert "not apportioned" not in card
+
+
+def test_the_card_names_both_mixes_with_their_sources(tmp_path: Path):
+    """A factor without a source is a guess dressed as a fact (#336). Both halves
+    of the dual report say which mix they are and link where the number is from,
+    and the card warns that a production-mix tool reads a quarter of ours."""
+    meta = {**KRAKEN_META, "progress": {"energy_wh": 10_000.0}}
+    card = card_for(tmp_path, meta)
+    assert "Swiss consumer mix 2021–2023" in card
+    assert "pubdb.bfe.admin.ch" in card, "the BFE figure the grid factor is read from"
+    assert "KBOB 2022" in card and "ecobau.ch" in card, "where the 20 g anchor comes from"
+    assert "production mix" in card and "CodeCarbon" in card
+
+
+def test_the_frontmatter_carries_the_hub_co2_block(tmp_path: Path):
+    """The hub reads ``co2_eq_emissions`` from the header and nothing from the
+    prose (#330). The number is the location-based one and equals the prose
+    figure — one computation, printed twice, not two paths that each agree with
+    themselves."""
+    meta = {**KRAKEN_META, "progress": {"energy_wh": 10_000.0, "gpu_hours": 25.0,
+                                        "slurm_job_id": "17545199"}}
+    card = card_for(tmp_path, meta)
+    co2 = frontmatter(card)["co2_eq_emissions"]
+    assert set(co2) == {"emissions", "source", "training_type",
+                        "geographical_location", "hardware_used"}
+    assert co2["emissions"] == 1270.0
+    assert f"| CO2e, location-based | {co2['emissions']:.0f} g" in card
+    assert "127 g CO2e/kWh" in co2["source"] and "10.000 kWh" in co2["source"]
+    assert "floor" in co2["source"]
+    assert co2["training_type"] == "pre-training", "kraken trains from scratch"
+    assert co2["geographical_location"] == "Bern, Switzerland"
+    assert "UBELIX" in co2["hardware_used"]
+    assert "card model not recorded" in co2["hardware_used"]
+    assert "25.0 card-hours" in co2["hardware_used"]
+
+
+def test_a_fine_tune_says_so_in_the_co2_block(tmp_path: Path):
+    meta = {**VLM_META, "progress": {"energy_wh": 500.0}}
+    card = card_for(tmp_path, meta, weights="adapter_model.safetensors")
+    co2 = frontmatter(card)["co2_eq_emissions"]
+    assert co2["training_type"] == "fine-tuning"
+    assert "UBELIX" not in co2["hardware_used"], "no Slurm id, so not the cluster"
+
+
+def test_an_unmeasured_run_has_no_co2_block(tmp_path: Path):
+    """0 Wh is "not read", not "emitted nothing": the hub must not be told 0 g."""
+    for progress in ({}, {"energy_wh": 0.0, "slurm_job_id": "17545199"}):
+        card = card_for(tmp_path / str(len(progress)), {**KRAKEN_META, "progress": progress})
+        assert "co2_eq_emissions" not in frontmatter(card)
 
 
 def test_a_shared_card_is_disclosed_on_the_card(tmp_path: Path):

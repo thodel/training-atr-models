@@ -15,9 +15,13 @@ from atr_training.contracts import Progress, StageRecord
 from atr_training.footprint import (
     DEFAULT_EMBODIED_G_PER_GPU_HOUR,
     DEFAULT_FACTOR_G_PER_KWH,
-    GRID_FACTOR_G_PER_KWH,
-    UBELIX_CREDIT,
+    FACTOR_DESCRIPTION,
+    FACTOR_SOURCE,
     Footprint,
+    GRID_FACTOR_DESCRIPTION,
+    GRID_FACTOR_G_PER_KWH,
+    GRID_FACTOR_SOURCE,
+    UBELIX_CREDIT,
     from_energy,
 )
 
@@ -163,6 +167,18 @@ def test_the_location_based_figure_is_the_larger_one():
     both = fp.both()
     assert "market-based" in both and "location-based" in both
     assert f"{GRID_FACTOR_G_PER_KWH:.0f} g/kWh" in both
+
+
+def test_both_factors_carry_a_source_and_a_named_mix():
+    """#336: the grid factor is the BFE's consumer mix 2021–2023, the market
+    factor an anchored choice; both say so, and the one-line report names the mix
+    rather than a bare 'Swiss consumer mix'."""
+    assert GRID_FACTOR_G_PER_KWH == 127.0
+    assert GRID_FACTOR_SOURCE.startswith("https://pubdb.bfe.admin.ch/")
+    assert "2021–2023" in GRID_FACTOR_DESCRIPTION
+    assert FACTOR_SOURCE.startswith("https://") and "KBOB" in FACTOR_SOURCE
+    assert "rounded up" in FACTOR_DESCRIPTION
+    assert GRID_FACTOR_DESCRIPTION in Footprint(energy_wh=1000.0).both()
 
 
 def test_a_zero_reading_is_not_a_measurement():

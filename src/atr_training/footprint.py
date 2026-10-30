@@ -12,20 +12,36 @@ and no emission factor, so the factor below is our choice and is marked as such.
 
 **100 % renewable is not 0 g.** Lifecycle emissions of renewable electricity are
 small but real: building and maintaining dams, growing and burning biomass,
-manufacturing panels. Published lifecycle figures put Swiss hydro at roughly
-4–12 g CO2e/kWh, roof photovoltaics at roughly 40–60, biomass higher and far more
-variable. A portfolio of the three lands in the low tens, which is why
-:data:`DEFAULT_FACTOR_G_PER_KWH` is 20 and why it is a *parameter*: it is an
-order-of-magnitude statement, not a measurement, and a run's record keeps the
-figure it used so a later correction can be applied without re-running anything.
+manufacturing panels. The KBOB life-cycle factors for Switzerland (treeze for
+KBOB/BAFU/AHB, 2022, Tab. 2.1, at the building's low-voltage socket) put hydro
+at about 11 g CO2e/kWh, rooftop photovoltaics at 47–54, and the certified
+renewable product mix sold in Switzerland at about 14. The university's portfolio
+adds biomass and solar to hydro in shares it does not publish, and both lie above
+hydro, which is why :data:`DEFAULT_FACTOR_G_PER_KWH` rounds *up* to 20 and why it
+is a *parameter*: an anchored choice, not a measurement, and a run's record keeps
+the figure it used so a later correction can be applied without re-running
+anything.
 
 **Market-based, and the other number is larger.** Procuring certified renewable
 electricity is a market instrument. The GHG Protocol asks for dual reporting when
 one is used: the supplier's factor (what we pay for) *and* the grid factor where
-the consumption physically happens (what the wires did). The Swiss consumer mix
-is roughly 100–130 g CO2e/kWh, so a location-based figure is about five times the
-market-based one. :func:`Footprint.both` reports both rather than letting the
-flattering one stand alone.
+the consumption physically happens (what the wires did). For the grid figure the
+Swiss federal rule (KBOB accounting rules, applied by the BFE) is the **consumer
+mix**: domestic production plus commercial imports and exports, hour by hour, at
+the low-voltage socket. The BFE's 2025 figures give 127 g CO2e/kWh for 2021–2023,
+so a location-based figure is about six times the market-based one.
+:func:`Footprint.both` reports both rather than letting the flattering one stand
+alone.
+
+**Which "location-based" — the mix has to be named.** The Swiss *production*
+mix (what the country's plants emit, imports excluded) is about 32 g CO2e/kWh in
+the same KBOB table, and CodeCarbon's country file carries 34.8 g for Switzerland
+(2023). A tool that takes the production mix publishes a figure a quarter of ours
+for the same run; the difference is the choice of mix, not a measurement. The
+consumer mix is used here because the electricity is *consumed* in Bern, not
+produced there, and because it is the figure Swiss accounting prescribes when
+the specific product is unknown — which, for the grid half of the dual report,
+it is by definition.
 
 **What is missing, and in which direction.** Three gaps, all of which make the
 number an *under*-estimate:
@@ -56,12 +72,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 #: g CO2e per kWh for the university's procured mix — 100 % renewable, mostly
-#: Swiss. A choice, not a measurement; see the module docstring. Overridable with
-#: ``ATR_TRAIN_CO2_G_PER_KWH`` so a documented correction needs no code change.
+#: Swiss. A choice anchored on :data:`FACTOR_SOURCE`, rounded up; see the module
+#: docstring. Overridable with ``ATR_TRAIN_CO2_G_PER_KWH`` so a documented
+#: correction needs no code change.
 DEFAULT_FACTOR_G_PER_KWH = 20.0
-#: The Swiss consumer grid mix, for the location-based half of the dual report.
-#: Also a round figure from published ranges (~100–130), not a cited point value.
-GRID_FACTOR_G_PER_KWH = 115.0
+#: What the market-based factor rests on, and why it is 20 and not 14.
+FACTOR_DESCRIPTION = ("certified renewable product mix, Switzerland, about 14 g "
+                      "CO2e/kWh in the KBOB 2022 life-cycle factors, rounded up "
+                      "for the biomass and solar shares of the university's "
+                      "portfolio")
+FACTOR_SOURCE = ("https://www.ecobau.ch/resources/uploads/Oekobilanzdaten/"
+                 "Hintergrundberichte/KBOB_BAFU_AHB_2022_Energiesysteme_v1_0.pdf")
+#: The Swiss consumer mix, for the location-based half of the dual report:
+#: domestic production plus commercial trade, 2021–2023, at the low-voltage
+#: socket, as the BFE publishes it (treeze for BFE, 4 June 2025, section 4.5.2).
+#: The production mix (imports excluded) is about 32 g in the KBOB 2022 table and
+#: 34.8 g in CodeCarbon's country file (2023); see the module docstring for why
+#: the consumer mix is the one used here.
+GRID_FACTOR_G_PER_KWH = 127.0
+GRID_FACTOR_DESCRIPTION = ("Swiss consumer mix 2021–2023, production plus "
+                           "commercial trade, at the low-voltage socket")
+GRID_FACTOR_SOURCE = "https://pubdb.bfe.admin.ch/de/publication/download/12224"
 #: 1.0 = the data centre's own overhead is NOT included, because nobody has given
 #: us its PUE. Overridable with ``ATR_TRAIN_PUE``.
 DEFAULT_PUE = 1.0
@@ -145,7 +176,7 @@ class Footprint:
         return (f"{self.gco2e:.0f} g CO2e market-based "
                 f"({self.factor_g_per_kwh:.0f} g/kWh, {MIX_DESCRIPTION}); "
                 f"{self.gco2e_grid:.0f} g location-based "
-                f"({GRID_FACTOR_G_PER_KWH:.0f} g/kWh, Swiss consumer mix)")
+                f"({GRID_FACTOR_G_PER_KWH:.0f} g/kWh, {GRID_FACTOR_DESCRIPTION})")
 
     def caveats(self) -> list[str]:
         """Why the figure is a floor, in the order that matters most."""
