@@ -142,21 +142,21 @@ def load_model(args):
     return model, processor
 
 
-def _looks_truncated(text: str, processor, cap: int) -> bool:
+def _ran_to_cap(new_ids: list[int], cap: int, stops: list[int]) -> bool:
     """Did generation stop because it hit the cap rather than because it was done?
 
-    Measured on the tokenizer rather than guessed from characters: the ratio of
-    characters to tokens varies with orthography, and early modern German runs
-    near two, which is exactly why 256 tokens looked like a plausible amount of
-    text while being half a page (#92).
+    Read off the ids ``generate`` returned: as many as the cap allowed, and the
+    last one not a stop token. Measured on tokens rather than guessed from
+    characters, because early modern German runs near two characters a token,
+    which is why 256 tokens looked like a plausible amount of text while being
+    half a page (#92).
+
+    Not re-measured from the decoded text, as it was until #301: the decoded
+    reading re-tokenises to fewer ids than were generated. On the held-out page
+    draw at 1536 that count reported 38, 29, 37 and 47 pages for the four olmOCR
+    arms, where 47, 46, 60 and 60 went on writing once the cap was doubled.
     """
-    if not text:
-        return False
-    try:
-        n = len(processor.tokenizer(text, add_special_tokens=False).input_ids)
-    except Exception:  # noqa: BLE001 — a diagnostic must never fail the run
-        return False
-    return n >= cap - 2
+    return bool(new_ids) and len(new_ids) >= cap and new_ids[-1] not in stops
 
 
 #: Tokens that end an assistant turn, across the families trained here. Looked up
@@ -369,7 +369,8 @@ def generation_prompt(processor, prompt: str, system: str | None,
 
 def transcribe(model, processor, image_path: Path, prompt: str, max_new_tokens: int,
                system: str | None = None, max_pixels: int | None = None,
-               prompt_from_training_render: bool = False) -> str:
+               prompt_from_training_render: bool = False) -> tuple[str, bool]:
+    """The model's reading of one image, and whether it ran to ``max_new_tokens``."""
     import torch
     from PIL import Image
 
@@ -392,8 +393,9 @@ def transcribe(model, processor, image_path: Path, prompt: str, max_new_tokens: 
     # Strip the prompt: decoding the whole sequence would score the instruction
     # as if the model had produced it.
     prompt_len = inputs["input_ids"].shape[1]
-    return processor.tokenizer.decode(
-        generated[0][prompt_len:], skip_special_tokens=True).strip()
+    new_ids = generated[0][prompt_len:].tolist()
+    text = processor.tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+    return text, _ran_to_cap(new_ids, max_new_tokens, stops)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -448,12 +450,11 @@ def main(argv: list[str] | None = None) -> int:
     elif kind_pixels:
         print(f"per-kind visual budget: {kind_pixels}", flush=True)
     for index, sample in enumerate(samples, 1):
-        raw = transcribe(model, processor, root / sample.image,
-                         args.prompt, args.max_new_tokens, system=system,
-                         max_pixels=kind_pixels.get(sample.source_type or "line"),
-                         prompt_from_training_render=args.prompt_from_training_render)
-        if _looks_truncated(raw, processor, args.max_new_tokens):
-            at_cap += 1
+        raw, capped = transcribe(model, processor, root / sample.image,
+                                 args.prompt, args.max_new_tokens, system=system,
+                                 max_pixels=kind_pixels.get(sample.source_type or "line"),
+                                 prompt_from_training_render=args.prompt_from_training_render)
+        at_cap += capped
         prediction = raw
         if churro:
             flat = flatten(raw)
@@ -461,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
             unparsed += not flat.parsed
             not_xml += not flat.was_xml
         pairs.append((prediction, sample.text))
-        raw_outputs.append({"image": sample.image, "raw": raw})
+        raw_outputs.append({"image": sample.image, "raw": raw, "at_cap": capped})
         if len(examples) < 10:  # a handful in the report, for eyeballing
             examples.append({"image": sample.image, "reference": sample.text,
                              "prediction": prediction})

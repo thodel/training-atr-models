@@ -318,10 +318,12 @@ Four readings:
 * **The cap only lets pages go on.** 47, 46, 60 and 60 pages (table order)
   read differently at 3072, and every one of them continues its 1536 reading;
   no other page changed. That is more than the 38, 29, 37 and 47 "at the token
-  cap" of the 1536 table: the count re-tokenises the decoded text
-  (`_looks_truncated`, `engines/vlm_train_svc/evaluate_qlora.py:145`), which
+  cap" of the 1536 table: the count re-tokenised the decoded text, which
   comes out shorter than what was generated, so the column is a lower bound
-  at either cap.
+  at either cap and in every report written before the fix. Since then the
+  count is read off the generated ids (`_ran_to_cap` in
+  `engines/vlm_train_svc/evaluate_qlora.py`), and each line of the
+  `.raw.jsonl` says `at_cap` for its page.
 * **The two arms that stop gain about a point; the two that do not lose.**
   `px4m-native` −1.1 points [−3.5, +1.3], better on 31 documents and worse on
   13; `px4m` −1.0 [−3.4, +1.3], 31 against 12. `px4m-native-r16` +2.4
