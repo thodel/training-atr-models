@@ -45,6 +45,14 @@ and the preemption record gives the rest (§4). **48 hours of expected
 wall-clock delay is the line.** Below it, UBELIX — an H100 is the faster card and
 the queue is the price. Above it, asteraix, if the run fits.
 
+What the size costs, so the choice is priced and not only placed: on the medieval
+line ladder **a CER point costs about 0.3 kWh up to 9B and 3.5 kWh above it**
+(4B → 9B: +0.60 kWh for −2.19 points; 9B → 27B: +5.63 kWh for −1.60; measured
+records, `FOOTPRINT.md` §"What a CER point costs", #333). That does not move the
+rule above — #138 settled that a footprint prices a default and does not shift it
+— but a 27B arm asked for "because it is better" is asked for at thirteen times the
+energy per point of the 9B step.
+
 ### Why 48 hours and not a day
 
 Because a chunked run pays the wait more than once. A run longer than the 24 h
