@@ -15,7 +15,7 @@ has cost so far.
 | attempts that were preempted or requeued | **yes, since this page** — before it, no | see below |
 | CPU, memory, storage, network | no | not metered; 3 022 CPU-hours against 163.5 GPU-hours on 08.10.2026 says it is not nothing |
 | data-centre overhead (PUE) | no | unknown, asked in #185; `ATR_TRAIN_PUE` takes it once known |
-| manufacture of the hardware | **not by default** | needs a lifetime and an embodied figure nobody here has fixed (#185, point 4); `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR` takes the quotient once known, see below |
+| manufacture of the hardware | **not by default** | sourced for H100 and A100, band 2.4–15 g per card-hour (see "What a card cost to make", #332); whether it is inside the boundary is #185, point 4; `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR` takes the rate |
 | runs started by hand outside the runner | no | measurement scripts, rescorings run outside a job |
 
 Every figure is therefore a **floor**, and the card says so in words.
@@ -218,13 +218,11 @@ expected lifetime in hours, apportioned by time as the SCI does. Card-hours
 are counted by the sampler over the same intervals as the energy, interrupted
 attempts included, so the two halves of `E × I + M` cover the same work.
 Records written before 28.10.2026 carry 0 card-hours and keep the
-"not apportioned" caveat even after a rate is set. For scale only, not as a
-value: #185's own range of 1–2 t for an H100, over four years of continuous
-use, is 29–57 g per card-hour. At ~390 W and 127 g/kWh, operation costs about
-50 g per card-hour, so M is plausibly the same size as E × I and not a rounding
-term. Both the embodied figure and the lifetime need a source before the rate
-is set; the card prints M and an "SCI per trained model" row once it is. R is the useful part: per-model and per-page rates
-make a 4B and a 27B run comparable on cost per CER point.
+"not apportioned" caveat even after a rate is set. The sources for the
+embodied figure and the band they give are under "What a card cost to make"
+below (#332); the card prints M and an "SCI per trained model" row once a rate
+is set. R is the useful part: per-model and per-page rates make a 4B and a 27B
+run comparable on cost per CER point.
 
 **Green Algorithms** (University of Cambridge; the computing calculator listed
 on SPARKHub). The same equation, runtime × power × PUE × carbon intensity, with
@@ -256,3 +254,60 @@ A sentence that can stand in a paper:
 > Hours not covered by measurement are estimated as in Green Algorithms
 > (runtime × assumed draw). CPU, memory, storage, data-centre overhead and
 > hardware manufacture are excluded, so all figures are lower bounds.
+
+## What a card cost to make (#332)
+
+The rate M is `C ÷ L`: the embodied emissions C of the card, with its share of
+the node it sits in, divided by its lifetime L in hours. Every hour on the card
+carries 1/L of its manufacture, whoever else uses it; idle hours are the data
+centre's, not a run's (the SCI convention; BLOOM instead divided by an 85 %
+occupancy, which would raise every rate below by 18 %).
+
+**The card**, cradle to gate:
+
+| card | C, kg CO2e | source |
+|---|---:|---|
+| H100 SXM | **164** | NVIDIA, *Product Carbon Footprint Summary for NVIDIA HGX H100* (2025): **1 312 kg for one HGX H100 baseboard with eight H100 SXM**, NVSwitch, thermals and board included; ISO 14067, critically reviewed, performed by WSP. 1 312 ÷ 8, as Morand et al. (2026) and Falk et al. (2025) divide it |
+| H100 | 225 | Morand, Névéol, Ligozat, *The Rising Unsustainability of AI Graphics Cards Production*, LIMITS '26, arXiv:2607.01258, Table 4: their own model of one H100 card; most of the gap to NVIDIA is the memory |
+| A100 SXM4 40 GB | **127.6** | Falk et al., *More than carbon: cradle-to-grave environmental impacts of GenAI training on the Nvidia A100 GPU*, arXiv:2509.00093 (v3, 18.12.2025); 141 kg with distribution and disposal |
+| A100 | 150 | Luccioni, Viguier, Ligozat, *Estimating the Carbon Footprint of BLOOM*, JMLR 24 (2023), §4.1: "a lower bound" from secondary data (Davy 2021), before any measured figure existed |
+| RTX 4090, A40 | not published | no vendor footprint; not looked up model by model. The band below applies the data-centre figures to their 60 h, which this page says rather than hides |
+
+**The node.** A card does not run without CPUs, memory, board, power supply and
+chassis. BLOOM took HPE's footprint of a ProLiant DL345 Gen10 Plus server,
+**about 2 500 kg without GPUs** (HPE 2021), as the proxy for an eight-GPU Apollo
+6500 node: **~312 kg per GPU slot**. How many cards share a UBELIX node is not
+recorded here; at four per node the share doubles.
+
+**Why #185 said 1–2 t per H100.** That is the size of the eight-card baseboard
+(1 312 kg), not of one card. Read as per-card, it put the rate at 29–57 g per
+card-hour, which this page printed "for scale" until 30.10.2026; per card it is
+six to twelve times lower.
+
+**The rate**, lifetime 4 years (35 040 h, the usual convention) to 6 years
+(52 560 h, what IDRIS told the BLOOM authors):
+
+| C | 4 years | 6 years |
+|---|---:|---:|
+| A100 card only, 127.6 kg | 3.6 g/card-h | 2.4 |
+| H100 card only, 164 kg | 4.7 | 3.1 |
+| H100 card + node share, 476 kg | **13.6** | 9.1 |
+| H100 (Morand) + node share, 538 kg | 15.3 | 10.2 |
+
+So **M is 2.4–15 g per card-hour**, against operation at ~390 W of 7.8 g
+market-based and 50 g location-based. Location-based, manufacture adds 5–30 %;
+market-based, it is about as large as the operation or twice as large. A
+footprint that reports only the 20 g figure leaves out what may be its largest
+term, which is why the card keeps the "not apportioned" caveat while M is 0.
+
+**For the programme since 01.09.2026** (793.5 card-hours, the baseline above):
+**1.9–12.2 kg CO2e** of manufacture, 10.8 kg at the H100-with-node rate over
+four years, beside 2.4–6.3 kg operation market-based and 15–40 kg
+location-based. For one run, the 4-bit Qwen3.5-4B line arm (6.08 h): 15–93 g,
+beside its 47 g market-based and 300 g location-based.
+
+**Setting it** is one line, `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR=13.6` (H100 with
+its node share over four years); the default stays 0 because whether
+manufacture is inside the boundary at all is #185's point 4, a decision and not
+a lookup. C is now known for the H100 and A100 and unknown for the RTX 4090 and
+A40, hence a band rather than a point.
