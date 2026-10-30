@@ -59,6 +59,59 @@ Qwen training sits at **~390 W regardless of size or quantisation**: the card is
 saturated, and a larger model takes longer rather than drawing more. olmOCR at a
 4 MP budget draws a quarter less per hour, but its steps take 2.4× as long as at the default budget (69 s against 29).
 
+## What a CER point costs on the ladder (#333)
+
+Both axes are measured — `progress.energy_wh` by the sampler, `metrics.cer` by
+the test stage — and `scripts/energy_per_cer.py` puts them side by side, under
+the rule the results MCP already enforces: two CER values compare only when they
+were **scored on the same draw** (md5 of `data/val_eval.jsonl`) **and trained on
+the same corpus** (`reserved_pages`, #98). Pairing goes by the record, not by the
+arm's name — the draft of #333 had put the Qwen3.8-27B arm's kilowatt-hours
+next to the Qwen3.5-27B arm's CER, and the Qwen3.5-27B record carries **no energy
+figure at all**: it ran before the sampler reached UBELIX. The Qwen3.8 arm stands
+in for it; §1f of `BASE_MODEL_LADDER.md` measured the two 0.09 points apart.
+
+The medieval line ladder (draw `9fe26816`, 200 lines, `reserved_pages` 3173, all
+H100 on UBELIX, 30.10.2026), **4-bit arms only** — the ladder in which only the
+size differs:
+
+| arm | job | train | kWh (job) | CER | ΔkWh | ΔCER | kWh per CER point |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Qwen3.5-4B, 4-bit | `20261014T194417Z-ladder-med-qwen35-4b-v2` | 6.08 h | 2.38 | 15.94 % | | | |
+| Qwen3.5-9B, 4-bit | `20261014T193118Z-ladder-med-qwen35-9b-v2` | 7.56 h | 2.97 | 13.75 % | +0.60 | −2.19 | **0.27** |
+| Qwen3.8-27B, 4-bit | `20261013T100004Z-ladder-med-qwen38-27b-v3` | 21.86 h | 8.61 | 12.15 % | +5.63 | −1.60 | **3.52** |
+
+**A CER point costs 0.3 kWh up to 9B and 3.5 kWh above it** — the 27B step pays
+thirteen times as much energy per point gained as the 9B step. That is the curve
+the tutorial draws (Wu et al. 2022: quality ∝ energy^−k with k ≈ 0.002–0.004),
+on our records. In carbon: 0.27 kWh is 34 g location-based, 3.52 kWh is 450 g —
+per CER point, per run.
+
+With **every arm** of the draw the picture sharpens rather than changes. The
+bf16 4B arm (`20261023T194329Z-ladder-med-qwen35-4b-bf16-v2`, 5.38 h, 2.10 kWh,
+14.74 %) is both cheaper and better than the 4-bit 4B, which the script lists as
+*dominated*: 4-bit buys memory, not energy, and on a card that holds the bf16 model
+it buys nothing. Along that frontier the step to 9B is +0.87 kWh for −0.99 points
+(0.88 kWh per point) and the step to 27B stays at 3.52.
+
+Three things the table does not say. The **noise floor** of this draw is not
+measured (#115 measured kraken and the XIX sweep, where it was 0.117 points); a
+ΔCER of a few tenths may be seed noise, and energy per noise is infinite — the
+script takes `--floor` and prints ∞ for a step inside it. **Lines against pages**
+(#333, point 3) has no comparable pair: the line ladder and the page runs are
+scored on different draws, so the issue's 13.65 % against 37.61 % is two
+measurements on two draws, not one step. And the only page ladder with two measured runs is a
+different corpus, Kurrent XVI–XIX (draw `ecef5cb8`, 171 pages, `reserved_pages`
+1318): olmOCR-2-7B at 4 MP reads it at 15.71 % for 4.00 kWh against Qwen3.5-4B's
+27.04 % for 2.17 kWh — 1.83 kWh for 11.3 points, 0.16 kWh per point, the cheapest
+point on any ladder here.
+
+A footprint does not move the rule in `WHERE_A_RUN_RUNS.md` (#138 decided that);
+it prices it. Reproduce the tables on the login node, no container needed:
+
+    python3 scripts/energy_per_cer.py --markdown --filter host=ubelix
+    python3 scripts/energy_per_cer.py --markdown --filter load_in_4bit=true
+
 ## The baseline: the programme since 01.09.2026
 
 `sacct`, every attempt of every job of this user from 01.09. to 24.10.2026:
