@@ -141,8 +141,14 @@ Qwen training draws:
 At the factors `footprint` uses (#185, sources below) that is **2.4–6.3 kg CO2e
 market-based** (20 g/kWh, the university's renewable procurement) and
 **15–40 kg location-based** (127 g/kWh, Swiss consumer mix 2021–2023). PUE,
-CPUs and asteraix are not in it. The **measured** part, eight records since
-13.10., is 24.0 kWh.
+CPUs and asteraix are not in it. The **measured** part is a running counter,
+not a hand sum: `atr-results` `energy()` (#335) adds up `energy_wh` over both
+job stores per host, names every record whose GPU stage ran without a
+measurement (the sum is a floor until that list is empty), and gives the share
+recovered from preempted attempts. The daily report prints its line from
+there. (When this page was first written, 24.10.2026, the counter stood at
+24.0 kWh over eight records since 13.10.; that figure is history, not a
+number to update here.)
 
 asteraix has no scheduler and so no `sacct`. Its runs are in the job store with
 a measured `energy_wh` where the runner ran them, and absent where a
