@@ -335,7 +335,7 @@ The XVI–XIX target itself needs a Kurrent page set of its own: way c in
 
 | Lauf | Store | CER | `reserved_pages` | Verdikt | gefallen | Grund |
 |---|---|---:|---:|---|---:|---|
-| `20261019T180118Z-olmocr2-7b-medieval-page-px4m-native-r16` | scratch | 0.3214 | ? | clean | 0 | added 26.10. (#301), not printed by the audit: the held-out rescore compared the draw with the training manifest of its builder `20261001T093909Z-olmocr2-7b-medieval-german-page-v1` (8104 entries, 1180 documents) and found no shared document; `reserved_pages` not read |
+| `20261019T180118Z-olmocr2-7b-medieval-page-px4m-native-r16` | scratch | 0.3214 | 3173 | clean | 0 | added 26.10. (#301), not printed by the audit: the held-out rescore compared the draw with the training manifest of its builder `20261001T093909Z-olmocr2-7b-medieval-german-page-v1` (8104 entries, 1180 documents) and found no shared document; `reserved_pages` read from the record on 30.10. |
 | `20261014T194417Z-ladder-med-qwen35-4b-v2` | scratch | 0.1594 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261014T193118Z-ladder-med-qwen35-9b-v2` | scratch | 0.1375 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261013T121310Z-olmocr2-7b-medieval-page-px4m-native` | scratch | 0.2659 | 3173 | clean | 0 | adopted 2ad500ee8414 from 20261001T093909Z-olmocr2-7b-medieval-german-page-v1 (scratch): 8104 of 8104 entries name a document; none reserved |
