@@ -136,6 +136,22 @@ class Footprint:
     #: False when no wattage could be read at all — then this is not a floor, it
     #: is nothing, and must not be published as 0.
     measured: bool = True
+    #: CPU and memory energy as **modelled** (#331): allocated cores at per-core
+    #: TDP, memory at 3 W per 8 GB. Reported beside the measured figure and never
+    #: inside it — ``kwh`` and the carbon figures stay GPU-only. 0 = not modelled.
+    cpu_wh_modelled: float = 0.0
+    ram_wh_modelled: float = 0.0
+    cpu_w_per_core: float | None = None
+
+    @property
+    def modelled_kwh(self) -> float:
+        """What the cores and the memory would add, by the model, at the wall."""
+        return (self.cpu_wh_modelled + self.ram_wh_modelled) * self.pue / 1000.0
+
+    @property
+    def gco2e_grid_modelled(self) -> float:
+        """Location-based carbon of the modelled CPU and memory share, apart."""
+        return self.modelled_kwh * GRID_FACTOR_G_PER_KWH
 
     @property
     def kwh(self) -> float:
@@ -184,8 +200,16 @@ class Footprint:
         if self.pue == 1.0:
             out.append("excludes data-centre overhead (PUE unknown; typical "
                        "values 1.1–1.6 would raise it by that factor)")
-        out.append("counts GPU draw only — CPU, memory, storage and network are "
-                   "not metered")
+        if self.cpu_wh_modelled > 0:
+            rate = (f" at {self.cpu_w_per_core:.1f} W per allocated core (TDP / cores)"
+                    if self.cpu_w_per_core else "")
+            out.append("measures GPU draw only — CPU and memory are modelled, not "
+                       f"metered: {self.cpu_wh_modelled + self.ram_wh_modelled:.0f} Wh"
+                       f"{rate}, kept apart from the figures above; storage and "
+                       "network are not counted")
+        else:
+            out.append("counts GPU draw only — CPU, memory, storage and network are "
+                       "not metered")
         if not self.counts_embodied:
             out.append("counts operation only — manufacture of the hardware is "
                        "not apportioned")
@@ -198,7 +222,9 @@ class Footprint:
 def from_energy(energy_wh: float, *, shared: bool = False,
                 factor_g_per_kwh: float | None = None,
                 pue: float | None = None, gpu_hours: float = 0.0,
-                embodied_g_per_gpu_hour: float | None = None) -> Footprint:
+                embodied_g_per_gpu_hour: float | None = None,
+                cpu_wh_modelled: float = 0.0, ram_wh_modelled: float = 0.0,
+                cpu_w_per_core: float | None = None) -> Footprint:
     """A footprint from a sampled energy figure, with the configured parameters.
 
     ``energy_wh`` of 0 yields ``measured=False``: `power.draw` answers ``[N/A]``
@@ -228,4 +254,7 @@ def from_energy(energy_wh: float, *, shared: bool = False,
                       DEFAULT_EMBODIED_G_PER_GPU_HOUR)),
         shared=shared,
         measured=energy_wh > 0,
+        cpu_wh_modelled=cpu_wh_modelled or 0.0,
+        ram_wh_modelled=ram_wh_modelled or 0.0,
+        cpu_w_per_core=cpu_w_per_core,
     )

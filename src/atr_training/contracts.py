@@ -1094,6 +1094,17 @@ class Progress(BaseModel):
     #: True when any stage shared a card, so part of ``energy_wh`` is not this
     #: job's. Reported and labelled rather than dropped.
     gpu_shared: bool = False
+    #: CPU and memory energy over the whole job, **modelled** (#331): allocated
+    #: cores × watts per core at TDP × hours, memory at 3 W per 8 GB allocated.
+    #: Kept apart from ``energy_wh`` and never summed with it — a measurement and
+    #: a model do not add. 0.0 means "not modelled" (unknown processor, or a
+    #: record from before the field), which is not "cost nothing".
+    energy_cpu_wh_modelled: float = 0.0
+    energy_ram_wh_modelled: float = 0.0
+    #: The watts per core the model used, and the processor it read, so the
+    #: figure can be recomputed when a better rate is known.
+    cpu_w_per_core_modelled: float | None = None
+    cpu_model_name: str | None = None
     #: The Slurm job this ran as, or None off a scheduler — the one signal that
     #: tells UBELIX from asteraix without configuration (see
     #: :func:`runner_base.slurm_job_id`). It decides whether a model card carries
@@ -1190,6 +1201,11 @@ class StageRecord(BaseModel):
     #: card that answers ``[N/A]`` must not arrive as 0 Wh.
     energy_wh: dict[str, float] = Field(default_factory=dict)
     gpu_shared: bool = False
+    #: The stage's CPU and memory energy as modelled (#331), with the cores,
+    #: watts per core, hours, memory and the assumption written beside the
+    #: figures; None where no processor could be modelled. Never part of
+    #: ``energy_wh``.
+    energy_cpu_modelled: dict | None = None
 
 
 class TrainJob(BaseModel):

@@ -629,9 +629,19 @@ def _footprint(model: TrainedModel):
     if not isinstance(energy_wh, (int, float)) or energy_wh <= 0:
         return None
     gpu_hours = progress.get("gpu_hours")
+
+    def _num(key: str) -> float:
+        value = progress.get(key)
+        return float(value) if isinstance(value, (int, float)) else 0.0
+
+    w_per_core = progress.get("cpu_w_per_core_modelled")
     return from_energy(float(energy_wh), shared=bool(progress.get("gpu_shared")),
                        gpu_hours=(float(gpu_hours)
-                                  if isinstance(gpu_hours, (int, float)) else 0.0))
+                                  if isinstance(gpu_hours, (int, float)) else 0.0),
+                       cpu_wh_modelled=_num("energy_cpu_wh_modelled"),
+                       ram_wh_modelled=_num("energy_ram_wh_modelled"),
+                       cpu_w_per_core=(float(w_per_core)
+                                       if isinstance(w_per_core, (int, float)) else None))
 
 
 def _co2_frontmatter(model: TrainedModel) -> dict[str, Any] | None:
@@ -707,6 +717,14 @@ def _energy_section(model: TrainedModel) -> list[str]:
             f"| SCI per trained model | **{fp.sci_g:.0f} g** "
             "(location-based + manufacture) |",
         ] if fp.counts_embodied else []
+        modelled = [
+            "| CPU and memory, **modelled**, not in the figures above | "
+            f"{fp.modelled_kwh:.3f} kWh ({fp.cpu_wh_modelled:.0f} Wh cores"
+            + (f" + {fp.ram_wh_modelled:.0f} Wh memory" if fp.ram_wh_modelled else "")
+            + f") at {fp.cpu_w_per_core:.1f} W per allocated core, "
+            f"≈ {fp.gco2e_grid_modelled:.0f} g location-based; RAPL is root-only "
+            "on both boxes, so this is a model (#331) |",
+        ] if fp.cpu_wh_modelled > 0 and fp.cpu_w_per_core else []
         lines += [
             "## Energy and carbon",
             "",
@@ -718,6 +736,7 @@ def _energy_section(model: TrainedModel) -> list[str]:
             f"| CO2e, location-based | {fp.gco2e_grid:.0f} g "
             f"at {GRID_FACTOR_G_PER_KWH:.0f} g/kWh ({GRID_FACTOR_DESCRIPTION}) |",
             *embodied,
+            *modelled,
             "",
             f"Since 2016 the university has procured electricity from "
             f"{MIX_DESCRIPTION} ([source]({MIX_SOURCE})). The market-based "

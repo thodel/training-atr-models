@@ -549,12 +549,43 @@ class BasePipeline(ABC):
                 # stage's energy rather than counting it twice. The figure is a
                 # floor (see footprint), so the error may only point down.
                 ledger.unlink(missing_ok=True)
+            self._record_cpu_model(job, record)
         record.exit_code = code
         if code != 0:
             raise StageFailed(
                 f"{stage} failed: {Path(cmd[0]).name} exited {code}. "
                 f"Last lines of {record.log}:\n" + "\n".join(tail(log_path, 20))
             )
+
+    def _record_cpu_model(self, job: TrainJob, record: StageRecord) -> None:
+        """Model the stage's CPU and memory energy and keep it apart (#331).
+
+        The cards are measured; the cores cannot be (RAPL is root-only on both
+        boxes), so this writes a modelled figure with its parameters into the
+        stage record and the job's own ``*_modelled`` fields — never into
+        ``energy_wh``. Never raises: a model must not fail a stage, and an
+        unmodelled stage says so by leaving the fields alone.
+        """
+        try:
+            from atr_training.cpu_energy import model_stage
+
+            started = record.started_at or utcnow()
+            hours = max((utcnow() - started).total_seconds(), 0.0) / 3600.0
+            request = getattr(job, "request", None)
+            params = getattr(request, "params", None)
+            workers = getattr(params, "workers", None)
+            model = model_stage(hours, workers=workers)
+            record.energy_cpu_modelled = model.as_record()
+            if model.cpu_wh is not None:
+                job.progress.energy_cpu_wh_modelled = round(
+                    job.progress.energy_cpu_wh_modelled + model.cpu_wh, 2)
+                job.progress.cpu_w_per_core_modelled = model.w_per_core
+                job.progress.cpu_model_name = model.cpu_model
+            if model.ram_wh is not None:
+                job.progress.energy_ram_wh_modelled = round(
+                    job.progress.energy_ram_wh_modelled + model.ram_wh, 2)
+        except Exception as exc:  # noqa: BLE001 — a model must not fail a stage
+            logger.warning("could not model the CPU energy of {}: {}", record.name, exc)
 
     def _recover_energy(self, job: TrainJob) -> None:
         """Add what interrupted attempts drew, from the ledgers they left (#184).
