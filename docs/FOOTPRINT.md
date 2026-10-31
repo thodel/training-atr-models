@@ -331,7 +331,8 @@ occupancy, which would raise every rate below by 18 %).
 | H100 | 225 | Morand, Névéol, Ligozat, *The Rising Unsustainability of AI Graphics Cards Production*, LIMITS '26, arXiv:2607.01258, Table 4: their own model of one H100 card; most of the gap to NVIDIA is the memory |
 | A100 SXM4 40 GB | **127.6** | Falk et al., *More than carbon: cradle-to-grave environmental impacts of GenAI training on the Nvidia A100 GPU*, arXiv:2509.00093 (v3, 18.12.2025); 141 kg with distribution and disposal |
 | A100 | 150 | Luccioni, Viguier, Ligozat, *Estimating the Carbon Footprint of BLOOM*, JMLR 24 (2023), §4.1: "a lower bound" from secondary data (Davy 2021), before any measured figure existed |
-| RTX 4090, A40 | not published | no vendor footprint; not looked up model by model. The band below applies the data-centre figures to their 60 h, which this page says rather than hides |
+| A40 (asteraix) | **above 82.5, below 128** | not published. The nearest sourced card is Morand et al., Table 3: RTX A4500 (2021), **82.5 kg**, the same GA102 die with 20 GB GDDR6. The A40 carries 48 GB, and memory is the largest term in every model above (42 % of NVIDIA's baseboard), so the A40 sits above the A4500 and below the A100's 123–128 |
+| RTX 4090 | not published | no vendor footprint, not in Morand's table. The band below applies the data-centre figures to its hours, which this page says rather than hides |
 
 **The node.** A card does not run without CPUs, memory, board, power supply and
 chassis. BLOOM took HPE's footprint of a ProLiant DL345 Gen10 Plus server,
@@ -354,7 +355,9 @@ six to twelve times lower.
 | H100 card + node share, 476 kg | **13.6** | 9.1 |
 | H100 (Morand) + node share, 538 kg | 15.3 | 10.2 |
 
-So **M is 2.4–15 g per card-hour**, against operation at ~390 W of 7.8 g
+Falk et al. assume three years for the A100, not four; at three years the top
+of the band is 20 g. So **M is 2.4–15 g per card-hour** (20 g at a three-year
+life), against operation at ~390 W of 7.8 g
 market-based and 50 g location-based. Location-based, manufacture adds 5–30 %;
 market-based, it is about as large as the operation or twice as large. A
 footprint that reports only the 20 g figure leaves out what may be its largest
@@ -369,5 +372,7 @@ beside its 47 g market-based and 300 g location-based.
 **Setting it** is one line, `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR=13.6` (H100 with
 its node share over four years); the default stays 0 because whether
 manufacture is inside the boundary at all is #185's point 4, a decision and not
-a lookup. C is now known for the H100 and A100 and unknown for the RTX 4090 and
-A40, hence a band rather than a point.
+a lookup. C is now known for the H100 and A100, bounded by an analogue for the
+A40 and unknown for the RTX 4090, hence a band rather than a point. Every
+figure in this section was read against its primary document on 31.10.2026
+(NVIDIA PCF summary, JUL 25; BLOOM §4.1; Morand Tables 3–4; Falk v3).
