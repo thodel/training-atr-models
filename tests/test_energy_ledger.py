@@ -153,7 +153,7 @@ def _pipeline(root):
         settings = _Settings()
 
     p = _P()
-    for name in ("_run", "_recover_energy", "_record_peak"):
+    for name in ("_run", "_recover_energy", "_record_peak", "_record_cpu_model"):
         setattr(p, name, getattr(BasePipeline, name).__get__(p))
     p._slurm_job_id = None
     return p

@@ -13,7 +13,8 @@ has cost so far.
 |---|---|---|
 | GPU draw of every stage | yes | `nvidia-smi power.draw`, trapezoid over the real time between samples |
 | attempts that were preempted or requeued | **yes, since this page** — before it, no | see below |
-| CPU, memory, storage, network | no | not metered; 3 022 CPU-hours against 163.5 GPU-hours on 08.10.2026 says it is not nothing |
+| CPU, memory | **modelled**, apart (#331) | RAPL is root-only on both boxes, so every stage carries `energy_cpu_modelled` (allocated cores × W per core at TDP × hours; memory at 3 W per 8 GB allocated) in its own fields, never summed into `energy_wh`; see *CPU and memory* below |
+| storage, network | no | not metered |
 | data-centre overhead (PUE) | no | unknown, asked in #185; `ATR_TRAIN_PUE` takes it once known |
 | manufacture of the hardware | **not by default** | sourced for H100 and A100, band 2.4–15 g per card-hour (see "What a card cost to make", #332); whether it is inside the boundary is #185, point 4; `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR` takes the rate |
 | runs started by hand outside the runner | no | measurement scripts, rescorings run outside a job |
@@ -140,8 +141,8 @@ Qwen training draws:
 
 At the factors `footprint` uses (#185, sources below) that is **2.4–6.3 kg CO2e
 market-based** (20 g/kWh, the university's renewable procurement) and
-**15–40 kg location-based** (127 g/kWh, Swiss consumer mix 2021–2023). PUE,
-CPUs and asteraix are not in it. The **measured** part is a running counter,
+**15–40 kg location-based** (127 g/kWh, Swiss consumer mix 2021–2023). PUE and
+asteraix are not in it, and the CPUs only as the model below. The **measured** part is a running counter,
 not a hand sum: `atr-results` `energy()` (#335) adds up `energy_wh` over both
 job stores per host, names every record whose GPU stage ran without a
 measurement (the sum is a floor until that list is empty), and gives the share
@@ -153,6 +154,65 @@ number to update here.)
 asteraix has no scheduler and so no `sacct`. Its runs are in the job store with
 a measured `energy_wh` where the runner ran them, and absent where a
 measurement was run by hand.
+
+## CPU and memory: modelled, apart (#331)
+
+**Measured first, 30.10.2026.** The kernel's RAPL counters
+(`/sys/class/powercap/intel-rapl*/energy_uj`) are `0400 root` on asteraix, on the
+UBELIX login node and on an epyc2 compute node (`bnode`, read from an `srun`).
+Without root the CPU energy cannot be read on either box. So it is modelled, the
+model is written into every stage record beside its parameters, and it is **never
+added to `energy_wh`**: a measurement and a model do not sum, and the card prints
+"CPU and memory, modelled, not in the figures above" as its own row.
+
+The model is CodeCarbon's own fallback. Watts per allocated core = the
+processor's TDP / its cores, from CodeCarbon's table
+([cpu_power.csv](https://github.com/mlco2/codecarbon/blob/master/codecarbon/data/hardware/cpu_power.csv));
+cores = `SLURM_CPUS_PER_TASK` under Slurm, else the request's `workers`; memory =
+`SLURM_MEM_PER_NODE` × 3 W per 8 GB (CodeCarbon's assumption), off Slurm not
+counted. The cores are taken as fully loaded for the whole stage — right for a
+CPU-bound `prepare`, an upper band for the 16 cores idling beside an H100.
+
+| box | processor (lscpu, 30.10.2026) | TDP | W per core | a prepare stage (8 cores, 16 GB) |
+|---|---|---:|---:|---:|
+| UBELIX epyc2 (`bnode`) | 2 × AMD EPYC 7742, 64 cores each | 225 W | **3.5** | 28 W + 6 W memory → 34 W, 2 h = 68 Wh |
+| UBELIX H100 nodes (`gnode`) | 2 × 64 cores; *assumed* the same EPYC 7742 — the record keeps the name it read, so another model shows as unmodelled | 225 W | 3.5 | train: 16 cores, 90 GB → 56 W + 34 W |
+| asteraix | AMD Ryzen Threadripper PRO 5965WX, 24 cores | 280 W | **11.7** | `workers` 8 → 93 W, memory not allocated → not counted |
+
+An unknown processor leaves the stage **unmodelled** (`cpu_wh: null`), which is
+not 0 Wh; `ATR_TRAIN_CPU_W_PER_CORE` overrides the rate for one.
+
+**The band since 01.09.2026.** `sacct` over every attempt of this user, 01.09.–30.10.:
+1 222 CPU-hours on the CPU partitions (prepare, inventories) and 4 944 CPU-hours
+allocated beside a GPU, 6 166 in all (#184 counted 3 022 on 08.10.). At 3.5 W per
+core that is **4.3 kWh for the CPU-only jobs and 17.4 kWh beside the cards — 21.7
+kWh at full load, 10.8 kWh at CodeCarbon's 50 % default**: against 50.9 kWh
+measured at the cards (`energy()`, 30.10.), the unmetered share is a fifth to two
+fifths of the measured one, not larger than it as the issue feared with 10–15 W per
+core. The cores beside the cards are the uncertain part; the prepare jobs are the
+part the model fits.
+
+**Calibration, once, 30.10.2026 22:10 CET on asteraix** (issue point 3): a 160 s
+bf16 matmul load on card 1, watched by our `PeakSampler` on the load's pid and by
+CodeCarbon 3.3.2 (`OfflineEmissionsTracker`, `tracking_mode="machine"`,
+`gpu_ids=[1]`, 2 s samples) at the same time — beside ours, not instead of it.
+
+| signal | ours | CodeCarbon | note |
+|---|---:|---:|---|
+| card 1, energy | **13.30 Wh** (77 readings, 0 failures) | **13.25 Wh** (295.9 W mean) | same `nvidia-smi`/NVML signal, 0.4 % apart: our GPU figure is what CodeCarbon would publish |
+| card 0, idle beside it | 1.05 Wh (≈ 24 W) | not tracked | what an idle A40 costs per hour: 24 Wh |
+| CPU | model: 8 workers × 11.7 W × 0.044 h = **4.15 Wh** | **1.24 Wh** (28 W mean, "CPU load mode": TDP × measured load, RAPL refused) | a GPU-bound stage keeps the cores near idle; the static model overstates it 3.3× there and is the ceiling it claims to be. For `prepare` the load is the TDP |
+| memory | not counted (no Slurm allocation) | 3.10 Wh (70 W for the box's 251 GB) | CodeCarbon prices the whole box's DIMMs; by allocation on UBELIX (16 GB → 6 W) we count a fifth of that per prepare job |
+| CPU + memory against the card | — | 4.34 Wh against 13.25 Wh = **+33 %** | the box-level unmetered share during a GPU stage, with a nearly idle CPU |
+
+CodeCarbon's own log confirms point 1: `RAPL - Permission denied … falling back
+on estimation based on TDP`. Both tools model the cores on this box; neither
+measures them. (The CodeCarbon venv stays at `~/.venvs/codecarbon` on asteraix for
+a repeat; nothing runs from it.)
+
+Not done here: the energy of a corpus materialisation on the **dataset** card
+(issue point 4) — the modelled prepare figure is in the job record now, and the
+dataset card can read it once the dataset publisher learns to (#331, follow-up).
 
 ## Where the factors come from (#336)
 
