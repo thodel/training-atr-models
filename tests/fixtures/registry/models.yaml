@@ -1,4 +1,4 @@
-# Copy of serving-atr-inference config/models.yaml at bdbecf7 (main, 2026-10-30),
+# Copy of serving-atr-inference config/models.yaml at 5ad4277 (main, 2026-10-31),
 # written by scripts/refresh_gateway_fixtures.py — do not edit by hand; re-run it.
 # tests/test_gateway_drift.py compares the ids and engines with the gateway's main.
 # ATR model registry — single source of truth for /models.
