@@ -209,11 +209,21 @@ def test_the_factor_is_overridable_from_the_environment(monkeypatch):
     assert fp.pue == 1.4
 
 
-def test_manufacture_is_not_counted_by_default():
-    """0 g per card-hour means "nobody gave us a lifetime", like a PUE of 1.0,
-    and the card must say so rather than print an SCI that lacks its M."""
-    assert DEFAULT_EMBODIED_G_PER_GPU_HOUR == 0.0
+def test_manufacture_is_counted_by_default_at_the_sourced_rate():
+    """#185 point 4, decided 31.10.2026: 476 kg (H100 164 + node share 312) over
+    35 040 h is 13.6 g per card-hour, applied to every record with card-hours."""
+    assert DEFAULT_EMBODIED_G_PER_GPU_HOUR == 13.6
+    assert abs(476_000 / 35_040 - 13.6) < 0.02, "the constant is the quotient it claims"
     fp = Footprint(energy_wh=1000.0, gpu_hours=2.5)
+    assert fp.counts_embodied
+    assert abs(fp.embodied_g - 34.0) < 1e-9
+    assert not any("manufacture" in c for c in fp.caveats())
+
+
+def test_a_zero_rate_still_means_not_counted():
+    """0 g per card-hour switches M off and the card must say so rather than
+    print an SCI that lacks its M."""
+    fp = Footprint(energy_wh=1000.0, gpu_hours=2.5, embodied_g_per_gpu_hour=0.0)
     assert not fp.counts_embodied
     assert fp.embodied_g == 0.0
     assert any("manufacture" in c for c in fp.caveats())
