@@ -698,9 +698,9 @@ def _energy_section(model: TrainedModel) -> list[str]:
     job id, which is the one signal that cannot be true off the cluster.
     """
     from atr_training.footprint import (
-        FACTOR_DESCRIPTION, FACTOR_SOURCE, GRID_FACTOR_DESCRIPTION,
-        GRID_FACTOR_G_PER_KWH, GRID_FACTOR_SOURCE, MIX_DESCRIPTION, MIX_SOURCE,
-        UBELIX_CREDIT,
+        EMBODIED_DESCRIPTION, EMBODIED_SOURCE, FACTOR_DESCRIPTION, FACTOR_SOURCE,
+        GRID_FACTOR_DESCRIPTION, GRID_FACTOR_G_PER_KWH, GRID_FACTOR_SOURCE,
+        MIX_DESCRIPTION, MIX_SOURCE, UBELIX_CREDIT,
     )
 
     progress = _progress(model)
@@ -713,7 +713,8 @@ def _energy_section(model: TrainedModel) -> list[str]:
         embodied = [
             f"| hardware manufacture (SCI's M) | {fp.embodied_g:.0f} g "
             f"over {fp.gpu_hours:.1f} card-hours at "
-            f"{fp.embodied_g_per_gpu_hour:.0f} g/card-hour |",
+            f"{fp.embodied_g_per_gpu_hour:.1f} g/card-hour "
+            f"({EMBODIED_DESCRIPTION}; [source]({EMBODIED_SOURCE})) |",
             f"| SCI per trained model | **{fp.sci_g:.0f} g** "
             "(location-based + manufacture) |",
         ] if fp.counts_embodied else []
