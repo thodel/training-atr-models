@@ -512,7 +512,8 @@ class PeakSampler:
     """
 
     def __init__(self, pid: int, *, interval_s: float = 2.0,
-                 ledger: Path | None = None, flush_s: float | None = None) -> None:
+                 ledger: Path | None = None, flush_s: float | None = None,
+                 series: Path | None = None) -> None:
         self.pid = pid
         self.interval_s = interval_s
         self.peak = Peak()
@@ -521,6 +522,12 @@ class PeakSampler:
         #: requeued stage dies before :meth:`stop` — on UBELIX that lost all but
         #: the last attempt of every interrupted run. None turns it off.
         self.ledger = ledger
+        #: A JSONL the same flush *appends* one line to — time, cumulative Wh,
+        #: cumulative card-hours (#334). The ledger above is overwritten and
+        #: removed when the stage ends in order, so it says what a stage drew
+        #: and never when: this file is what lets energy be read against a
+        #: checkpoint or an epoch, and is never removed. None turns it off.
+        self.series = series
         self.flush_s = LEDGER_FLUSH_S if flush_s is None else flush_s
         self._flushed_at = time.monotonic()
         self._last_watts: dict[int, float] = {}
@@ -539,6 +546,9 @@ class PeakSampler:
             # Bounded: one nvidia-smi call has TIMEOUT_S to answer, and a stage
             # must not be held open by a sampler that cannot finish.
             self._thread.join(timeout=TIMEOUT_S + 2)
+        # The last point of the series is the stage's end; without it the
+        # series would stop up to a minute short of the total the record keeps.
+        self.flush()
         return self.peak
 
     # The caller spawns the process and only then knows the pid, so start/stop are
@@ -553,7 +563,8 @@ class PeakSampler:
     def _loop(self) -> None:
         while not self._stop.is_set():
             self._once()
-            if self.ledger is not None and time.monotonic() - self._flushed_at >= self.flush_s:
+            if ((self.ledger is not None or self.series is not None)
+                    and time.monotonic() - self._flushed_at >= self.flush_s):
                 self.flush()
             self._stop.wait(self.interval_s)
         # One last look: a short stage can finish inside the first interval, and
@@ -567,21 +578,35 @@ class PeakSampler:
         written costs the energy of an interruption, not the stage.
         """
         self._flushed_at = time.monotonic()
-        if self.ledger is None or self.peak.total_energy_wh <= 0:
+        if self.peak.total_energy_wh <= 0:
             return
-        try:
-            tmp = self.ledger.with_name(self.ledger.name + ".tmp")
-            tmp.write_text(json.dumps({
-                "energy_wh": {str(i): round(wh, 3)
-                              for i, wh in sorted(self.peak.energy_wh.items())},
-                "card_hours": {str(i): round(h, 4)
-                               for i, h in sorted(self.peak.card_hours.items())},
-                "cards_shared": self.peak.cards_shared,
-                "readings": self.peak.readings,
-            }), encoding="utf-8")
-            os.replace(tmp, self.ledger)
-        except Exception as exc:  # noqa: BLE001 — a measurement must not fail a stage
-            logger.warning("could not write the energy ledger {}: {}", self.ledger, exc)
+        if self.ledger is not None:
+            try:
+                tmp = self.ledger.with_name(self.ledger.name + ".tmp")
+                tmp.write_text(json.dumps({
+                    "energy_wh": {str(i): round(wh, 3)
+                                  for i, wh in sorted(self.peak.energy_wh.items())},
+                    "card_hours": {str(i): round(h, 4)
+                                   for i, h in sorted(self.peak.card_hours.items())},
+                    "cards_shared": self.peak.cards_shared,
+                    "readings": self.peak.readings,
+                }), encoding="utf-8")
+                os.replace(tmp, self.ledger)
+            except Exception as exc:  # noqa: BLE001 — a measurement must not fail a stage
+                logger.warning("could not write the energy ledger {}: {}", self.ledger, exc)
+        if self.series is not None:
+            try:
+                line = json.dumps({
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "pid": self.pid,
+                    "wh": round(self.peak.total_energy_wh, 3),
+                    "card_hours": round(self.peak.total_card_hours, 4),
+                    "readings": self.peak.readings,
+                })
+                with self.series.open("a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except Exception as exc:  # noqa: BLE001 — a measurement must not fail a stage
+                logger.warning("could not append to the energy series {}: {}", self.series, exc)
 
     def _once(self) -> None:
         try:

@@ -316,6 +316,116 @@ for #91:
 
 ---
 
+## 9. A median pruner, replayed over the VLM sweep (#334, 01.11.2026)
+
+The CCAI tutorial lets Optuna stop an arm whose intermediate value falls below
+the median of the other arms at the same epoch and reports half the arms run to
+the end for the same best result. Before such a pruner goes into
+`sweep_driver.py`, #334 asks what it would have done to the one sweep this
+repository has finished, `vlm-xix-effective-batch-01` (#138) — from the logs,
+with no GPU. `scripts/sweep_pruner_dryrun.py` replays it; the rule and its
+parameters are in `atr_training.pruner_dryrun`.
+
+**What was replayed.** Rung 0: the four noise-floor seeds of cell one (eff 16,
+2e-4; they *are* cell one at this budget), cell two (eff 32, 4e-4, the arm the
+sweep promoted) and cell three (eff 64, 8e-4), 48,000 samples each. The
+intermediate value is the training loss the Trainer logs every 25 optimizer
+steps — the only one these runs have, since `eval_strategy` is per epoch and a
+rung-0 arm trains a twentieth of one. Curves are put on one grid in **samples**
+(every 1,600, the coarsest log cadence) and smoothed over a trailing 4,800
+samples. **The threshold is median + floor**, the floor being the spread of the
+four seeds at that grid point, exactly the trap #138 names: against the median
+alone the rule would also have stopped two of the four seeds.
+
+**Energy.** The five rung runs were measured by the sampler (it went live on
+14.10.2026): 899 and 897 Wh for the train stage of cells two and three, 2,134 Wh
+for rung 1 — 302–305 W on the A40, consistently. The four seeds ran before the
+sampler and are estimated at that mean draw over their wall time (marked `~`).
+What a stopped arm saves is its train-stage energy from the stop point on,
+apportioned by the wall time the progress bar shows, which includes the 54-minute
+end-of-run evaluation every arm paid (see below).
+
+### The table
+
+| arm | cell | eff. batch | stopped at | loss vs. median + floor | CER, shared draw | Wh saved |
+|---|---|---:|---:|---|---:|---:|
+| `noise-s42` | `0632d5e0fa27` | 16 | ran to the budget | never above | 0.3010 | 0 |
+| `noise-s43` | `0632d5e0fa27` | 16 | ran to the budget | never above | 0.2164 | 0 |
+| `noise-s44` | `0632d5e0fa27` | 16 | ran to the budget | never above | 0.1840 | 0 |
+| `noise-s45` | `0632d5e0fa27` | 16 | ran to the budget | never above | 0.2087 | 0 |
+| `r0-3de4c2e3aef1` **(promoted)** | `3de4c2e3aef1` | 32 | 8,000 samples (step 250) | 1.073 > 1.008 + 0.053 | 0.2233 | 793 |
+| `r0-a046cc9d3020` | `a046cc9d3020` | 64 | 1,600 samples (step 25) | 2.144 > 2.008 + 0.051 | 0.2894 | 876 |
+
+2 of 6 arms stopped; **the promoted arm is stopped**; ~1,668 of ~5,414 Wh saved
+(31 %). The issue's own stopping rule applies: *if the winner dies in a sweep,
+the issue ends here with this finding.*
+
+### Why the winner dies, and why a grace period does not rescue it
+
+At equal samples an arm with twice the effective batch has made half the
+optimizer updates, and one with four times the batch a quarter. Their loss
+curves lie above the seeds' for most of the run not because the configuration
+is worse but because it is *behind in updates*; the pruner reads the schedule,
+not the quality. Cell two closes the gap only from about 40,000 samples (its
+smoothed loss ends at 0.464 against the seeds' 0.445–0.459, inside the floor of
+0.014); cell three never does (0.506). Optuna's answer to early noise is
+`n_warmup_steps`; here it has to reach five sixths of the budget before the
+promoted arm survives, and by then there is little left to save:
+
+| rule may fire from | arms stopped | promoted arm | Wh saved |
+|---:|---|---|---:|
+| 0 | cell two at 8,000, cell three at 1,600 | stopped | 1,668 |
+| 8,000 | both at 8,000 | stopped | 1,584 |
+| 16,000 | both at 16,000 | stopped | 1,377 |
+| 24,000 | both at 24,000 | stopped | 1,169 |
+| 32,000 | both at 32,000 | stopped | 959 |
+| 40,000 | cell three at 40,000 | survives | 378 |
+| 44,800 | cell three at 44,800 | survives | 315 |
+
+Comparing at equal *steps* instead would be the other unfairness — the first
+attempt of this sweep did that and ranked the data each cell had seen (#138).
+
+### What this settles
+
+1. **No pruner across an effective-batch axis.** A median pruner on training
+   loss cannot run on a sweep whose cells differ in the effective batch: the
+   intermediate values are not comparable at any common abscissa. The kraken
+   manifests (#118) hold the batch fixed, so there the question stays open —
+   and stays a dry run first, on their logs, once they have run.
+2. **The promotion it would have killed was itself decided by noise** (margin
+   0.0043 against a CER floor of 0.117). The one arm the rule stops with
+   confidence, cell three, is also the one that ends worst by every measure:
+   smoothed training loss 0.506 against a floor of 0.014, end-of-run
+   `eval_loss` 0.328 against 0.303–0.306, CER 0.289. By training loss the
+   three cells *are* distinguishable at the end; by the sweep's own metric,
+   CER on a 200-line draw, none of them is. The floor is a property of the
+   metric and the draw, not of the sweep.
+3. **The energy the pruner would have saved is smaller than what the evaluation
+   cost.** Every rung-0 arm ended with 54 minutes of `eval_loss` over the whole
+   93,280-line validation partition — 30 % of its train stage, about 270 Wh
+   per arm, 1,600 Wh over the six, and the sweep ranked on none of it (it
+   ranked on CER from a separate 200-line draw). Capping the Trainer's
+   evaluation set for sweep cells, or dropping it where `--max-steps` ends
+   the run inside the first epoch, saves as much as the pruner would have,
+   with no risk to the winner. That is the lever #334 found, and it is not a
+   pruner.
+4. **The ledger is now a time series** (`energy-series.<stage>.jsonl`,
+   `docs/FOOTPRINT.md`), so the next dry run reads energy at the stop point
+   instead of apportioning it by wall time, and the early-stopping tail
+   (`patience=2`, never measured) becomes measurable.
+
+Reproduce on asteraix, where the checkpoints are:
+
+```
+.venvs/kraken-train/bin/python scripts/sweep_pruner_dryrun.py \
+    --checkpoints ~/atr-cache/checkpoints \
+    --state config/sweeps/vlm-xix-effective-batch-01.yaml.state.json \
+    --records records.json --rung 0
+```
+
+`records.json` is `{job_id: record}` from the results MCP's `job` tool; without
+it the energy column is estimated throughout and says so.
+
 ## The order of the sweeps (#118)
 
 Five axes of three values are 243 configurations, which is not a sweep but a

@@ -41,6 +41,17 @@ draw, about 6 Wh on an H100. A stage that ends in order removes its ledger
 before the record is saved: a kill in between loses that stage's energy rather
 than counting it twice, so the error can only point down.
 
+The ledger says what a stage drew and not when. Since 01.11.2026 (#334) the same
+flush also **appends** one line to `energy-series.<stage>.jsonl` in the job
+directory — UTC time, cumulative Wh, cumulative card-hours, the runner's pid —
+and writes a last line when the stage ends. The file is never removed and every
+attempt appends to it, so it spans the stage's whole life. It is what lets energy
+be read against a checkpoint or an epoch: how much was drawn after the best
+checkpoint (the early-stopping tail, never measured), or up to the point a pruner
+would have stopped an arm (`docs/ARCHITECTURE_SEARCH.md` §9). The sweep of
+October 2026 had no such series, which is why its dry run apportions the stage's
+energy by wall time instead.
+
 ## What a card draws while training
 
 From the eight records with a measured figure (UBELIX, H100, train stage,
