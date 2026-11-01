@@ -53,16 +53,20 @@ number an *under*-estimate:
 * **Only the GPUs are metered.** CPU, memory, storage and network draw power that
   `power.draw` does not see. For a GPU training run the cards dominate, but
   3,022 CPU-hours against 163.5 GPU-hours (#184) says it is not nothing.
-* **Hardware manufacture is not counted by default.** Scope 3 for an H100 is on
-  the order of a tonne; apportioning it needs a lifetime and a utilisation
-  assumption nobody here has made yet (#185). The Software Carbon Intensity
-  specification calls this term M and apportions it by time: the card's embodied
-  emissions divided by its expected lifetime in hours, times the hours this run
-  held it. :data:`DEFAULT_EMBODIED_G_PER_GPU_HOUR` is that quotient, and 0.0
-  for the reason the PUE is 1.0 — a lifetime and a manufacturing figure we have
-  not been given would dress a guess as a fact. Once they are, it is one value
-  in ``ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR``, and the card hours it multiplies are
-  already in the record (``progress.gpu_hours``).
+* **Hardware manufacture is counted, apportioned by time, since 31.10.2026**
+  (#185, point 4, decided; sources in #332). The Software Carbon Intensity
+  specification calls this term M: the card's embodied emissions divided by its
+  expected lifetime in hours, times the hours this run held it.
+  :data:`DEFAULT_EMBODIED_G_PER_GPU_HOUR` is that quotient at 13.6 g: an H100 at
+  164 kg CO2e (NVIDIA's HGX H100 product carbon footprint, 1 312 kg for the
+  eight-card baseboard, ISO 14067) plus 312 kg for its share of the server
+  (the HPE proxy Luccioni et al. used for BLOOM), over four years (35 040 h).
+  The sourced band is 2.4–20 g; the rate is deliberately the H100-with-node
+  value, because most card-hours are UBELIX H100 hours and a card is never
+  made without a node. ``ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR`` overrides it, and
+  0 switches it off. The card hours it multiplies are in the record
+  (``progress.gpu_hours``); records written before 28.10.2026 have none and
+  keep the "not apportioned" caveat.
 
 So a published figure is a floor, and the card states that in words rather than
 leaving a reader to assume completeness.
@@ -97,10 +101,17 @@ GRID_FACTOR_SOURCE = "https://pubdb.bfe.admin.ch/de/publication/download/12224"
 #: us its PUE. Overridable with ``ATR_TRAIN_PUE``.
 DEFAULT_PUE = 1.0
 #: g CO2e of hardware manufacture per card-hour: embodied emissions ÷ expected
-#: lifetime in hours (the SCI's M, apportioned by time). 0.0 = NOT counted, for
-#: the reason ``DEFAULT_PUE`` is 1.0. Overridable with
-#: ``ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR``.
-DEFAULT_EMBODIED_G_PER_GPU_HOUR = 0.0
+#: lifetime in hours (the SCI's M, apportioned by time). 476 kg ÷ 35 040 h, see
+#: ``EMBODIED_DESCRIPTION``; set on 31.10.2026 (#185, point 4). Overridable
+#: with ``ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR``; 0 = not counted.
+DEFAULT_EMBODIED_G_PER_GPU_HOUR = 13.6
+#: What the rate is made of, phrased to follow "at 13.6 g/card-hour".
+EMBODIED_DESCRIPTION = ("H100 164 kg CO2e, NVIDIA's HGX H100 footprint of 1 312 kg "
+                        "for eight cards, plus 312 kg server share after Luccioni "
+                        "et al. 2023, over four years")
+#: Where the card figure comes from (cradle-to-gate, ISO 14067, by WSP, 2025).
+EMBODIED_SOURCE = ("https://images.nvidia.com/aem-dam/Solutions/documents/"
+                   "HGX-H100-PCF-Summary.pdf")
 
 #: Where the claim about the electricity comes from.
 MIX_SOURCE = "https://klima.unibe.ch/betrieb/energie/index_ger.html"

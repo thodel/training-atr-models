@@ -774,19 +774,26 @@ def test_the_card_says_the_figure_is_a_floor(tmp_path: Path):
 
 
 def test_the_card_prints_m_and_the_sci_only_once_both_are_known(tmp_path: Path, monkeypatch):
-    """No rate configured: no M row, and the manufacture caveat stays. With one,
-    M and the SCI per model appear and the caveat goes."""
+    """The default rate (13.6 g, #185 point 4) prints M with its source and the
+    SCI per model. A rate of 0 switches M off and the manufacture caveat stays;
+    another rate is taken as given."""
     meta = {**KRAKEN_META, "progress": {"energy_wh": 10_000.0, "gpu_hours": 25.0}}
     monkeypatch.delenv("ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR", raising=False)
     card = card_for(tmp_path / "a", meta)
+    assert "340 g over 25.0 card-hours at 13.6 g/card-hour" in card
+    assert "HGX-H100-PCF-Summary.pdf" in card, "the rate names where it is from"
+    assert "**1610 g**" in card, "1270 g location-based + 340 g manufacture"
+    assert "not apportioned" not in card
+
+    monkeypatch.setenv("ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR", "0")
+    card = card_for(tmp_path / "b", meta)
     assert "SCI per trained model" not in card
     assert "manufacture of the hardware is not apportioned" in card
 
     monkeypatch.setenv("ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR", "40")
-    card = card_for(tmp_path / "b", meta)
-    assert "1000 g over 25.0 card-hours at 40 g/card-hour" in card
+    card = card_for(tmp_path / "c", meta)
+    assert "1000 g over 25.0 card-hours at 40.0 g/card-hour" in card
     assert "**2270 g**" in card, "1270 g location-based + 1000 g manufacture"
-    assert "not apportioned" not in card
 
 
 def test_the_card_names_both_mixes_with_their_sources(tmp_path: Path):

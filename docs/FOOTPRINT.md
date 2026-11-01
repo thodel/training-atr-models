@@ -16,7 +16,7 @@ has cost so far.
 | CPU, memory | **modelled**, apart (#331) | RAPL is root-only on both boxes, so every stage carries `energy_cpu_modelled` (allocated cores × W per core at TDP × hours; memory at 3 W per 8 GB allocated) in its own fields, never summed into `energy_wh`; see *CPU and memory* below |
 | storage, network | no | not metered |
 | data-centre overhead (PUE) | no | unknown, asked in #185; `ATR_TRAIN_PUE` takes it once known |
-| manufacture of the hardware | **not by default** | sourced for H100 and A100, band 2.4–15 g per card-hour (see "What a card cost to make", #332); whether it is inside the boundary is #185, point 4; `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR` takes the rate |
+| manufacture of the hardware | **yes, since 31.10.2026**, apart from the operational figures | 13.6 g CO2e per card-hour by default: H100 164 kg plus 312 kg server share over four years (see "What a card cost to make", #332; sourced band 2.4–20 g); decided in #185, point 4. `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR` overrides it, 0 switches it off. Records written before 28.10.2026 carry no card-hours and keep the "not apportioned" caveat |
 | runs started by hand outside the runner | no | measurement scripts, rescorings run outside a job |
 
 Every figure is therefore a **floor**, and the card says so in words.
@@ -267,11 +267,13 @@ SCI is a rate, `(E × I + M) per R`. Mapped onto this repository:
 |---|---|
 | E, energy | `progress.energy_wh`, × PUE once known (#185) |
 | I, carbon intensity | **127 g/kWh only**: SCI is location-based and does not let renewable purchases lower the score, so the 20 g figure belongs in the dual report, not in an SCI value |
-| M, embodied hardware | card-hours (`progress.gpu_hours`) × `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR`; **0 until that rate is set** (#185, point 4) |
+| M, embodied hardware | card-hours (`progress.gpu_hours`) × 13.6 g by default (`DEFAULT_EMBODIED_G_PER_GPU_HOUR`, decided 31.10.2026 in #185, point 4; `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR` overrides) |
 | R, functional unit | one trained model; for inference, 1 000 lines or pages transcribed |
 
-While the rate is unset, say "follows the structure of SCI, without its
-embodied term", not "SCI-conformant".
+With the rate set, say "follows the structure of SCI with M at a sourced
+rate", still not "SCI-conformant" (E lacks the PUE, CPU and memory are
+modelled apart). A record without card-hours, every one before 28.10.2026,
+is still "without its embodied term".
 
 **Setting M.** The rate is the card's embodied emissions divided by its
 expected lifetime in hours, apportioned by time as the SCI does. Card-hours
@@ -280,8 +282,8 @@ attempts included, so the two halves of `E × I + M` cover the same work.
 Records written before 28.10.2026 carry 0 card-hours and keep the
 "not apportioned" caveat even after a rate is set. The sources for the
 embodied figure and the band they give are under "What a card cost to make"
-below (#332); the card prints M and an "SCI per trained model" row once a rate
-is set. R is the useful part: per-model and per-page rates make a 4B and a 27B
+below (#332); the card prints M with its source and an "SCI per trained model"
+row for every record that has card-hours. R is the useful part: per-model and per-page rates make a 4B and a 27B
 run comparable on cost per CER point.
 
 **Green Algorithms** (University of Cambridge; the computing calculator listed
@@ -310,10 +312,14 @@ A sentence that can stand in a paper:
 > (127 g CO2e/kWh, Swiss consumer mix 2021–2023 per the Federal Office of
 > Energy), following the GHG Protocol Scope 2
 > Guidance, and per trained model following the structure of the Software
-> Carbon Intensity specification (ISO/IEC 21031) without its embodied term.
-> Hours not covered by measurement are estimated as in Green Algorithms
-> (runtime × assumed draw). CPU, memory, storage, data-centre overhead and
-> hardware manufacture are excluded, so all figures are lower bounds.
+> Carbon Intensity specification (ISO/IEC 21031), with hardware manufacture
+> apportioned by time at 13.6 g CO2e per card-hour (NVIDIA's product carbon
+> footprint of the HGX H100, 1 312 kg for eight cards, plus a server share
+> after Luccioni et al. 2023, over four years). Hours not covered by
+> measurement are estimated as in Green Algorithms (runtime × assumed draw).
+> CPU and memory are modelled from allocated cores and reported apart;
+> storage and data-centre overhead are excluded, so the operational figures
+> are lower bounds.
 
 ## What a card cost to make (#332)
 
@@ -369,10 +375,13 @@ four years, beside 2.4–6.3 kg operation market-based and 15–40 kg
 location-based. For one run, the 4-bit Qwen3.5-4B line arm (6.08 h): 15–93 g,
 beside its 47 g market-based and 300 g location-based.
 
-**Setting it** is one line, `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR=13.6` (H100 with
-its node share over four years); the default stays 0 because whether
-manufacture is inside the boundary at all is #185's point 4, a decision and not
-a lookup. C is now known for the H100 and A100, bounded by an analogue for the
+**Set on 31.10.2026** (#185, point 4): the default is 13.6 g per card-hour,
+the H100 with its node share over four years, because most card-hours are
+UBELIX H100 hours and a card is never made without a node. It is the one
+decision on this page, not a lookup; `ATR_TRAIN_EMBODIED_G_PER_GPU_HOUR`
+overrides it and 0 switches it off. For the asteraix A40 hours the rate
+overstates the card itself (82.5–128 kg against 164) and the node share is
+the same guess. C is now known for the H100 and A100, bounded by an analogue for the
 A40 and unknown for the RTX 4090, hence a band rather than a point. Every
 figure in this section was read against its primary document on 31.10.2026
 (NVIDIA PCF summary, JUL 25; BLOOM §4.1; Morand Tables 3–4; Falk v3).
