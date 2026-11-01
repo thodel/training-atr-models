@@ -190,6 +190,20 @@ disk; the token is the one `hf auth login` stored. `bash
 scripts/install_discovery_timer.sh` installs both files. What it reports and what
 it refuses is in [`DATASET_DISCOVERY.md`](DATASET_DISCOVERY.md).
 
+## The timer: atr-image-probe
+
+| Unit | Port | Runs | venv | When |
+|---|---|---|---|---|
+| `atr-image-probe.service` | none | `scripts/probe_image_paths.py`, `Type=oneshot` | `kraken-train` | from `atr-image-probe.timer`, weekly, Monday 06:20 Europe/Zurich |
+
+A third user unit, a timer since #199: five image URLs per foreign ground-truth
+source, on the clones the import uses (`~/gt-src`), so an image path that died
+is seen in the week it died and not on the day someone imports the source. It
+binds nothing and needs no token. State and reports live in
+`~/atr-cache/image-probe/`, a report only when a source changed. `bash
+scripts/install_image_probe_timer.sh` installs both files. The four states it
+tells apart are in [`FOREIGN_GT_IMPORT.md`](FOREIGN_GT_IMPORT.md) §6.
+
 ## The venvs
 
 The engines need dependency trees that cannot be combined. kraken 7.0.2 needs

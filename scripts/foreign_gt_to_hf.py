@@ -11,6 +11,12 @@ ohnehin liest.
     .venvs/kraken-train/bin/python scripts/foreign_gt_to_hf.py --list
     .venvs/kraken-train/bin/python scripts/foreign_gt_to_hf.py reichsanzeiger-gt --dry-run
     .venvs/kraken-train/bin/python scripts/foreign_gt_to_hf.py reichsanzeiger-gt
+    .venvs/kraken-train/bin/python scripts/foreign_gt_to_hf.py reichenau-inkunabeln --dry-run
+
+**Zenodo-Hinterlegungen (#198)** gehen denselben Weg hinein, nur ohne Klon: die API
+liefert Lizenz und Prüfsummen, die Archive werden je Teilsammlung geholt
+(``--part``, Vorgabe die als ``default`` geführten), und die Vorteilung der Quelle
+wird übernommen — ``data/train/`` und ``data/validation/``.
 
 **Der Datensatz wird privat angelegt, und ``--public`` wird verweigert, solange die
 Bildrechte der Quelle ``ungeprüft`` sind.** Die Lizenz der Transkription sagt
@@ -27,6 +33,8 @@ Auswahl später nachzuprüfen.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import subprocess
 import sys
 import time
@@ -47,6 +55,17 @@ from atr_training.foreign_gt import (  # noqa: E402
     image_urls,
     source_by_id,
     tracked_pages,
+)
+from atr_training.foreign_gt_zenodo import (  # noqa: E402
+    ZENODO_SOURCES,
+    ZenodoRecord,
+    check_licences,
+    check_record,
+    is_shadow,
+    is_unsafe,
+    select_pages,
+    undeclared_twins,
+    zenodo_card,
 )
 
 #: Sekunden zwischen zwei Bildabrufen. Das sind die öffentlichen Bildserver von
@@ -87,6 +106,164 @@ def _get(url: str, timeout: int = DEFAULT_TIMEOUT, retries: int = 4) -> bytes:
     raise RuntimeError(f"unerreichbar: {last}")
 
 
+def _get_json(url: str) -> dict:
+    return json.loads(_get(url))
+
+
+def _md5(path: Path) -> str:
+    digest = hashlib.md5()  # noqa: S324 — Zenodos Prüfsumme, keine Sicherheitsfrage
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download(url: str, dest: Path, checksum: str, timeout: int = DEFAULT_TIMEOUT) -> Path:
+    """Eine Datensatzdatei, gestreamt und gegen Zenodos MD5 geprüft; vorhandene bleibt."""
+    want = checksum.removeprefix("md5:") if checksum.startswith("md5:") else ""
+    if dest.is_file() and (not want or _md5(dest) == want):
+        print(f"  vorhanden: {dest.name}")
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_suffix(dest.suffix + ".part")
+    print(f"  hole {dest.name} …", flush=True)
+    request = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(request, timeout=timeout) as response, part.open("wb") as out:
+        for chunk in iter(lambda: response.read(1 << 20), b""):
+            out.write(chunk)
+    if want and _md5(part) != want:
+        part.unlink()
+        raise ForeignGtError(f"{dest.name}: MD5 does not match Zenodo's {checksum}")
+    part.replace(dest)
+    return dest
+
+
+def zenodo_main(source: ZenodoRecord, args, *, get_json=_get_json, get=_get,
+                fetch=download) -> int:
+    """Eine Zenodo-Hinterlegung einlesen (#198). Rückgabewerte wie beim Klon-Weg."""
+    import zipfile
+
+    print(f"── {source.id} (Zenodo {source.doi}) ─────────────────────────")
+    meta = get_json(source.api_url)
+    try:
+        api_licence, checksums = check_record(source, meta)
+    except ForeignGtError as exc:
+        print(f"  abgelehnt: {exc}", file=sys.stderr)
+        return 7
+    for twin in undeclared_twins(source, meta, ZENODO_SOURCES):
+        print(f"  WARNUNG: die Hinterlegung verweist auf {twin}, das Register führt "
+              f"sie nicht als denselben Seitensatz", file=sys.stderr)
+    if source.same_pages_as:
+        print(f"  Derselbe Seitensatz wie {source.same_pages_as}: nicht beide zählen.")
+    try:
+        parts = source.chosen_parts(args.part or (), args.all_parts)
+    except ForeignGtError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    keys = list(dict.fromkeys(k for p in parts for k in p.files))
+    missing = [k for k in keys if k not in checksums]
+    if missing:
+        print(f"  abgelehnt: die Hinterlegung hat keine Datei {missing}", file=sys.stderr)
+        return 7
+    print(f"  Teile:      {', '.join(p.name for p in parts)}")
+
+    licence_files = {}
+    for key in checksums:
+        if Path(key).name.lower().startswith("license"):
+            licence_files[f"{key} (Datei des Datensatzes)"] = get(source.file_url(key)).decode(
+                "utf-8", errors="replace")
+    workdir = args.workdir / "_zenodo" / source.id
+    paths = {k: fetch(source.file_url(k), workdir / k, checksums[k]) for k in keys}
+    archives = {k: zipfile.ZipFile(path) for k, path in paths.items()}
+    try:
+        for key, zf in archives.items():
+            for name in zf.namelist():
+                if (Path(name).name.lower().startswith("license") and not name.endswith("/")
+                        and not is_shadow(name) and not is_unsafe(name)):
+                    licence_files[f"{key}/{name} (im Archiv)"] = zf.read(name).decode(
+                        "utf-8", errors="replace")
+        try:
+            licence = check_licences(source, api_licence, licence_files)
+        except ForeignGtError as exc:
+            print(f"  abgelehnt: {exc}", file=sys.stderr)
+            return 7
+        print(f"  Lizenz:     {licence.licence}  ({licence.licence_at})")
+        print(f"  Bildrechte: {source.image_rights}")
+        sel = select_pages(source, archives)
+        print(f"  {sel.report()}")
+        if not sel.pages:
+            print("  keine Seite ausgewählt", file=sys.stderr)
+            return 1
+        if not source.has_images and not args.no_images:
+            print(f"\n  {source.id} hat keine Bilder in der Hinterlegung — nichts "
+                  f"hochgeladen.\n  Sie liegen bei {source.image_source}. Ein Datensatz "
+                  f"ohne Bildspalte braucht die ausdrückliche Zustimmung --no-images.",
+                  file=sys.stderr)
+            return 5
+        if source.has_images and not args.no_images and not args.keep_imageless:
+            before = len(sel.pages)
+            sel.pages = [p for p in sel.pages if p.image]
+            if before - len(sel.pages):
+                print(f"  {before - len(sel.pages)} Seiten ohne Bild ausgelassen "
+                      f"(--keep-imageless behält sie)")
+        pages = sel.pages[: args.limit] if args.limit else sel.pages
+        with_images = 0 if args.no_images else sum(1 for p in pages if p.image)
+        card = zenodo_card(source, sel, with_images=with_images, parts=parts,
+                           licence=licence)
+        if args.dry_run:
+            print("\n  --dry-run: nichts geschrieben, nichts hochgeladen\n\n  Karte (Anfang):\n")
+            print("\n".join(card.splitlines()[:30]))
+            return 0
+
+        rows: dict[str, list[dict]] = {}
+        for page in pages:
+            blob, name = b"", page.stem
+            if page.image and not args.no_images:
+                key, entry = page.image
+                blob, name = archives[key].read(entry), Path(entry).name
+            rows.setdefault(page.split, []).append({
+                "image": {"bytes": blob, "path": name},
+                "xml_content": archives[page.file].read(page.path).decode(
+                    "utf-8", errors="replace"),
+                "filename": page.stem,
+                "project_name": source.project,
+                "source_path": page.source_path,
+                "source_url": source.doi_url,
+                "source_split": page.split,
+            })
+    finally:
+        for zf in archives.values():
+            zf.close()
+
+    from datasets import Dataset, Features, Image, Value
+
+    features = Features({
+        "image": Image(decode=False), "xml_content": Value("string"),
+        "filename": Value("string"), "project_name": Value("string"),
+        "source_path": Value("string"), "source_url": Value("string"),
+        "source_split": Value("string"),
+    })
+    out = args.out or (args.workdir / "_hf" / source.id)
+    for split, split_rows in sorted(rows.items()):
+        shard_dir = out / "data" / split / source.project
+        shard_dir.mkdir(parents=True, exist_ok=True)
+        shard = shard_dir / "0000.parquet"
+        Dataset.from_list(split_rows, features=features).to_parquet(str(shard))
+        print(f"  schrieb {shard} ({len(split_rows)} Seiten)")
+    (out / "README.md").write_text(card, encoding="utf-8")
+
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    api.create_repo(source.target, repo_type="dataset", private=not args.public,
+                    exist_ok=True)
+    api.upload_folder(repo_id=source.target, repo_type="dataset", folder_path=str(out),
+                      commit_message=f"{len(pages)} Seiten, {sel.lines} Zeilen aus "
+                                     f"{source.doi} ({source.licence})")
+    print(f"  hochgeladen: {source.target} (privat)")
+    return 0
+
+
 def clone(source: Source, workdir: Path) -> Path:
     target = workdir / source.id
     if (target / ".git").is_dir():
@@ -122,16 +299,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--public", action="store_true",
                    help="öffentliches Repo — wird verweigert, solange die "
                         "Bildrechte ungeprüft sind")
+    p.add_argument("--part", action="append", default=[],
+                   help="Zenodo: nur diese Teilsammlung (wiederholbar)")
+    p.add_argument("--all-parts", action="store_true",
+                   help="Zenodo: alle Teilsammlungen, auch die nicht vorgegebenen")
     args = p.parse_args(argv)
 
     if args.list or not args.source_id:
-        print(f"{'Quelle':<22}{'Lizenz':<12}{'Bildrechte':<12}Ziel")
+        print(f"{'Quelle':<22}{'Lizenz':<14}{'Bildrechte':<12}Ziel")
         for s in SOURCES:
-            print(f"{s.id:<22}{s.licence:<12}{s.image_rights:<12}{s.target}")
+            print(f"{s.id:<22}{s.licence:<14}{s.image_rights:<12}{s.target}")
+        for z in ZENODO_SOURCES:
+            twin = f"  (= {z.same_pages_as})" if z.same_pages_as else ""
+            print(f"{z.id:<22}{z.licence:<14}{z.image_rights:<12}{z.target}  "
+                  f"[Zenodo {z.doi}]{twin}")
         return 0
 
+    zenodo = {z.id: z for z in ZENODO_SOURCES}
     try:
-        source = source_by_id(args.source_id)
+        source = zenodo.get(args.source_id) or source_by_id(args.source_id)
     except ForeignGtError as exc:
         print(exc, file=sys.stderr)
         return 2
@@ -143,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
               f"({source.image_source}), dann in der HF-Oberfläche von Hand "
               f"öffentlich schalten.", file=sys.stderr)
         return 3
+
+    if isinstance(source, ZenodoRecord):
+        return zenodo_main(source, args)
 
     print(f"── {source.id} ─────────────────────────────────────────")
     print(f"  Lizenz:     {source.licence}  ({source.licence_at})")

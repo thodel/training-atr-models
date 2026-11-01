@@ -1,0 +1,20 @@
+# User unit (systemctl --user) on asteraix — run by atr-image-probe.timer.
+# Install: bash scripts/install_image_probe_timer.sh
+#
+# Five image URLs per foreign source (#199), on the clones the import uses
+# (~/gt-src). Reports land in ~/atr-cache/image-probe/reports, only when a source
+# changed; runs.jsonl has a line for every run. Needs no token: the images are
+# public, which is exactly why nobody upstream notices when they move.
+[Unit]
+Description=ATR image-path probe: which foreign sources lost their images (#199)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Repo/training-atr-models
+Environment=PYTHONPATH=%h/Repo/training-atr-models/src
+ExecStart=%h/Repo/training-atr-models/.venvs/kraken-train/bin/python scripts/probe_image_paths.py --state-dir %h/atr-cache/image-probe --workdir %h/gt-src
+Nice=10
+# Six sources x five URLs, 1 s apart, 30 s timeout each: worst case ~16 min.
+TimeoutStartSec=30min

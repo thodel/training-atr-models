@@ -1,0 +1,13 @@
+# Weekly, Monday morning, so a broken image path is seen in the week it broke (#199).
+# Persistent: a pass missed while the box was down runs at the next boot.
+[Unit]
+Description=Weekly image-path probe for the foreign ground-truth sources (#199)
+
+[Timer]
+OnCalendar=Mon *-*-* 06:20:00 Europe/Zurich
+RandomizedDelaySec=10min
+Persistent=true
+Unit=atr-image-probe.service
+
+[Install]
+WantedBy=timers.target

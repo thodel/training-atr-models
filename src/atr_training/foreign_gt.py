@@ -42,14 +42,17 @@ __all__ = [
     "ImageTemplate",
     "ImageUrlList",
     "PageFile",
+    "REWRITES",
     "SOURCES",
     "Selection",
     "Source",
+    "UrlRewrite",
     "dataset_card",
     "dedupe_key",
     "deduplicate",
     "head_commit",
     "image_urls",
+    "rewrite_url",
     "source_by_id",
     "stabilise_archive_org",
     "url_in_document",
@@ -87,9 +90,8 @@ _B64 = re.compile(r"[A-Za-z0-9+/=\n]{40,}")
 #: ``ia903405.us.archive.org`` fest verdrahtet. Dort liegt das Item nicht mehr —
 #: laut ``archive.org/metadata`` ist es auf ``ia600607`` gewandert — und der alte
 #: Knoten antwortet überhaupt nicht (``http=000`` nach 60 s). Gemessen 08.10.2026.
-_IA_PINNED = re.compile(
-    r"https://ia\d+\.us\.archive\.org/view_archive\.php"
-    r"\?archive=/\d+/items/(?P<item>[^/]+)/(?P<archive>[^&]+)&file=(?P<file>.+)$")
+_IA_PINNED = (r"https://ia\d+\.us\.archive\.org/view_archive\.php"
+              r"\?archive=/\d+/items/(?P<item>[^/]+)/(?P<archive>[^&]+)&file=(?P<file>.+)$")
 
 _CURL_O = re.compile(
     r"""curl\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*o\s+(\S+)\s+["\']([^"\']+)["\']"""
@@ -98,6 +100,55 @@ _CURL_O = re.compile(
 
 class ForeignGtError(RuntimeError):
     """A source does not look the way the register says it does."""
+
+
+@dataclass(frozen=True)
+class UrlRewrite:
+    """Eine bekannte, haltbarere Form für eine Familie von Bild-URLs (#199).
+
+    Hostspezifisches Wissen gehört in einen Eintrag, nicht in eine Funktion je
+    Host: die nächste Quelle mit einem festgenagelten Knoten braucht eine Zeile in
+    :data:`REWRITES`, keinen Code. ``pattern`` muss die ganze URL treffen;
+    ``template`` wird mit seinen benannten Gruppen gefüllt, die in ``quote``
+    genannten URL-kodiert (Schrägstriche bleiben stehen).
+    """
+
+    name: str
+    pattern: str
+    template: str
+    reason: str
+    quote: tuple[str, ...] = ()
+
+    def apply(self, url: str) -> str | None:
+        found = re.fullmatch(self.pattern, url)
+        if not found:
+            return None
+        groups = {k: (urllib.parse.quote(v) if k in self.quote else v)
+                  for k, v in found.groupdict().items()}
+        return self.template.format(**groups)
+
+
+#: Die Umschreibungen, in Reihenfolge versucht; die erste, die greift, gewinnt.
+#: Eine URL, die keine trifft, kommt unverändert zurück — geraten wird nicht.
+REWRITES: tuple[UrlRewrite, ...] = (
+    UrlRewrite(
+        name="archive.org-knoten",
+        pattern=_IA_PINNED,
+        template="https://archive.org/download/{item}/{archive}/{file}",
+        quote=("file",),
+        reason="archive.org verschiebt Items zwischen Knoten; ``ia903405`` antwortete "
+               "für Weisthuemer am 08.10.2026 nicht mehr (http=000 nach 60 s), "
+               "``archive.org/download/…`` leitet immer auf den haltenden um."),
+)
+
+
+def rewrite_url(url: str, rewrites: Sequence[UrlRewrite] = REWRITES) -> str:
+    """``url`` in der haltbarsten bekannten Form; unverändert, wenn keine passt."""
+    for rule in rewrites:
+        out = rule.apply(url)
+        if out is not None:
+            return out
+    return url
 
 
 @dataclass(frozen=True)
@@ -382,15 +433,11 @@ def stabilise_archive_org(url: str) -> str:
     ``archive.org/download/<item>/<archiv>/<datei>`` leitet dagegen immer auf den
     Knoten um, der das Item gerade hält.
 
+    Seit #199 ein Eintrag in :data:`REWRITES`; diese Funktion wendet nur ihn an.
     Alles andere kommt unverändert zurück — eine URL, die wir nicht erkennen, wird
     nicht geraten.
     """
-    found = _IA_PINNED.match(url)
-    if not found:
-        return url
-    return ("https://archive.org/download/"
-            f"{found['item']}/{found['archive']}/"
-            f"{urllib.parse.quote(found['file'])}")
+    return rewrite_url(url, [r for r in REWRITES if r.name == "archive.org-knoten"])
 
 
 def _decode_base(root: Path, plan: ImageUrlList) -> str:
@@ -432,8 +479,7 @@ def _from_url_list(root: Path, plan: ImageUrlList) -> dict[str, str]:
 
 def _from_shell_script(root: Path, plan: ImageShellScript) -> dict[str, str]:
     script = (root / plan.script_path).read_text(encoding="utf-8", errors="replace")
-    return {Path(name).stem: stabilise_archive_org(url)
-            for name, url in _CURL_O.findall(script)}
+    return {Path(name).stem: url for name, url in _CURL_O.findall(script)}
 
 
 def url_in_document(xml_text: str) -> str | None:
@@ -500,6 +546,9 @@ def image_urls(root: Path, source: Source,
     Die Wege aus ``source.images`` werden in ihrer Reihenfolge versucht; der erste,
     der für eine Seite eine URL ergibt, gewinnt. Ein Pfad, der im Ergebnis fehlt,
     hat in der Quelle keine Bild-URL — das wird berichtet, nicht geraten.
+
+    Jede URL geht durch :data:`REWRITES`, gleich aus welchem Weg sie kommt (#199):
+    ein festgenagelter Knoten kann ebenso gut im Dokument stehen wie im Skript.
     """
     if not source.images:
         return {}
@@ -531,7 +580,7 @@ def image_urls(root: Path, source: Source,
                    else _fill_template(plan, page, source.xml_root, xml_text))
             if url:
                 urls[page.path] = url
-    return urls
+    return {path: rewrite_url(url) for path, url in urls.items()}
 
 
 def dataset_card(source: Source, sel: Selection, *, with_images: int,
