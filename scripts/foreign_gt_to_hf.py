@@ -54,6 +54,7 @@ from atr_training.foreign_gt import (  # noqa: E402
     head_commit,
     image_urls,
     source_by_id,
+    page_xml,
     tracked_pages,
 )
 from atr_training.foreign_gt_zenodo import (  # noqa: E402
@@ -341,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     root = clone(source, args.workdir)
     commit = head_commit(root)
     print(f"  Stand:      {commit[:12]} (Branch {source.branch})")
-    sel = tracked_pages(root, source.xml_root)
+    sel = tracked_pages(root, source.xml_root, source.alto)
     sel.source_id = source.id
     deduplicate(sel, source.prefer, source.variants)
     print(f"  {sel.report()}")
@@ -390,7 +391,8 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
     fetched = failed = 0
     for i, page in enumerate(pages, start=1):
-        xml = (root / page.path).read_text(encoding="utf-8", errors="replace")
+        # ALTO arrives as PageXML (#197): the dataset schema is PageXML.
+        xml = page_xml(root, page)
         blob = b""
         name = page.stem
         url = urls.get(page.path)

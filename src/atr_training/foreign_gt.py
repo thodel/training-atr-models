@@ -52,6 +52,7 @@ __all__ = [
     "deduplicate",
     "head_commit",
     "image_urls",
+    "page_xml",
     "rewrite_url",
     "source_by_id",
     "stabilise_archive_org",
@@ -258,6 +259,12 @@ class Source:
     #: verschiedene Werke sind. Ein wiederkehrender Dateiname ist keine Dublette;
     #: ein Pfad, der sich nur in einem Variantenmarker unterscheidet, ist eine.
     variants: tuple[str, ...] = ()
+    #: Path fragments under which ALTO is read through :mod:`atr_training.alto`
+    #: (#197). Empty: ALTO is counted and dropped, as before. Not a switch for the
+    #: whole source, because ALTO is not one thing there: in dach-gt, DE-4's ALTO
+    #: is ground truth, DE-12's ``alto/ocr`` is OCR, and DE-12's ``alto/gt`` holds
+    #: the same 19 pages as its ``GT-PAGE`` under other names.
+    alto: tuple[str, ...] = ()
     #: Whether the holding institution's terms for the *images* have been checked.
     #: Never defaults to anything but "ungeprüft": the transcription licence says
     #: nothing about the scan (#193).
@@ -293,12 +300,27 @@ class Source:
 
 @dataclass(frozen=True)
 class PageFile:
-    """A tracked PAGE document with transcribed lines."""
+    """A tracked PAGE document with transcribed lines.
+
+    ``fmt`` is ``"alto"`` for an ALTO document read through the adapter (#197):
+    whoever reads its XML converts it with :func:`page_xml` first.
+    """
 
     path: str
     stem: str
     lines: int
     has_text: bool
+    fmt: str = "page"
+
+
+def page_xml(root: Path, page: "PageFile") -> str:
+    """The page's XML as PageXML — converted when the file is ALTO (#197)."""
+    raw = (root / page.path).read_text(encoding="utf-8", errors="replace")
+    if page.fmt == "alto":
+        from atr_training.alto import alto_to_pagexml
+
+        return alto_to_pagexml(raw.encode("utf-8"))
+    return raw
 
 
 @dataclass
@@ -312,13 +334,19 @@ class Selection:
     dropped_no_lines: int = 0
     dropped_duplicate: int = 0
     dropped_no_text: int = 0
+    #: ALTO read through the adapter (#197), and its lines left out because empty.
+    alto_read: int = 0
+    dropped_empty_lines: int = 0
 
     @property
     def lines(self) -> int:
         return sum(p.lines for p in self.pages)
 
     def report(self) -> str:
-        return (f"{self.source_id}: {len(self.pages)} Seiten, {self.lines} Zeilen "
+        from_alto = sum(p.fmt == "alto" for p in self.pages)
+        alto = (f", davon {from_alto} aus ALTO ({self.dropped_empty_lines} leere "
+                "Zeilen verworfen)" if self.alto_read else "")
+        return (f"{self.source_id}: {len(self.pages)} Seiten, {self.lines} Zeilen{alto} "
                 f"(verworfen: {self.dropped_duplicate} Dubletten, "
                 f"{self.dropped_symlink} Symlinks, {self.dropped_alto} ALTO, "
                 f"{self.dropped_no_lines} ohne Zeilen, {self.dropped_no_text} ohne Text)")
@@ -343,11 +371,12 @@ def _git_ls_files(root: Path) -> list[tuple[str, str]]:
     return rows
 
 
-def tracked_pages(root: Path, xml_root: str = "") -> Selection:
+def tracked_pages(root: Path, xml_root: str = "", alto: tuple[str, ...] = ()) -> Selection:
     """Every tracked PAGE document under ``xml_root`` that carries ``TextLine``s.
 
     Filters by git mode, so a symlink is never read as a document, and counts the
-    reasons rather than only the result.
+    reasons rather than only the result. ALTO under one of the ``alto`` fragments
+    is read through the adapter (#197); any other ALTO is counted and dropped.
     """
     sel = Selection(source_id=root.name)
     for mode, rel in _git_ls_files(root):
@@ -365,7 +394,23 @@ def tracked_pages(root: Path, xml_root: str = "") -> Selection:
             continue
         head = blob[:HEAD_BYTES]
         if ALTO_MARKER in head:
-            sel.dropped_alto += 1
+            if not any(fragment in rel for fragment in alto):
+                sel.dropped_alto += 1
+                continue
+            from atr_training.alto import AltoError, convert
+
+            try:
+                converted = convert(blob)
+            except AltoError:
+                sel.dropped_alto += 1
+                continue
+            sel.dropped_empty_lines += converted.dropped_empty
+            if converted.lines == 0:
+                sel.dropped_no_text += 1
+                continue
+            sel.alto_read += 1
+            sel.pages.append(PageFile(path=rel, stem=Path(rel).stem, lines=converted.lines,
+                                      has_text=True, fmt="alto"))
             continue
         if PAGE_MARKER not in head:
             continue
@@ -574,8 +619,7 @@ def image_urls(root: Path, source: Source,
         for page in pages:
             if page.path in urls:
                 continue
-            xml_text = ((root / page.path).read_text(
-                encoding="utf-8", errors="replace") if reads else "")
+            xml_text = page_xml(root, page) if reads else ""
             url = (url_in_document(xml_text) if isinstance(plan, ImageInXml)
                    else _fill_template(plan, page, source.xml_root, xml_text))
             if url:
@@ -855,7 +899,19 @@ SOURCES: tuple[Source, ...] = (
                 only="DE-17",
                 template="https://tudigit.ulb.tu-darmstadt.de/image/"
                          "GK-9099-S322-1/3/{stem}.jpg"),
+            # DE-4 names only the landing page; the images are in its METS
+            # (mets-2879.xml, fileGrp DEFAULT), at the size the ALTO gives (#197).
+            ImageTemplate(
+                only="DE-4/urn_nbn_de_hebis_04-eb2010-01689/",
+                template="https://archiv.ub.uni-marburg.de/eb/2010/0168/jpg/def/"
+                         "{imgbase}.jpg"),
         ),
+        # DE-4's ALTO is ground truth, 672 pages; 15 of them are also GT-PAGE, and
+        # the GT-PAGE fassung wins. DE-12's ALTO is not read: alto/ocr is OCR, and
+        # alto/gt holds the 19 pages of its GT-PAGE under other names (#197).
+        alto=("DE-4/",),
+        variants=("GT-PAGE/", "alto/"),
+        prefer=("GT-PAGE/",),
         licence="CC0-1.0",
         licence_at="LICENSE (CC0 1.0 Universal); GitHub-API spdx_id",
         attribution="Stefan Weil (UB Mannheim) und die sieben haltenden "
@@ -867,16 +923,22 @@ SOURCES: tuple[Source, ...] = (
         project="dach-gt",
         target="dh-unibe/image-text_dach-gt",
         notes=(
-            "**162 Seiten, 4.636 Zeilen** in PAGE-Form — gemessen.",
-            "**Nur ein Sechstel der Quelle.** Weitere **864 Seiten liegen als "
-            "ALTO** und brauchen einen Adapter, den es noch nicht gibt. Die "
-            "Schätzung von ~33.000 Zeilen für die ganze Quelle war im Ergebnis "
-            "nicht grob falsch, in der Verteilung aber schon.",
+            "**810 Seiten, 39.786 Zeilen** — gemessen am 01.11.2026: 162 Seiten "
+            "PAGE (4.636 Zeilen) und 648 Seiten ALTO aus DE-4 (35.150 Zeilen), "
+            "gelesen über `atr_training.alto` (#197); 915 leere ALTO-Zeilen und "
+            "9 Seiten ganz ohne Text verworfen.",
+            "Von den 864 ALTO-Dateien ist nur DE-4 Ground Truth. DE-12 hält unter "
+            "`alto/ocr` 173 Dateien **OCR**, und unter `alto/gt` dieselben 19 Seiten "
+            "wie unter `GT-PAGE`, mit anderen Namen; beides wird nicht gelesen.",
+            "DE-4 nennt im Dokument nur seine Landingpage; die Bilder stehen in der "
+            "METS (`mets-2879.xml`, `jpg/def`) in genau der Grösse, die das ALTO "
+            "angibt. Damit haben auch die 15 PAGE-Seiten von DE-4 ein Bild.",
             "**173 Einträge unter `data/DE-12/.../alto/` sind defekte Symlinks** "
             "auf ein nie eingechecktes `gt/`. Dieser Importweg filtert nach "
             "Git-Modus und verwirft sie; wer nach Endung filtert, liest 173 "
             "einzeilige Textdateien als Ground Truth ein.",
-            "DE-4 hält 15 Seiten doppelt vor, als PAGE und als ALTO.",
+            "DE-4 hält 15 Seiten doppelt vor, als PAGE und als ALTO; die "
+            "PAGE-Fassung gewinnt.",
             "Nur 7 der 11 im README genannten Einrichtungen haben Daten; DE-27, "
             "DE-38, DE-46 und DE-61 sind leere Platzhalter.",
             "Die Staatsbibliothek zu Berlin antwortete in der Probe in 9,7 s je "
