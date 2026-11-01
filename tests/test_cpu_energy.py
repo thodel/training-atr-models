@@ -194,3 +194,64 @@ def test_the_card_prints_the_modelled_row_apart_and_the_co2_block_stays_measured
 def test_cpu_model_is_a_value_object():
     m = CpuModel(hours=1.0, cpus=4, w_per_core=10.0, cpu_model="x", ram_gb=8.0)
     assert m.cpu_wh == 40.0 and m.ram_wh == 3.0
+
+
+# ── in-process stages (#331, point 4) ────────────────────────────────────────
+def _with_stage(job, p):
+    """The ledger double binds `_run` only; `_stage` is what prepare goes through."""
+    from atr_training.runner_base import BasePipeline
+
+    for name in ("_stage", "_model_cpu_if_unmodelled"):
+        setattr(p, name, getattr(BasePipeline, name).__get__(p))
+    job.code, job.stages = None, []
+    return job, p
+
+
+def test_an_in_process_stage_is_modelled_too(tmp_path, monkeypatch):
+    """`prepare` never passes through `_run`; the model has to reach it anyway."""
+    from test_energy_ledger import _Job, _pipeline
+
+    monkeypatch.setattr("atr_training.cpu_energy.cpu_model_name", lambda *_: EPYC)
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "8")
+    monkeypatch.delenv("ATR_TRAIN_CPU_W_PER_CORE", raising=False)
+    job, p = _with_stage(_Job(), _pipeline(tmp_path))
+
+    with p._stage(job, "prepare") as record:
+        pass
+
+    assert record.energy_cpu_modelled is not None
+    assert record.energy_cpu_modelled["cpus"] == 8
+    assert job.progress.cpu_model_name == EPYC
+    assert job.progress.energy_wh == 0.0
+
+
+def test_a_failed_in_process_stage_still_carries_its_model(tmp_path, monkeypatch):
+    from test_energy_ledger import _Job, _pipeline
+
+    monkeypatch.setattr("atr_training.cpu_energy.cpu_model_name", lambda *_: EPYC)
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "4")
+    job, p = _with_stage(_Job(), _pipeline(tmp_path))
+
+    with pytest.raises(RuntimeError):
+        with p._stage(job, "prepare") as record:
+            raise RuntimeError("disk full")
+
+    assert record.status == "failed" and record.energy_cpu_modelled["cpus"] == 4
+
+
+def test_a_subprocess_stage_is_not_modelled_twice(tmp_path, monkeypatch):
+    """`_run` inside `_stage`: one model, one addition to the job's total."""
+    from test_energy_ledger import _Job, _pipeline, fake_smi
+
+    monkeypatch.setattr(gpu, "_smi", fake_smi([0.0]))
+    monkeypatch.setattr("atr_training.cpu_energy.cpu_model_name", lambda *_: EPYC)
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "8")
+    monkeypatch.delenv("ATR_TRAIN_CPU_W_PER_CORE", raising=False)
+    job, p = _with_stage(_Job(), _pipeline(tmp_path))
+
+    with p._stage(job, "compile") as record:
+        p._run(job, "compile", ["true"], record)
+        once = job.progress.energy_cpu_wh_modelled
+        assert record.energy_cpu_modelled is not None
+
+    assert job.progress.energy_cpu_wh_modelled == once
