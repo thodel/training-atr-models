@@ -503,11 +503,26 @@ class BasePipeline(ABC):
         except BaseException:
             record.status = "failed"
             record.finished_at = utcnow()
+            self._model_cpu_if_unmodelled(job, record)
             self.store.save(job)
             raise
         record.status = "completed"
         record.finished_at = utcnow()
+        self._model_cpu_if_unmodelled(job, record)
         self.store.save(job)
+
+    def _model_cpu_if_unmodelled(self, job: TrainJob, record: StageRecord) -> None:
+        """Model the stage's CPU energy unless :meth:`_run` already did (#331, point 4).
+
+        ``_run`` models the stage around its subprocess, but ``prepare``,
+        ``compile`` and ``register`` run in this process and never pass through
+        it — so the CPU-heaviest stage of a job, the one the model was made for,
+        was the one left unmodelled, and nothing could be put on a dataset card.
+        A stage ``_run`` modelled carries the dict already and is not counted
+        twice.
+        """
+        if record.energy_cpu_modelled is None:
+            self._record_cpu_model(job, record)
 
     def _run(self, job: TrainJob, stage: JobStage, cmd: list[str], record: StageRecord,
              on_start: Callable[[int], None] | None = None) -> None:
