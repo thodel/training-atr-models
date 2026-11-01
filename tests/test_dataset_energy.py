@@ -83,8 +83,30 @@ def test_an_unknown_box_stays_unmodelled_and_out_of_the_sum():
     old["host"] = "laptop"
     e = dataset_energy([old, builder_recorded()], KURRENT)
     assert [r.wh_attributed is None for r in e.rows] == [True, False]
+    assert e.rows[0].why_not == "processor of laptop not in the TDP table"
     assert e.modelled_wh == pytest.approx(97.5)
     assert len(e.unmodelled) == 1
+
+
+def test_a_record_without_a_host_takes_the_stores_legacy_host():
+    """The share held idhefix's jobs before asteraix stamped its own; idhefix is not in the table."""
+    old = builder_old()
+    old["host"] = None
+    (row,) = dataset_energy([old], KURRENT).rows
+    assert row.host == "idhefix" and row.host_assumed
+    assert row.wh_attributed is None and "idhefix" in row.why_not
+    scratch = builder_old()
+    scratch["host"], scratch["_store"] = None, "scratch"
+    (row,) = dataset_energy([scratch], KURRENT).rows
+    assert row.host == "ubelix" and row.w_per_core == pytest.approx(225 / 64)
+    assert "ubelix (by store)" in markdown_section(dataset_energy([scratch], KURRENT), generated="x")
+
+
+def test_a_stage_without_times_is_not_zero_watt_hours():
+    old = builder_old()
+    old["stages"][0]["finished_at"] = None
+    (row,) = dataset_energy([old], KURRENT).rows
+    assert row.wh_attributed is None and row.why_not == "no times on the prepare stage"
 
 
 def test_adopters_count_as_reuses_of_their_builder_and_build_nothing():
@@ -111,7 +133,7 @@ def test_the_section_names_the_basis_and_the_total():
     assert "recorded by the stage" in md and "after the fact: 8 cores × 11.7 W" in md
     assert "modelled, not measured" in md
     assert "reused 1 time" in md and "| 1 |" in md
-    assert "2026-10-12 | `J-old` | asteraix | 200 | 100 %" in md
+    assert "2026-10-12 | `J-old` | asteraix | 200 | 100 % | 3.00 |" in md
 
 
 def test_splice_appends_once_and_then_replaces():

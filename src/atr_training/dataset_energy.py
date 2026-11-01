@@ -57,6 +57,13 @@ HOST_PROCESSOR: dict[str, str] = {
     "ubelix": "AMD EPYC 7742 64-Core Processor",
 }
 
+#: A record without a ``host`` stamp belongs to the store's legacy host — the
+#: same convention the results MCP applies (``atr_results_mcp.probe``): the
+#: share held idhefix's jobs before asteraix stamped its own, the scratch
+#: store is UBELIX's. idhefix's processor is not in the TDP table, so its rows
+#: stay unmodelled rather than priced at another box's rate.
+STORE_DEFAULT_HOST: dict[str, str] = {"share": "idhefix", "scratch": "ubelix"}
+
 MARK_OPEN = "<!-- atr-training:materialisation-energy -->"
 MARK_CLOSE = "<!-- /atr-training:materialisation-energy -->"
 
@@ -94,6 +101,8 @@ class Materialisation:
     job_id: str
     store: str
     host: str | None
+    #: True where ``host`` came from the store's convention, not the record.
+    host_assumed: bool
     started: datetime | None
     #: Pages of this dataset the job wrote, and all pages it wrote.
     pages: int
@@ -107,6 +116,8 @@ class Materialisation:
     #: computed here from wall time, workers and the host's processor.
     recorded: bool
     hours: float
+    #: Why no figure, when there is none.
+    why_not: str | None = None
     #: Jobs that adopted this job's artefact instead of building their own.
     reused_by: list[str] = field(default_factory=list)
     stages: list[str] = field(default_factory=list)
@@ -162,8 +173,9 @@ def _stage_model(job: dict, name: str) -> tuple[dict | None, float] | None:
     if rec is None:
         return None
     started, finished = _parse_dt(rec.get("started_at")), _parse_dt(rec.get("finished_at"))
-    hours = max((finished - started).total_seconds(), 0.0) / 3600.0 if started and finished else 0.0
-    return rec.get("energy_cpu_modelled"), hours
+    if not (started and finished):
+        return rec.get("energy_cpu_modelled"), None
+    return rec.get("energy_cpu_modelled"), max((finished - started).total_seconds(), 0.0) / 3600.0
 
 
 def _materialisation(job: dict, repo: str) -> Materialisation | None:
@@ -180,11 +192,13 @@ def _materialisation(job: dict, repo: str) -> Materialisation | None:
         pages, total = 1, len(counts)
 
     host = job.get("host")
+    host_assumed = not host
+    host = host or STORE_DEFAULT_HOST.get(str(job.get("_store") or ""))
     workers = ((job.get("request") or {}).get("params") or {}).get("workers")
     processor = _processor_for(host)
     cpu_wh = ram_wh = 0.0
     cpus = w_core = None
-    recorded, hours, stages = True, 0.0, []
+    recorded, hours, stages, why_not = True, 0.0, [], None
     any_stage = False
     for name in _STAGES:
         found = _stage_model(job, name)
@@ -192,34 +206,41 @@ def _materialisation(job: dict, repo: str) -> Materialisation | None:
             continue
         any_stage = True
         model, stage_hours = found
-        hours += stage_hours
         stages.append(name)
         if model and model.get("cpu_wh") is not None:
             cpu_wh += float(model["cpu_wh"])
             ram_wh += float(model.get("ram_wh") or 0.0)
             cpus, w_core = model.get("cpus"), model.get("w_per_core")
-        else:
-            recorded = False
-            if processor in CPU_TDP_W and workers:
-                tdp, cores = CPU_TDP_W[processor]
-                w_core = tdp / cores
-                cpus = int(workers)
-                cpu_wh += cpus * w_core * stage_hours
-                ram = model.get("ram_gb") if model else None
-                if ram:
-                    ram_wh += float(ram) * W_PER_GB_RAM * stage_hours
-            else:
-                cpu_wh = None  # type: ignore[assignment]
-                break
+            hours += float(model.get("hours") or stage_hours or 0.0)
+            continue
+        recorded = False
+        if stage_hours is None:
+            why_not = f"no times on the {name} stage"
+        elif processor not in CPU_TDP_W:
+            why_not = f"processor of {host or 'an unknown host'} not in the TDP table"
+        elif not workers:
+            why_not = "the request names no workers"
+        if why_not:
+            cpu_wh = None  # type: ignore[assignment]
+            break
+        tdp, cores = CPU_TDP_W[processor]
+        w_core = tdp / cores
+        cpus = int(workers)
+        hours += stage_hours
+        cpu_wh += cpus * w_core * stage_hours
+        ram = model.get("ram_gb") if model else None
+        if ram:
+            ram_wh += float(ram) * W_PER_GB_RAM * stage_hours
     if not any_stage:
         return None
     started = _parse_dt(job.get("started_at")) or _parse_dt(job.get("created_at"))
     return Materialisation(job_id=str(job.get("id")), store=str(job.get("_store") or ""),
-                           host=host, started=started, pages=pages, pages_total=total,
+                           host=host, host_assumed=host_assumed, started=started,
+                           pages=pages, pages_total=total,
                            cpu_wh=None if cpu_wh is None else round(cpu_wh, 1),
                            ram_wh=None if cpu_wh is None else round(ram_wh, 1),
                            cpus=cpus, w_per_core=w_core, recorded=recorded,
-                           hours=round(hours, 2), stages=stages)
+                           hours=round(hours, 2), stages=stages, why_not=why_not)
 
 
 def dataset_energy(jobs: list[dict], repo: str) -> DatasetEnergy:
@@ -259,11 +280,12 @@ def markdown_section(energy: DatasetEnergy, *, generated: str) -> str:
     for r in energy.rows:
         when = r.started.strftime("%Y-%m-%d") if r.started else "—"
         wh = "—" if r.wh_attributed is None else f"{r.wh_attributed:,.1f}"
-        basis = ("not modelled: processor or cores unknown" if r.wh_attributed is None
+        basis = (f"not modelled: {r.why_not}" if r.wh_attributed is None
                  else ("recorded by the stage" if r.recorded
                        else f"after the fact: {r.cpus} cores × {r.w_per_core:.1f} W"))
-        lines.append(f"| {when} | `{r.job_id}` | {r.host or '—'} | {r.pages:,} | {100 * r.share:.0f} % "
-                     f"| {r.hours:.1f} | {wh} | {basis} | {len(r.reused_by)} |")
+        box = (r.host or "—") + (" (by store)" if r.host_assumed and r.host else "")
+        lines.append(f"| {when} | `{r.job_id}` | {box} | {r.pages:,} | {100 * r.share:.0f} % "
+                     f"| {r.hours:.2f} | {wh} | {basis} | {len(r.reused_by)} |")
     n = len(energy.rows)
     lines += [
         "",

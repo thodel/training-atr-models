@@ -64,7 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     jobs = []
     for label, root in stores:
-        jobs += load_jobs(Path(root), store=str(label))
+        found = load_jobs(Path(root), store=str(label))
+        print(f"store {label}: {len(found)} job records under {root}"
+              + ("" if Path(root).is_dir() else " (not a directory here)"), file=sys.stderr)
+        jobs += found
     energy = dataset_energy(jobs, args.repo)
     section = markdown_section(energy, generated=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     if not energy.rows:

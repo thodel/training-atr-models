@@ -232,6 +232,18 @@ it, because publishing a dataset card is a public act. Whether `pagexml-hf`
 rewrites the README on the next sync and drops the section is not known; if it
 does, the run is repeated after the sync.
 
+Two limits of the first run (asteraix, share store, 01.11.2026). A record without
+a `host` stamp takes the store's legacy host, as the results MCP does: on the
+share that is idhefix, whose processor is not in the TDP table, so the 48 oldest
+records (August–September) stay **unmodelled** and out of the sum rather than
+priced at another box's rate. And the UBELIX scratch store is not mounted on
+asteraix, so a card rendered there misses every materialisation that ran on the
+cluster — the medieval page corpora above all; the complete section has to be
+rendered on a UBELIX login node, where both stores are readable. For
+`image-text_kurrent-xix` the asteraix stores alone gave 244 Wh over eight
+materialisations, reused eight times (the effective-batch sweep's arms adopted
+one artefact); for `image-text_zh-regierungsratsprotokolle` 395 Wh.
+
 ## Where the factors come from (#336)
 
 Every factor on a card has a source and a named mix; a number without either
