@@ -280,6 +280,10 @@ MIRROR_JOIN_TIMEOUT_S = 5.0
 #: File name prefix of the energy ledger a stage's sampler keeps in the job
 #: directory, ``energy-pending.<stage>.<runner pid>.json`` (#184).
 ENERGY_LEDGER_PREFIX = "energy-pending."
+#: File name prefix of the energy time series the same sampler appends to,
+#: ``energy-series.<stage>.jsonl`` — one line per flush, cumulative over every
+#: attempt of the stage, never removed (#334).
+ENERGY_SERIES_PREFIX = "energy-series."
 
 
 def local_log_path(share_log: Path, local_root: Path | None,
@@ -535,10 +539,11 @@ class BasePipeline(ABC):
         sampler: PeakSampler | None = None
         self._recover_energy(job)
         ledger = self.store.paths(job.id).root / f"{ENERGY_LEDGER_PREFIX}{stage}.{os.getpid()}.json"
+        series = self.store.paths(job.id).root / f"{ENERGY_SERIES_PREFIX}{stage}.jsonl"
 
         def started(pid: int) -> None:
             nonlocal sampler
-            sampler = PeakSampler(pid, ledger=ledger).start()
+            sampler = PeakSampler(pid, ledger=ledger, series=series).start()
             if on_start is not None:
                 try:
                     on_start(pid)
