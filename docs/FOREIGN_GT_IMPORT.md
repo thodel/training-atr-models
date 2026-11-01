@@ -63,7 +63,7 @@ Platzhalter `{stem}`, `{base}` (Stamm ohne `_NNN`), `{top}`, `{dir}`, `{img}`,
 holt nur DE-17 aus Darmstadt. Eine Vorlage ohne `{img…}` liest das Dokument gar
 nicht; bei Fibeln wären das 409 Dateizugriffe für nichts.
 
-Noch nicht gebaut: **ALTO** und die **Zenodo-ZIP-Form**.
+Noch nicht gebaut: **ALTO**. Die **Zenodo-ZIP-Form** hat einen eigenen Abschnitt (§8).
 
 ## 3. Die Fallen, und wie jede gefunden wurde
 
@@ -147,6 +147,35 @@ Bilder verlinken" sieht sauber aus, verlässt sich aber darauf, dass fremde
 Bild-URLs halten. Bei zwei von sechs taten sie es schon nicht. Wer die Bilder nicht
 hält, hält die Daten nicht.
 
+**Der Prüflauf (#199).** `scripts/probe_image_paths.py` ruft je Quelle **fünf**
+Bild-URLs ab, gleichmässig über die Seiten gezogen, erste und letzte dabei — fünf
+hätten Weisthuemer und dach-gt beide gefunden. Er läuft wöchentlich
+(`deploy/systemd/atr-image-probe.timer`, Montag 06:20, installiert mit
+`bash scripts/install_image_probe_timer.sh`) und hängt bewusst nicht am Import:
+der läuft, wenn jemand eine Quelle einliest, und dann ist es zu spät.
+
+Zustand in `~/atr-cache/image-probe/`: `snapshot.json`, `reports/YYYY-MM-DD.md`
+**nur bei Veränderung** gegen den letzten Lauf, `runs.jsonl` für jeden Lauf. Der
+erste Lauf meldet die Quellen, die schon nicht vollständig erreichbar sind.
+
+Der Bericht unterscheidet vier Lagen, weil jede eine andere Antwort hat:
+
+| Lage | heisst | Antwort |
+|---|---|---|
+| `unreachable` | der Knoten antwortet nicht (`http=000`) | Host gewechselt? Eine Umschreibung ins Register |
+| `404` | die Datei ist weg | Seiten fallen beim Import heraus; die Quelle fragen |
+| `403` | der Zugang hat sich geändert | die Bedingungen der Einrichtung neu lesen (#193) |
+| `timeout` | der Server ist langsam | beim nächsten Lauf wieder ansehen |
+
+Dazu `listing_failed`, wenn sich eine Quelle gar nicht auflisten lässt. Bei
+Zenodo-Hinterlegungen werden die Datei-URLs der Archive geprüft.
+
+**Umschreibungen sind Register-Einträge.** `foreign_gt.REWRITES` hält je bekannter
+haltbarerer Form einen `UrlRewrite` (Muster, Vorlage, Begründung), und
+`image_urls` schickt **jede** URL hindurch, gleich aus welchem Bildweg sie kommt.
+Die nächste Quelle mit einem festgenagelten Knoten braucht eine Zeile, keine
+Funktion.
+
 ## 7. Eine neue Quelle aufnehmen
 
 1. Flach klonen, `tracked_pages` zählen lassen, und die Zahl **gegen das README der
@@ -161,3 +190,57 @@ hält, hält die Daten nicht.
    Bezugsskript, Vorlage. **Ein fehlendes Skript ist kein fehlender Weg.**
 5. Den Standard-Branch prüfen: drei der sieben CC0-Quellen liegen auf `master`.
 6. Trockenlauf, und die Verwurfszahlen lesen, nicht nur die Seitenzahl.
+
+## 8. Zenodo-Hinterlegungen (#198)
+
+Vier Quellen liegen als Zenodo-ZIP. Sie gehen denselben Weg hinein, ohne Klon:
+
+```bash
+.venvs/kraken-train/bin/python scripts/foreign_gt_to_hf.py reichenau-inkunabeln --dry-run
+.venvs/kraken-train/bin/python scripts/foreign_gt_to_hf.py reichenau-inkunabeln --part lateinisch
+.venvs/kraken-train/bin/python scripts/foreign_gt_to_hf.py fanny-mendelssohn --no-images
+```
+
+Gemessen am 01.11.2026, je Teil ein Trockenlauf gegen die echten Archive:
+
+| Quelle | DOI (Version) | Lizenz | Seiten | Zeilen | Teilung der Quelle |
+|---|---|---|---:|---:|---|
+| `reichenau-inkunabeln` Deutsch | 10.5281/zenodo.11046062 | CC BY-SA 4.0 | 205 | 9.671 | 185 / 20 |
+| `reichenau-inkunabeln` Lat.-Dt. | 〃 | 〃 | 393 | 18.610 | 354 / 39 |
+| `reichenau-inkunabeln` Latein *(nicht Vorgabe)* | 〃 | 〃 | 1.609 | 97.049 | 1.449 / 160 |
+| `newseye-onb` | 10.5281/zenodo.3387369 | CC BY 4.0 | 161 | 58.796 | 148 / 13 |
+| `fanny-mendelssohn` *(keine Bilder)* | 10.5281/zenodo.15223355 | CC BY 4.0 | 200 | 2.238 | — |
+| `regesta-graphemic` | 10.5281/zenodo.18441031 | CC BY 4.0 | 50 | 2.177 | — |
+| `regesta-diplomatic` *(derselbe Seitensatz)* | 10.5281/zenodo.18377766 | CC BY 4.0 | 50 | 2.177 | — |
+
+**Was anders ist als beim Klonen:**
+
+- **Die versionierte DOI ist Pflicht** und steht in der Karte und in `source_url`.
+  Der Konzept-DOI zeigt auf „die neueste" — wie ein Link auf `main` — und wird
+  verweigert. `source_path` ist `<Datei>/<Eintrag>` im Archiv.
+- **Die Lizenz wird an zwei Stellen gelesen:** `metadata.license.id` der API und
+  jede `LICENSE*`-Datei, im Datensatz oder im Archiv. Widerspruch, oder eine Datei,
+  deren Lizenz nicht erkannt wird, ist Ablehnung mit beiden Fundstellen. Weicht
+  die API vom Register ab, ebenso: die Hinterlegung hat sich geändert.
+- **Die Vorteilung der Quelle wird übernommen**, nicht neu gezogen: `train` nach
+  `data/train/`, `validation` nach `data/validation/`, und jede Zeile trägt sie in
+  `source_split`. `prepare` liest nur die ausdrücklich genannten `data_files`, die
+  Validierungsseiten der Quelle fliessen also nicht ins Training.
+- **Je Teilsammlung ziehbar** (`--part`, `--all-parts`). Reichenaus lateinischer
+  Teil — 1.609 von 2.207 Seiten, 1,45 GB — ist nicht Vorgabe: für ein deutsches
+  Modell Typen-Robustheit, nicht Sprache.
+- **`__MACOSX`-Schatten und Einträge mit `..`** werden verworfen und gezählt. Aus
+  dem Archiv wird gelesen, nie ausgepackt.
+- **Das Bild zur Seite** wird über `imageFilename` gesucht: daneben, eine Ebene
+  höher (Transkribus' `page/`), oder in einem eigenen Bild-Archiv (Regesta). Zwei
+  Kandidaten, die keine dieser Regeln entscheidet, sind „mehrdeutig" und werden
+  gezählt, nicht geraten.
+- **Archive werden gegen Zenodos MD5 geprüft** und bleiben unter
+  `<workdir>/_zenodo/<id>/` liegen.
+
+**Ein Zwilling ist keine zweite Quelle.** `regesta-graphemic` (18441031) und
+`regesta-diplomatic` (18377766) sind dieselben 50 Bilder auf zwei
+Transkriptionsebenen — ihr `images.zip` hat dieselbe MD5. Beide stehen im
+Register mit `same_pages_as` aufeinander; die Karte sagt es, und ein Verweis der
+Hinterlegung auf eine Version oder Variante, die das Register nicht so führt,
+wird beim Einlesen gemeldet.
