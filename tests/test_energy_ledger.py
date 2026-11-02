@@ -34,11 +34,11 @@ def fake_smi(watts):
     return _smi
 
 
-def sampled(monkeypatch, *, watts=400.0, hours=1.0, ledger=None):
+def sampled(monkeypatch, *, watts=400.0, hours=1.0, ledger=None, series=None):
     """A sampler that has integrated ``watts`` over ``hours`` on one card."""
     monkeypatch.setattr(gpu, "_smi", fake_smi([watts]))
     monkeypatch.setattr(gpu, "_ancestors", lambda pid, limit=32: [pid, 77])
-    sampler = gpu.PeakSampler(77, ledger=ledger)
+    sampler = gpu.PeakSampler(77, ledger=ledger, series=series)
     clock = iter([0.0, hours * 3600.0])
     monkeypatch.setattr(gpu.time, "monotonic", lambda: next(clock, hours * 3600.0))
     sampler._once()
@@ -211,3 +211,44 @@ def test_an_unreadable_ledger_is_left_and_not_counted(tmp_path, monkeypatch):
 
     assert job.progress.energy_wh == 0.0
     assert bad.exists(), "left for a person to look at, not deleted unread"
+
+
+# ── the time series (#334) ───────────────────────────────────────────────────
+def test_every_flush_appends_one_point_to_the_series(tmp_path, monkeypatch):
+    """The ledger says what a stage drew; the series says when."""
+    series = tmp_path / "energy-series.train.jsonl"
+    sampler = sampled(monkeypatch, watts=400.0, hours=1.0, series=series)
+
+    sampler.flush()
+    sampler.peak.energy_wh[0] += 200.0
+    sampler.peak.card_hours[0] += 0.5
+    sampler.flush()
+
+    points = [json.loads(line) for line in series.read_text().splitlines()]
+    assert [p["wh"] for p in points] == [400.0, 600.0]
+    assert [p["card_hours"] for p in points] == [1.0, 1.5]
+    assert all(p["at"].endswith("Z") and p["pid"] == 77 for p in points)
+
+
+def test_stopping_the_sampler_writes_the_last_point(tmp_path, monkeypatch):
+    series = tmp_path / "energy-series.train.jsonl"
+    sampler = sampled(monkeypatch, watts=300.0, hours=2.0, series=series)
+
+    sampler.stop()
+
+    (point,) = [json.loads(line) for line in series.read_text().splitlines()]
+    assert point["wh"] == 600.0
+
+
+def test_nothing_drawn_appends_nothing(tmp_path, monkeypatch):
+    series = tmp_path / "energy-series.train.jsonl"
+    sampled(monkeypatch, watts=0.0, series=series).flush()
+    assert not series.exists()
+
+
+def test_the_series_is_kept_across_attempts_and_the_ledger_is_not(tmp_path, monkeypatch):
+    """A second attempt appends to the same file: the series spans the stage's life."""
+    series = tmp_path / "energy-series.train.jsonl"
+    sampled(monkeypatch, watts=400.0, hours=1.0, series=series).flush()
+    sampled(monkeypatch, watts=400.0, hours=1.0, series=series).flush()
+    assert len(series.read_text().splitlines()) == 2

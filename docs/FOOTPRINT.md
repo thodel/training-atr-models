@@ -41,6 +41,17 @@ draw, about 6 Wh on an H100. A stage that ends in order removes its ledger
 before the record is saved: a kill in between loses that stage's energy rather
 than counting it twice, so the error can only point down.
 
+The ledger says what a stage drew and not when. Since 01.11.2026 (#334) the same
+flush also **appends** one line to `energy-series.<stage>.jsonl` in the job
+directory — UTC time, cumulative Wh, cumulative card-hours, the runner's pid —
+and writes a last line when the stage ends. The file is never removed and every
+attempt appends to it, so it spans the stage's whole life. It is what lets energy
+be read against a checkpoint or an epoch: how much was drawn after the best
+checkpoint (the early-stopping tail, never measured), or up to the point a pruner
+would have stopped an arm (`docs/ARCHITECTURE_SEARCH.md` §9). The sweep of
+October 2026 had no such series, which is why its dry run apportions the stage's
+energy by wall time instead.
+
 ## What a card draws while training
 
 From the eight records with a measured figure (UBELIX, H100, train stage,
@@ -210,9 +221,39 @@ on estimation based on TDP`. Both tools model the cores on this box; neither
 measures them. (The CodeCarbon venv stays at `~/.venvs/codecarbon` on asteraix for
 a repeat; nothing runs from it.)
 
-Not done here: the energy of a corpus materialisation on the **dataset** card
-(issue point 4) — the modelled prepare figure is in the job record now, and the
-dataset card can read it once the dataset publisher learns to (#331, follow-up).
+**Point 4, the dataset card (01.11.2026).** The sentence that stood here — "the
+modelled prepare figure is in the job record now" — was wrong: the model ran in
+`_run`, around a stage's subprocess, and `prepare`, `compile` and `register` run
+in-process and never pass through it. The CPU-heaviest stage of a job was the one
+left unmodelled. Since 01.11.2026 `_stage` models every stage that `_run` did not,
+so a prepare stage carries `energy_cpu_modelled` like the others.
+
+What a dataset card gets is rendered by `scripts/dataset_card_energy.py` from the
+job stores: for one HuggingFace dataset, every job that materialised a corpus from
+it, with the modelled Wh of its `prepare` + `compile` **apportioned by the pages
+each dataset contributed**, and the jobs that adopted that artefact as reuses —
+the dataset is built once and trained many times, which is why the energy is the
+dataset's and not one model's. Rows from before 01.11.2026 are modelled *after the
+fact* from the stage's wall time, the request's `workers` and the processor the
+record's host stands for (asteraix: Threadripper PRO 5965WX, 11.7 W; UBELIX:
+EPYC 7742, 3.5 W, assumed), and the table says so per row. The section sits
+between HTML markers after what `pagexml-hf` wrote, so a later run replaces it;
+`--hub` shows the diff against the hub README and only `--hub --upload` writes
+it, because publishing a dataset card is a public act. Whether `pagexml-hf`
+rewrites the README on the next sync and drops the section is not known; if it
+does, the run is repeated after the sync.
+
+Two limits of the first run (asteraix, share store, 01.11.2026). A record without
+a `host` stamp takes the store's legacy host, as the results MCP does: on the
+share that is idhefix, whose processor is not in the TDP table, so the 48 oldest
+records (August–September) stay **unmodelled** and out of the sum rather than
+priced at another box's rate. And the UBELIX scratch store is not mounted on
+asteraix, so a card rendered there misses every materialisation that ran on the
+cluster — the medieval page corpora above all; the complete section has to be
+rendered on a UBELIX login node, where both stores are readable. For
+`image-text_kurrent-xix` the asteraix stores alone gave 244 Wh over eight
+materialisations, reused eight times (the effective-batch sweep's arms adopted
+one artefact); for `image-text_zh-regierungsratsprotokolle` 395 Wh.
 
 ## Where the factors come from (#336)
 
