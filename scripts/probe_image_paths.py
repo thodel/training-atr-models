@@ -61,7 +61,7 @@ def urls_of(source: Source | ZenodoRecord, workdir: Path) -> dict[str, str]:
     from foreign_gt_to_hf import clone  # noqa: PLC0415 — das Skript nebenan
 
     root = clone(source, workdir)
-    sel = tracked_pages(root, source.xml_root)
+    sel = tracked_pages(root, source.xml_root, source.alto)
     deduplicate(sel, source.prefer, source.variants)
     return image_urls(root, source, sel.pages) if source.images else {}
 

@@ -23,7 +23,7 @@ Angaben aus den READMEs:
 | `image-text_gt-fraktur` | 207 | 14.617 | 207 | 132 | Vorlage (opendigi Tübingen) |
 | `image-text_fibeln` | 409 | 8.895 | 409 | 271 | XML + Vorlage (GEI, Göttingen) |
 | `image-text_dtgt` | 177 | 6.599 | 177 | 92 | URL im XML (UB Tübingen) |
-| `image-text_dach-gt` | 71 | ~2.000 | 71 | 48 | URL im XML + Vorlage |
+| `image-text_dach-gt` | 71 | ~2.000 | 71 | 48 | URL im XML + Vorlage — vor #197; mit ALTO siehe §9 |
 | `image-text_weisthuemer` | 25 | ~1.400 | 25 | 13 | Shell-Skript (archive.org) |
 | **zusammen** | **990** | **~153.000** | 990 | **1.465** | |
 
@@ -63,7 +63,7 @@ Platzhalter `{stem}`, `{base}` (Stamm ohne `_NNN`), `{top}`, `{dir}`, `{img}`,
 holt nur DE-17 aus Darmstadt. Eine Vorlage ohne `{img…}` liest das Dokument gar
 nicht; bei Fibeln wären das 409 Dateizugriffe für nichts.
 
-Noch nicht gebaut: **ALTO**. Die **Zenodo-ZIP-Form** hat einen eigenen Abschnitt (§8).
+**ALTO** liest seit #197 ein Adapter, wo die Quelle es verlangt (§9). Die **Zenodo-ZIP-Form** hat einen eigenen Abschnitt (§8).
 
 ## 3. Die Fallen, und wie jede gefunden wurde
 
@@ -97,7 +97,7 @@ sich nicht ausgehen. Die Tabelle ist jetzt nach **Pfad** verschlüsselt.
 **ALTO ist nicht PAGE mit anderem Namensraum.** Sein Text steht in
 `String/@CONTENT`, unser Parser sucht `Unicode`. Stillschweigend durchgelassen käme
 die Seite als leer durch, und das ist schlimmer als eine Ablehnung. ALTO wird
-gezählt und verworfen, bis es einen Adapter hat.
+gezählt und verworfen, ausser unter den Pfaden, die `Source.alto` nennt (§9).
 
 ## 4. Der dritte Zustand, viermal
 
@@ -244,3 +244,34 @@ Transkriptionsebenen — ihr `images.zip` hat dieselbe MD5. Beide stehen im
 Register mit `same_pages_as` aufeinander; die Karte sagt es, und ein Verweis der
 Hinterlegung auf eine Version oder Variante, die das Register nicht so führt,
 wird beim Einlesen gemeldet.
+
+## 9. ALTO (#197)
+
+`atr_training.alto.alto_to_pagexml` wandelt ALTO in PageXML um, denn das Schema
+unserer Datensätze ist PageXML und `prepare` schneidet aus `TextLine`-Koordinaten.
+
+- **Wortfugen aus `SP`**, nicht aus Koordinaten. Zwei `String` ohne `SP` sind ein
+  Wort, zwei `SP` sind zwei Leerzeichen, `HYP` bleibt stehen. eScriptorium (dach-gt)
+  schreibt eine Zeile als ein `String`, mit den Leerzeichen im `CONTENT`.
+- **Polygon und Grundlinie** kommen mit; nur wo eine Zeile keines hat, ihr Rechteck.
+- **Leere Zeilen** werden gezählt und verworfen, eine Seite ganz ohne Text auch.
+
+**Gegen PAGE gemessen** an gt-fraktur, wo dieselben 208 Seiten in beiden Formen
+liegen: 14.361 von 14.615 Zeilen sind wörtlich gleich. Die übrigen 254 unterscheiden
+sich im **Inhalt** der beiden Fassungen der Quelle (die ALTO-Fassung ist weniger
+korrigiert: „Nationalism.“ statt „Rationalism.“), keine nur in den Leerzeichen.
+
+**Nur wo die Quelle es verlangt** (`Source.alto`, Pfadfragmente), weil ALTO in
+einer Quelle nicht eines ist:
+
+| dach-gt | ALTO-Dateien | gelesen? |
+|---|---:|---|
+| `DE-4/…/alto` | 672 | ja — Ground Truth; 15 davon auch als `GT-PAGE`, die gewinnt |
+| `DE-12/…/alto/ocr` | 173 | **nein — OCR, keine Ground Truth** |
+| `DE-12/…/alto/gt` | 19 | nein — dieselben Seiten wie `GT-PAGE`, unter anderen Namen |
+
+Gemessen am 01.11.2026: dach-gt **810 Seiten, 39.786 Zeilen** statt 162 und 4.636,
+davon 648 Seiten und 35.150 Zeilen aus ALTO; 761 der 810 Seiten mit Bild-URL. Die
+Bilder von DE-4 stehen nicht im Dokument (es nennt die Landingpage), sondern in
+der METS der UB Marburg (`jpg/def`, gleiche Grösse wie im ALTO). gt-fraktur
+verlangt den Adapter nicht und bleibt bei 207 Seiten.
