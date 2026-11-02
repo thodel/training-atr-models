@@ -51,6 +51,7 @@ __all__ = [
     "dedupe_key",
     "deduplicate",
     "head_commit",
+    "image_size_mismatch",
     "image_urls",
     "page_xml",
     "rewrite_url",
@@ -321,6 +322,51 @@ def page_xml(root: Path, page: "PageFile") -> str:
 
         return alto_to_pagexml(raw.encode("utf-8"))
     return raw
+
+
+_PAGE_ELEMENT = re.compile(r"<(?:[\w-]+:)?Page\b[^>]*>")
+
+
+def _page_size(xml_text: str) -> tuple[int, int] | None:
+    """``imageWidth`` × ``imageHeight`` of the PAGE ``Page`` element, or None."""
+    element = _PAGE_ELEMENT.search(xml_text)
+    if not element:
+        return None
+    width = re.search(r'\bimageWidth="(\d+)"', element.group(0))
+    height = re.search(r'\bimageHeight="(\d+)"', element.group(0))
+    return (int(width.group(1)), int(height.group(1))) if width and height else None
+
+
+def image_size_mismatch(blob: bytes, xml_text: str) -> str | None:
+    """Why this image is not the page the document describes; None when it is.
+
+    The training path cuts each line out of the image with the document's
+    coordinates as they stand. An image of another size — the wrong page, or the
+    right one at another scale — cuts the wrong crops, and nothing fails: the row
+    has an image, the image decodes, the crop is just of something else. So the
+    fetched image must have the size the PAGE names. Measured 02.11.2026 on a
+    sample of every git source with a reachable host: every image has it exactly.
+
+    None as well when the document names no size: there is nothing to hold the
+    image against, and that is not evidence of a wrong one.
+    """
+    import io
+
+    # Outside the try: without Pillow every image would read as "unreadable", and
+    # the upload would drop every page as a wrong one instead of stopping.
+    from PIL import Image
+
+    want = _page_size(xml_text)
+    if want is None:
+        return None
+    try:
+        with Image.open(io.BytesIO(blob)) as im:
+            got = im.size
+    except Exception as exc:  # noqa: BLE001 — an error page with HTTP 200 lands here
+        return f"kein lesbares Bild ({type(exc).__name__})"
+    if got != want:
+        return f"Bild {got[0]}×{got[1]}, das PAGE sagt {want[0]}×{want[1]}"
+    return None
 
 
 @dataclass
@@ -761,7 +807,19 @@ SOURCES: tuple[Source, ...] = (
         clone_url="https://github.com/UB-Mannheim/Weisthuemer.git",
         xml_root="Transcription",
         branch="master",
-        images=(ImageShellScript(script_path="get_images"),),
+        images=(
+            ImageShellScript(script_path="get_images"),
+            # Bd 6 and 7 stand in `for page in …` loops, which the script reader
+            # does not expand. Not expanded here either: the loop body names the
+            # archive member exactly as it names the file it writes, and the PAGE
+            # names that file as its imageFilename — so the member is `{img}`,
+            # written once, not guessed. All ten fetched pages have the size the
+            # PAGE gives (measured 02.11.2026).
+            *(ImageTemplate(only=f"Weisthuemer_Bd_{band}/",
+                            template="https://archive.org/download/{base}/{base}_tif.zip/"
+                                     "{base}_tif%2F{img}")
+              for band in (6, 7)),
+        ),
         licence="CC0-1.0",
         licence_at="LICENSE (CC0 1.0 Universal); GitHub-API spdx_id",
         attribution="Universitätsbibliothek Mannheim — das Repo nennt keine "
@@ -775,10 +833,12 @@ SOURCES: tuple[Source, ...] = (
             "**35 Seiten, 1.973 Zeilen** — gemessen, und deckungsgleich mit dem README.",
             "Jacob Grimms *Weisthümer*, fünf Seiten je Band über sieben Bände.",
             "`get_images` holt die Scans aus Archiven heraus (`…_images.tar/…`, "
-            "`…_tif.zip/…`). Zehn der 35 Seiten stehen in zwei `for`-Schleifen, die "
-            "dieser Importweg **nicht** expandiert: eine falsch expandierte Schleife "
-            "holt die falsche Seite, ohne dass es auffiele. Sie fehlen als "
-            "'kein Bild' im Bericht.",
+            "`…_tif.zip/…`). Zehn der 35 Seiten (Bd. 6 und 7) stehen in zwei "
+            "`for`-Schleifen. Sie werden nicht expandiert, sondern über eine Vorlage "
+            "geholt: der Schleifenkörper nennt das Archivmitglied genau so, wie er "
+            "die Datei nennt, die er schreibt, und das PAGE-Dokument nennt diese "
+            "Datei als `imageFilename`. Alle zehn Bilder haben die Grösse, die das "
+            "PAGE angibt (gemessen am 02.11.2026); sie sind bitonale TIFF.",
             "archive.org leitet jeden Abruf auf einen wechselnden "
             "`ia*.us.archive.org`-Knoten um, und ein toter Knoten antwortet nicht. "
             "Mit kurzem Zeitlimit und Wiederholung ist das unauffällig (3,5–4,6 s "
@@ -943,6 +1003,51 @@ SOURCES: tuple[Source, ...] = (
             "DE-38, DE-46 und DE-61 sind leere Platzhalter.",
             "Die Staatsbibliothek zu Berlin antwortete in der Probe in 9,7 s je "
             "Bild — deutlich langsamer als die anderen Server.",
+        ),
+    ),
+    Source(
+        id="charlottenburger-amtsschrifttum",
+        origin="https://github.com/UB-Mannheim/charlottenburger-amtsschrifttum",
+        clone_url="https://github.com/UB-Mannheim/charlottenburger-amtsschrifttum.git",
+        xml_root="data",
+        # The same 15 pages as `Marksymbols` and `Marksymbols_without_tables`; the
+        # lines are identical (2 114 either way, measured), and the fassung
+        # without TableRegion wins, as at reichsanzeiger-gt.
+        variants=("_without_tables",),
+        prefer=("Marksymbols_without_tables/",),
+        images=(ImageUrlList(
+            list_path="data/imageurls.list",
+            script_path="data/download_images.sh",
+            base_b64="aHR0cHM6Ly9kaWdpdGFsLnpsYi5kZS92aWV3ZXIvYXBpL3YxL3JlY29yZHMvCg==",
+            # The script fetches `{stem}.tif` as `default.tif` or `.png`. The same
+            # IIIF service gives `default.jpg` at the size the PAGE names
+            # (2215×3643 and 2278×3614, measured) at a quarter of the bytes.
+            template="{base}{remote}/files/images/{stem}.tif/full/max/0/default.jpg",
+        ),),
+        licence="CC0-1.0",
+        licence_at="LICENSE (CC0 1.0 Universal); GitHub-API spdx_id. Der Zenodo-Spiegel "
+                   "10.5281/zenodo.10686500 (v1.1.0) trägt `cc-by-4.0`",
+        attribution="Thomas Schmidt, Jan Kamlah, Stefan Weil (UB Mannheim) — genannt "
+                    "als Urheber im Zenodo-Spiegel 10.5281/zenodo.10686500",
+        image_source="Zentrale Landesbibliothek Berlin, digital.zlb.de (IIIF)",
+        script_kind="Druck, Fraktur (Amtsschrifttum, Tabellen)",
+        period="1879–1919",
+        project="charlottenburger-amtsschrifttum",
+        target="dh-unibe/image-text_charlottenburger-amtsschrifttum",
+        notes=(
+            "**27 Seiten, 3.576 Zeilen** — gemessen am 02.11.2026: 15 Seiten "
+            "`Marksymbols` (2.114 Zeilen) und 12 Seiten `Paragraphsigns` (1.462). "
+            "Das README sagt 26 Seiten; die Bildliste hat 27 Einträge, je einen "
+            "je Seite.",
+            "Die 15 `Marksymbols`-Seiten liegen zweimal vor, mit und ohne "
+            "Tabellenregionen, mit denselben Zeilen. Eingelesen ist die Fassung "
+            "ohne Tabellen.",
+            "Sonderzeichen laut README: langes s (ſ), Mark-Zeichen (ℳ), doppelter "
+            "schräger Bindestrich (⸗), Brüche, Paragraphzeichen — nach OCR-D-"
+            "Richtlinien Level 2, nicht normalisiert.",
+            "Der Zenodo-Spiegel trägt `cc-by-4.0`, die `LICENSE` des Repos CC0. "
+            "Beide erlauben die Weitergabe; hier ist die strengere Lesart "
+            "angewandt und die Urheber sind genannt.",
         ),
     ),
 )

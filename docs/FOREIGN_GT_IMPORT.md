@@ -26,8 +26,9 @@ Angaben aus den READMEs:
 | `image-text_dach-gt` | 71 | ~2.000 | 71 | 48 | URL im XML + Vorlage — vor #197; mit ALTO siehe §9 |
 | `image-text_weisthuemer` | 25 | ~1.400 | 25 | 13 | Shell-Skript (archive.org) |
 | **zusammen** | **990** | **~153.000** | 990 | **1.465** | |
+| `image-text_charlottenburger-amtsschrifttum` *(eingetragen 02.11.2026, noch nicht hochgeladen)* | 27 | 3.576 | 27 erreichbar | — | URL-Liste (ZLB Berlin, IIIF `default.jpg`) |
 
-Alle sechs sind **privat**. Die Transkriptionen sind CC0; die **Bildrechte sind
+Die sechs hochgeladenen sind **privat**. Die Transkriptionen sind CC0; die **Bildrechte sind
 ungeprüft**, und das ist eine andere Frage mit anderen Rechteinhabern
 ([#193](https://github.com/thodel/training-atr-models/issues/193)).
 
@@ -49,7 +50,11 @@ werden erkannt, `curl -Lo` und `curl -L -o`; ein Regex, der nur die zweite kennt
 verliert die Hälfte. **Schleifenkörper werden nicht expandiert**: eine falsch
 expandierte Schleife holt die falsche Seite, ohne dass es auffiele, und eine Seite
 ohne URL ist ein Zustand, den man im Bericht sieht. Bei Weisthuemer stehen zehn der
-35 Seiten in zwei Schleifen und fehlen deshalb.
+35 Seiten (Bd. 6 und 7) in zwei Schleifen. Sie kommen seit #188 über je eine
+`ImageTemplate` daneben, die nichts rät: der Schleifenkörper nennt das Archivmitglied
+genau so wie die Datei, die er schreibt, und das PAGE nennt diese Datei als
+`imageFilename` — die Vorlage ist `…/{base}_tif%2F{img}`. Alle zehn Bilder haben die
+Grösse, die ihr PAGE angibt (gemessen 02.11.2026).
 
 **`ImageInXml`** — die URL steht im PAGE-Dokument, als `externalRef`, wo OCR-D sie
 hinschreibt. Gemessen: alle 182 DTGT-Dokumente tragen eine, 147 von 162 bei dach-gt,
@@ -103,7 +108,7 @@ gezählt und verworfen, ausser unter den Pfaden, die `Source.alto` nennt (§9).
 
 „Konnte nicht" ist nicht „gibt es nicht"
 ([#165](https://github.com/thodel/training-atr-models/issues/165)). Der Importweg
-verweigert darum an vier Stellen:
+verweigert darum an fünf Stellen:
 
 1. **Keine Lizenz oder keine Fundstelle** → die Quelle wird nicht einmal angelegt.
 2. **Kein Bezugsweg für Bilder** → kein Upload ohne `--no-images`.
@@ -111,6 +116,15 @@ verweigert darum an vier Stellen:
 4. **Einzelne Seiten ohne Bild** → sie fallen heraus statt mit leerer Bildspalte
    mitzukommen; ebenso Seiten, deren Abruf scheiterte (`--keep-imageless` behält
    beides). Bei dach-gt sind das 64 ohne URL und 27 mit HTTP 404.
+5. **Ein Bild, das nicht die Grösse hat, die das PAGE nennt** → es zählt wie ein
+   gescheiterter Abruf und fällt heraus, gemeldet als `falsches Bild — Bild W×H,
+   das PAGE sagt W×H` (#188). Der Trainingsweg schneidet die Zeilen mit den
+   Koordinaten des Dokuments aus; die falsche Seite oder die richtige in anderem
+   Massstab ergäbe falsche Ausschnitte, ohne dass etwas fehlschlägt. Eine
+   Fehlerseite mit HTTP 200 fällt hier ebenso heraus (`kein lesbares Bild`).
+   Stichprobe am 02.11.2026 (je vier Seiten): reichsanzeiger-gt, DTGT, gt-fraktur,
+   Fibeln, Weisthuemer und charlottenburger stimmen aufs Pixel; dach-gt war von
+   hier nicht zu erreichen und wird beim nächsten Import auf dem Host geprüft.
 
 Und `--public` wird verweigert, solange die Bildrechte `ungeprüft` sind.
 

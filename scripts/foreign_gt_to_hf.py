@@ -52,6 +52,7 @@ from atr_training.foreign_gt import (  # noqa: E402
     dataset_card,
     deduplicate,
     head_commit,
+    image_size_mismatch,
     image_urls,
     source_by_id,
     page_xml,
@@ -389,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     rows: list[dict] = []
-    fetched = failed = 0
+    fetched = failed = mismatched = 0
     for i, page in enumerate(pages, start=1):
         # ALTO arrives as PageXML (#197): the dataset schema is PageXML.
         xml = page_xml(root, page)
@@ -399,11 +400,22 @@ def main(argv: list[str] | None = None) -> int:
         if url:
             try:
                 blob = _get(url, timeout=args.timeout)
-                fetched += 1
                 name = Path(url.split("?")[0]).name or page.stem
             except Exception as exc:  # noqa: BLE001 — ein fehlendes Scan ist nicht fatal
                 failed += 1
                 print(f"    [{i}/{len(pages)}] {page.stem}: kein Bild ({exc})", flush=True)
+            else:
+                # Das Bild muss die Seite sein, die das Dokument beschreibt: die
+                # Zeilen werden mit dessen Koordinaten ausgeschnitten (#188).
+                wrong = image_size_mismatch(blob, xml)
+                if wrong:
+                    failed += 1
+                    mismatched += 1
+                    blob = b""
+                    print(f"    [{i}/{len(pages)}] {page.stem}: falsches Bild — {wrong}",
+                          flush=True)
+                else:
+                    fetched += 1
             time.sleep(args.delay)
         rows.append({
             "image": {"bytes": blob, "path": name},
@@ -435,7 +447,8 @@ def main(argv: list[str] | None = None) -> int:
         print("\n  keine Zeile mit Bild übrig — nichts hochgeladen", file=sys.stderr)
         return 6
 
-    print(f"\n  {len(rows)} Zeilen, {fetched} mit Bild, {failed} ohne")
+    print(f"\n  {len(rows)} Zeilen, {fetched} mit Bild, {failed} ohne"
+          + (f" (davon {mismatched} mit falscher Grösse verworfen)" if mismatched else ""))
 
     # Der dritte Zustand (#165): "kein Bild geholt" ist nicht "diese Quelle hat
     # keine Bilder". Wo Bilder geplant waren und keines ankam, ist der Abruf
