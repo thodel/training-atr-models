@@ -53,6 +53,7 @@ __all__ = [
     "PROJECT_URL",
     "METADATA_FILENAME",
     "CARD_FILENAME",
+    "EVALUATION_FILENAME",
     "IGNORE_PATTERNS",
     "DatasetLink",
     "TrainedModel",
@@ -82,6 +83,12 @@ PROJECT_URL = "https://github.com/thodel/training-atr-models"
 
 METADATA_FILENAME = "metadata.json"
 CARD_FILENAME = "README.md"
+#: A hand-written account of what was measured **after** the trainer finished —
+#: through the gateway, on another ground truth, against other readers. Kept
+#: beside the weights, uploaded with them and spliced into the card verbatim, so
+#: that a re-publish (which rewrites the card from ``metadata.json``) keeps it.
+#: The trainer's own record stays what it wrote; this is the place for the rest.
+EVALUATION_FILENAME = "EVALUATION.md"
 
 #: Never uploaded: editor droppings, and the partial files a copy onto the CIFS
 #: share can leave behind. Weights and ``metadata.json`` are the payload.
@@ -218,11 +225,24 @@ class TrainedModel:
         return published if isinstance(published, dict) else None
 
     @property
+    def evaluation(self) -> str | None:
+        """The text of :data:`EVALUATION_FILENAME`, or None if there is none."""
+        path = self.directory / EVALUATION_FILENAME
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError) as exc:
+            raise PublishError(f"{path}: cannot be read ({type(exc).__name__}: {exc})") from exc
+        return text or None
+
+    @property
     def weights(self) -> list[Path]:
         """Payload files — everything but the metadata and the generated card."""
         return [
             p for p in sorted(self.directory.iterdir())
-            if p.is_file() and p.name not in (METADATA_FILENAME, CARD_FILENAME)
+            if p.is_file()
+            and p.name not in (METADATA_FILENAME, CARD_FILENAME, EVALUATION_FILENAME)
             and not p.name.startswith(".")
         ]
 
@@ -810,6 +830,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "",
         *_where_measured(model),
         "",
+        *_after_training(model),
         "## Training data",
         "",
         *_training_data(model),
@@ -849,6 +870,42 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         lines += ["", "## Notes", "",
                   str(model.request.get("notes") or model.metadata.get("notes"))]
     return "\n".join(lines) + "\n"
+
+
+def _after_training(model: TrainedModel) -> list[str]:
+    """The section :data:`EVALUATION_FILENAME` carries, or nothing.
+
+    Its own headings are moved below this one — the file's top level becomes
+    ``###`` — so a file written as a page of its own cannot start a section of
+    the card. Lines inside a fenced code block are left alone.
+    """
+    text = model.evaluation
+    if text is None:
+        return []
+    lines = text.splitlines()
+    fenced, levels = False, []
+    for line in lines:
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and (m := re.match(r"(#+) ", line)):
+            levels.append(len(m.group(1)))
+    shift = max(0, 3 - min(levels)) if levels else 0
+    body, fenced = [], False
+    for line in lines:
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and shift and re.match(r"#+ ", line):
+            line = "#" * shift + line
+        body.append(line)
+    return [
+        "## Measured after training",
+        "",
+        f"Not by the trainer: written by hand into `{EVALUATION_FILENAME}` beside the "
+        "weights, after the run, and uploaded with them.",
+        "",
+        *body,
+        "",
+    ]
 
 
 def _where_measured(model: TrainedModel) -> list[str]:
