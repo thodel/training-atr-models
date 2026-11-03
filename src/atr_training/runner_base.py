@@ -73,6 +73,7 @@ from atr_training.registration import (
     manual_registration,
     read_registration,
     set_enabled,
+    vllm_launch_defaults,
     write_registration,
 )
 from atr_training.settings import TrainerSettings
@@ -1644,6 +1645,11 @@ class BasePipeline(ABC):
         """
         root = self.settings.registry_root
         spec.setdefault("description", self._describe(job, metrics))
+        # What the base needs at launch (#357), before either way out: the file
+        # written here and the hand registration a Slurm job prints both carry it.
+        for field, value in vllm_launch_defaults(spec.get("engine"),
+                                                 spec.get("base_model")).items():
+            spec.setdefault(field, value)
         # Before the write, so a failed job's record points at the weights too.
         job.model_path = spec.get("local_path") or str(weights_dir)
         slurm_job = self._slurm_job_id

@@ -61,12 +61,15 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from atr_training.backends import needs_transformers_5
 from atr_training.contracts import MODEL_ID_RE
 from atr_training.weights_digest import WeightsDigest
 
 __all__ = [
     "CorpusCount",
     "Describing",
+    "HYBRID_MAX_NUM_SEQS",
+    "HYBRID_VLLM_VENV",
     "describe_registrations",
     "describe_training",
     "TRAINED_DIRNAME",
@@ -76,12 +79,14 @@ __all__ = [
     "Sizing",
     "VramMeasurement",
     "is_registration_name",
+    "launch_problems",
     "manual_registration",
     "read_registration",
     "registration_path",
     "set_enabled",
     "size_weights",
     "trained_dir",
+    "vllm_launch_defaults",
     "weights_mib",
     "write_registration",
 ]
@@ -238,10 +243,11 @@ class Registration(BaseModel):
     prompt: str | None = None
     #: The venv the gateway launches this model's vLLM from, as a directory name
     #: under its ``.venvs/`` — ``vllm-next`` for a model whose vLLM the older venv
-    #: cannot serve (serving#132). Written by hand today; a trained model gets one
-    #: when the run's base needs it.
+    #: cannot serve (serving#132). A trained model gets it from its base
+    #: (:func:`vllm_launch_defaults`, #357).
     vllm_venv: str | None = None
     #: ``--max-num-seqs`` for that launch: how many sequences the server batches.
+    #: A hybrid base needs it below vLLM's 256 (:func:`vllm_launch_defaults`).
     max_num_seqs: int | None = Field(default=None, ge=1)
     #: Further ``vllm serve`` flags only this model needs (serving: Apertus 1.5's
     #: ``--chat-template-content-format string``) — never the ones the launcher
@@ -323,6 +329,61 @@ class Registration(BaseModel):
                 f"model {self.id!r}: vllm_venv {self.vllm_venv!r} must be a directory "
                 "name under .venvs/ (letters, digits, '.', '_', '-')")
         return self
+
+
+# ── what a base needs at launch (#357) ──────────────────────────────────────
+#
+# A Qwen3.5 base is hybrid: vLLM keeps one Mamba-style state block per running
+# sequence and allocates them up front. At vLLM's default of 256 sequences the
+# engine refuses to start on the share of the card idhefix gives it — "max_num_seqs
+# (256) exceeds available Mamba cache blocks (130)", on 21.09. and again on
+# 02.11.2026 for qwen3.5-4b-german-kurrent-xvi-xix-blb-page-v1, whose hand
+# registration named the venv and forgot this. The gateway's curated Qwen3.5
+# entries carry the same two values (serving config/models.yaml); a trained
+# model gets them from its base instead of from whoever writes the file.
+
+#: The serving venv whose vLLM can load a ``qwen3_5`` base (serving#132).
+HYBRID_VLLM_VENV = "vllm-next"
+#: The ceiling the curated Qwen3.5 entries use. The gateway sends a handful of
+#: requests at a time, so a lower one costs nothing there.
+HYBRID_MAX_NUM_SEQS = 64
+#: Mamba blocks idhefix had for a 4B Qwen3.5 on 02.11.2026. It moves with the
+#: card's share and the model's size, so above it is a warning, not a refusal.
+HYBRID_MAMBA_BLOCKS_SEEN = 130
+
+
+def vllm_launch_defaults(engine: str | None, base_model: str | None) -> dict[str, Any]:
+    """The launch fields a model on ``base_model`` needs and vLLM does not default.
+
+    Empty for every engine but vLLM and every base outside the ``qwen3_5``
+    family (:func:`~atr_training.backends.needs_transformers_5`, the same test
+    that picks the training venv). Meant for ``setdefault``: a value a runner or
+    an operator set on purpose stays.
+    """
+    if engine != "vllm" or not needs_transformers_5(base_model):
+        return {}
+    return {"vllm_venv": HYBRID_VLLM_VENV, "max_num_seqs": HYBRID_MAX_NUM_SEQS}
+
+
+def launch_problems(spec: Registration) -> list[str]:
+    """Why the gateway could not start ``spec`` on its base — empty if it can.
+
+    Checked when a registration is **written**, not when one is read: a file
+    that is already there stays readable (and can be disabled), but a new one
+    that would only fail on the card is refused before it exists.
+    """
+    needed = vllm_launch_defaults(spec.engine, spec.base_model)
+    problems = []
+    if "vllm_venv" in needed and spec.vllm_venv is None:
+        problems.append(
+            f"{spec.base_model} is a qwen3_5 base, which the gateway's default vLLM cannot "
+            f"load; set vllm_venv: {HYBRID_VLLM_VENV}")
+    if "max_num_seqs" in needed and spec.max_num_seqs is None:
+        problems.append(
+            f"{spec.base_model} is a hybrid (qwen3_5) base; at vLLM's default of 256 "
+            "sequences it does not start (\"max_num_seqs (256) exceeds available Mamba "
+            f"cache blocks\"). Set max_num_seqs: {HYBRID_MAX_NUM_SEQS}")
+    return problems
 
 
 # ── paths ───────────────────────────────────────────────────────────────────
@@ -491,11 +552,21 @@ def write_registration(root: str | Path, spec: dict[str, Any]) -> Path:
     """Register one model: ``<root>/trained/<id>.yaml``, atomically.
 
     ``spec`` is validated before anything is touched — a refused registration
-    creates neither the file nor ``trained/``. Writing the same id again
+    creates neither the file nor ``trained/``. That includes a vLLM model the
+    gateway could not start on its base (:func:`launch_problems`, #357). Writing the same id again
     replaces that file and no other. Returns the path written.
     """
     where = trained_dir(root)
     registration = _validate(spec, where)
+    problems = launch_problems(registration)
+    if problems:
+        raise RegistrationError(where, "the gateway could not start this model: "
+                                + "; ".join(problems) + " (#357)")
+    if (registration.max_num_seqs or 0) > HYBRID_MAMBA_BLOCKS_SEEN \
+            and vllm_launch_defaults(registration.engine, registration.base_model):
+        logger.warning("registering {} with max_num_seqs {}: idhefix had {} Mamba cache "
+                       "blocks for a 4B Qwen3.5, and above that vLLM does not start",
+                       registration.id, registration.max_num_seqs, HYBRID_MAMBA_BLOCKS_SEEN)
     target = registration_path(root, registration.id)
     if registration.local_path is not None and not os.path.exists(registration.local_path):
         # Not refused: the gateway serves it regardless and says so, because on
