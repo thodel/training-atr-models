@@ -43,6 +43,7 @@ import yaml
 
 from atr_training.contracts import utcnow
 from atr_training.corpus_defects import defects_for
+from atr_training.registration import WEIGHT_SUFFIXES
 
 if TYPE_CHECKING:  # the registry is read lazily; see _registry()
     from atr_training.shared_registry import BaseEntry, SharedRegistry
@@ -53,6 +54,7 @@ __all__ = [
     "PROJECT_URL",
     "METADATA_FILENAME",
     "CARD_FILENAME",
+    "ADAPTER_CONFIG_FILENAME",
     "EVALUATION_FILENAME",
     "IGNORE_PATTERNS",
     "DatasetLink",
@@ -89,6 +91,9 @@ CARD_FILENAME = "README.md"
 #: that a re-publish (which rewrites the card from ``metadata.json``) keeps it.
 #: The trainer's own record stays what it wrote; this is the place for the rest.
 EVALUATION_FILENAME = "EVALUATION.md"
+#: What peft writes beside a LoRA adapter; the card reads the version that wrote
+#: it and what it adapts from here (#361).
+ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 
 #: Never uploaded: editor droppings, and the partial files a copy onto the CIFS
 #: share can leave behind. Weights and ``metadata.json`` are the payload.
@@ -235,6 +240,19 @@ class TrainedModel:
         except (OSError, UnicodeDecodeError) as exc:
             raise PublishError(f"{path}: cannot be read ({type(exc).__name__}: {exc})") from exc
         return text or None
+
+    @property
+    def adapter_config(self) -> dict[str, Any] | None:
+        """peft's ``adapter_config.json`` beside the weights, or None.
+
+        None also for a file that does not parse: the card then says less, and
+        nothing it says rests on a guess.
+        """
+        try:
+            raw = json.loads((self.directory / ADAPTER_CONFIG_FILENAME).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return raw if isinstance(raw, dict) else None
 
     @property
     def weights(self) -> list[Path]:
@@ -565,6 +583,40 @@ def _frontmatter(model: TrainedModel, licence: str | None) -> str:
     return f"---\n{body}\n---"
 
 
+#: Module names a vision-language base gives its image encoder — Qwen2.5-VL and
+#: olmOCR ``visual``, Qwen3-VL and LightOnOCR ``vision_tower``. Probed against an
+#: adapter's ``exclude_modules`` to tell whether the adapter touches it.
+_VISION_PROBES = (
+    "model.visual.blocks.0.attn.qkv",
+    "model.visual.blocks.0.mlp.up_proj",
+    "model.vision_tower.encoder.layers.0.self_attn.q_proj",
+    "model.vision_tower.layers.0.mlp.up_proj",
+)
+
+
+def _peft_version(model: TrainedModel) -> str | None:
+    version = (model.adapter_config or {}).get("peft_version")
+    return str(version) if isinstance(version, str) and version.strip() else None
+
+
+def _vision_excluded(model: TrainedModel) -> bool:
+    """True only when the adapter config **says** the image encoder is left out.
+
+    peft reads a string ``exclude_modules`` as a regex over full module names,
+    so it is probed with the names the bases here use. A list, a missing field
+    or a missing config is not evidence either way, and the card then keeps the
+    sentence that holds for an adapter that trains the vision tower.
+    """
+    exclude = (model.adapter_config or {}).get("exclude_modules")
+    if not isinstance(exclude, str) or not exclude:
+        return False
+    try:
+        pattern = re.compile(exclude)
+    except re.error:
+        return False
+    return any(pattern.fullmatch(name) for name in _VISION_PROBES)
+
+
 def _usage(model: TrainedModel, repo_id: str) -> str:
     weights = model.weights[0].name if model.weights else "<weights>"
     if model.engine == "kraken":
@@ -577,18 +629,36 @@ def _usage(model: TrainedModel, repo_id: str) -> str:
             "```"
         )
     if model.engine == "vllm":
+        version = _peft_version(model)
+        # An older peft than wrote the adapter fails deep inside LoraConfig
+        # (serving merge_loras.py, 02.11.2026: peft 0.19.1 against 0.20.0).
+        install = (f"```bash\npip install 'peft>={version}'\n```\n\n"
+                   f"The adapter was written by peft {version}; an older peft does not "
+                   "read its configuration.\n\n") if version else ""
+        if _vision_excluded(model):
+            serving = (
+                "It adapts the **language model only** — the image encoder is excluded "
+                "(`exclude_modules` in `adapter_config.json`). The project's gateway serves "
+                "it merged into its base; `scripts/merge_loras.py` in "
+                "`serving-atr-inference` does that."
+            )
+        else:
+            serving = (
+                "vLLM 0.11 will not serve it as an adapter (it refuses LoRA on the vision "
+                "tower), so serving means merging it into the base first — "
+                "`scripts/merge_loras.py` in `serving-atr-inference` does that."
+            )
         return (
             "This is a **LoRA adapter**, not a full model — it needs its base:\n\n"
-            "```python\n"
+            + install
+            + "```python\n"
             "from peft import PeftModel\n"
             "from transformers import AutoModelForImageTextToText, AutoProcessor\n\n"
             f"base = AutoModelForImageTextToText.from_pretrained({model.base_model!r})\n"
             f"model = PeftModel.from_pretrained(base, {repo_id!r})\n"
             f"processor = AutoProcessor.from_pretrained({repo_id!r}, trust_remote_code=True)\n"
             "```\n\n"
-            "vLLM 0.11 will not serve it as an adapter (it refuses LoRA on the vision "
-            "tower), so serving means merging it into the base first — "
-            "`scripts/merge_loras.py` in `serving-atr-inference` does that."
+            + serving
         )
     return f"Weights: `{weights}` (engine: `{model.engine}`)."
 
@@ -856,7 +926,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         f"| training job | `{_plain(model.job_id)}` |",
         f"| code | {_code_cell(model.metadata.get('code'))} |",
         f"| trained | {_plain(model.metadata.get('created'))} |",
-        f"| weights | {', '.join(f'`{p.name}`' for p in model.weights) or '—'} |",
+        *_files_rows(model),
         "",
         "`metadata.json` in this repo is the record the trainer wrote, verbatim: the "
         "full request, the parsed metrics and the job id.",
@@ -870,6 +940,25 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         lines += ["", "## Notes", "",
                   str(model.request.get("notes") or model.metadata.get("notes"))]
     return "\n".join(lines) + "\n"
+
+
+def _files_rows(model: TrainedModel) -> list[str]:
+    """The provenance rows for the payload: weights, and what travels with them.
+
+    ``TrainedModel.weights`` is everything that is uploaded beside the metadata —
+    a tokenizer, a chat template, ``training_summary.json`` — which is right for
+    "is there anything to publish" and wrong as a list of weights (#361).
+    """
+    def names(paths: list[Path]) -> str:
+        return ", ".join(f"`{p.name}`" for p in paths) or "—"
+    weights = [p for p in model.weights if p.suffix.lower() in WEIGHT_SUFFIXES]
+    others = [p for p in model.weights if p.suffix.lower() not in WEIGHT_SUFFIXES]
+    if not weights:                       # an unknown format: say what is there
+        return [f"| weights | {names(model.weights)} |"]
+    rows = [f"| weights | {names(weights)} |"]
+    if others:
+        rows.append(f"| with them | {names(others)} |")
+    return rows
 
 
 def _after_training(model: TrainedModel) -> list[str]:
