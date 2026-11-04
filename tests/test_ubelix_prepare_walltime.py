@@ -402,9 +402,19 @@ def submission(tmp_path):
         "datasets": [{"hf_repo": "dh-unibe/medieval", "train_projects": ["a"]}],
     }), encoding="utf-8")
 
+    # The hub is closed to these tests (#201's spec_layout.py runs before the
+    # probe). `dh-unibe/medieval` does not exist: anonymously the hub answers
+    # 401, which the check reads as "not checked", but with the developer's
+    # HF_TOKEN in the environment it answers 404, which reads as "nothing to
+    # select" and refuses the submission — seven tests failed on any machine
+    # whose shell exports a token, and passed in CI, which has none. An
+    # endpoint nobody listens on makes the answer "not checked" everywhere,
+    # without the network.
     env = {k: v for k, v in os.environ.items()
-           if k not in ("ATR_CODE_COMMIT", "ATR_UNPINNED", "PROBE_ANSWER")}
-    env.update(PATH=f"{bin_dir}:{env['PATH']}", ATR_TRAIN_REPO=str(repo), HOME=str(tmp_path))
+           if k not in ("ATR_CODE_COMMIT", "ATR_UNPINNED", "PROBE_ANSWER",
+                        "HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_ENDPOINT")}
+    env.update(PATH=f"{bin_dir}:{env['PATH']}", ATR_TRAIN_REPO=str(repo), HOME=str(tmp_path),
+               HF_ENDPOINT="http://127.0.0.1:9")
     return repo, spec, env
 
 
@@ -419,6 +429,19 @@ def _submit(submission, *extra, answer=None):
 
 def _args(done) -> str:
     return next(ln for ln in done.stdout.splitlines() if ln.startswith("ARGS="))[5:]
+
+
+def test_the_harness_never_asks_the_hub_even_with_a_token(submission):
+    """The layout check is not what these tests are about; it must not decide them.
+
+    A token in the caller's shell is what made the hub answer 404 for the
+    made-up dataset and refuse every submission here (see the fixture).
+    """
+    repo, spec, env = submission
+    done = _submit((repo, spec, {**env, "HF_TOKEN": "hf_" + "x" * 34}), answer="cached")
+    assert done.returncode == 0, done.stderr
+    assert "spec layout: not checked  dh-unibe/medieval" in done.stdout
+    assert "127.0.0.1:9" in done.stdout, "the closed endpoint, not huggingface.co"
 
 
 def test_a_cached_corpus_gets_the_short_walltime(submission):
