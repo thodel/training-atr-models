@@ -18,8 +18,11 @@
 # add` writes .git and HEAD before it checks the files out, so "the directory has
 # a .git" is true of a half-made tree — one a job started a second later would
 # run with most files missing, and one a SIGKILL mid-checkout would leave behind
-# for every later start. Creating, replacing and marking happen under a lock;
-# only the marker opens the fast path. Before running, the tree must be at the
+# for every later start. Creating, replacing and marking happen under two locks:
+# a flock per node (jobs on one node), and inside it a directory in the main
+# checkout's .git (pin_code.lock.d), taken with mkdir because every node's
+# `git worktree add` writes into the same .git/worktrees/ (#360). Only the
+# marker opens the fast path, which takes neither. Before running, the tree must be at the
 # commit and have no changes to tracked files.
 #
 # Without ATR_CODE_COMMIT (plain sbatch, or ATR_UNPINNED=1 at submission) the job
@@ -137,11 +140,64 @@ with open(sys.argv[1], "a") as fh:
   return "$rc"
 }
 
-_pin_code_create() {  # commit dir repo — runs under the lock
+#: A lock on the main checkout older than this was left by a dead job (#360).
+#: `worktree add` of a ~1 MB tree takes seconds; a fetch, under a minute.
+ATR_PIN_REPO_LOCK_STALE_S=${ATR_PIN_REPO_LOCK_STALE_S:-300}
+
+_pin_code_repo_lockdir() {  # repo — where the cross-node lock on its worktrees lives
+  local common
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    || common=$1/.git
+  echo "$common/pin_code.lock.d"
+}
+
+_pin_code_repo_lock() {  # repo — hold the lock on its worktree admin, across nodes (#360)
+  # The per-node flock keeps two jobs on one node apart; it cannot keep nodes
+  # apart, and every node's `git worktree add` writes into the SAME
+  # $REPO/.git/worktrees/ and reads the same refs. mkdir is atomic on GPFS as
+  # anywhere, which flock on a shared $HOME is not — the lock jobstore.claim
+  # takes with O_EXCL for the same reason.
+  local lockdir age now mtime
+  lockdir=$(_pin_code_repo_lockdir "$1")
+  local deadline=$((SECONDS + ATR_PIN_LOCK_WAIT_S))
+  until mkdir "$lockdir" 2>/dev/null; do
+    now=$(date +%s)
+    mtime=$(stat -c %Y "$lockdir" 2>/dev/null || stat -f %m "$lockdir" 2>/dev/null || echo "$now")
+    age=$((now - mtime))
+    if [ "$age" -gt "$ATR_PIN_REPO_LOCK_STALE_S" ]; then
+      # Renamed before it is removed: of two jobs that both find it stale, only
+      # one rename succeeds, so neither removes a lock the other just took.
+      if mv "$lockdir" "$lockdir.stale.$$" 2>/dev/null; then
+        echo "== pin_code: removing a lock on $1 held for ${age} s: $(cat "$lockdir.stale.$$/owner" 2>/dev/null)" >&2
+        rm -rf "$lockdir.stale.$$"
+      fi
+      continue
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "!! pin_code: waited $ATR_PIN_LOCK_WAIT_S s for $lockdir — another node is creating a worktree of $1 ($(cat "$lockdir/owner" 2>/dev/null)); refusing to run" >&2
+      return 75
+    fi
+    sleep "0.$((RANDOM % 9 + 1))"
+  done
+  echo "$(hostname -s 2>/dev/null) pid $$ since $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lockdir/owner"
+  _PIN_CODE_HELD_LOCK=$lockdir
+}
+
+_pin_code_repo_unlock() {  # — release the lock this process holds, if any
+  # A global, not the caller's local: the EXIT trap runs after the function that
+  # set it has returned, when its locals are gone.
+  [ -n "${_PIN_CODE_HELD_LOCK:-}" ] && rm -rf "$_PIN_CODE_HELD_LOCK"
+  _PIN_CODE_HELD_LOCK=
+}
+
+_pin_code_create() {  # commit dir repo — runs under the node's lock
   local commit=$1 dir=$2 repo=$3
   if [ -f "$dir.ready" ] && [ -e "$dir/.git" ]; then
     return 0                     # another job finished it while we waited
   fi
+  _pin_code_repo_lock "$repo" || return 1
+  # This runs as its own process (--create), so EXIT is the end of the creation.
+  trap _pin_code_repo_unlock EXIT
   rm -f "$dir.ready"
   if [ -e "$dir" ]; then
     # Half made, or left by a killed job: `git worktree add` locks a tree while it
@@ -153,7 +209,11 @@ _pin_code_create() {  # commit dir repo — runs under the lock
     git -C "$repo" fetch -q origin >&2
   fi
   if ! git -C "$repo" worktree add --force --force --detach "$dir" "$commit" >&2; then
-    echo "!! pin_code: cannot create a worktree of $commit from $repo — is the commit in that checkout?" >&2
+    if git -C "$repo" cat-file -e "$commit^{commit}" 2>/dev/null; then
+      echo "!! pin_code: git worktree add of $commit into $dir failed (git's message above) — the commit is in $repo" >&2
+    else
+      echo "!! pin_code: cannot create a worktree of $commit from $repo — the commit is not in that checkout, and fetching origin did not bring it" >&2
+    fi
     return 1
   fi
   touch "$dir.ready"
