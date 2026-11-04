@@ -36,7 +36,7 @@ def checkout(tmp_path: Path):
 
 
 def _pin(repo: Path, root: Path, commit: str | None, lock: str | None = None,
-         node: str | None = None) -> subprocess.CompletedProcess:
+         node: str | None = None, **extra_env: str) -> subprocess.CompletedProcess:
     """Source pin_code.sh as a batch file would, and report where REPO ended up."""
     env = {k: v for k, v in os.environ.items() if k not in ("ATR_CODE_COMMIT", "ATR_PIN_LOCK")}
     env.update(ATR_CODE_ROOT=str(root))
@@ -48,6 +48,7 @@ def _pin(repo: Path, root: Path, commit: str | None, lock: str | None = None,
         env["ATR_PIN_LOCK"] = lock
     if commit is not None:
         env["ATR_CODE_COMMIT"] = commit
+    env.update(extra_env)
     script = (f'set -uo pipefail; REPO="{repo}"; source "{PIN}"; '
               'pin_code || exit 7; echo "REPO=$REPO"')
     return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
@@ -214,7 +215,11 @@ def test_arms_on_two_nodes_starting_together_all_survive(checkout, tmp_path):
     nodes = ["gnode25", "gnode25", "gnode26", "gnode26", "gnode27", "gnode27"]
     with ThreadPoolExecutor(max_workers=6) as pool:
         runs = list(pool.map(lambda n: _pin(repo, root, old, node=n), nodes))
-    assert all(r.returncode == 0 for r in runs), [r.stderr for r in runs]
+    if not all(r.returncode == 0 for r in runs):
+        # In full: pytest's assertion repr cut git's own message out of the one
+        # failure CI showed (#360), which left only pin_code's guess at a cause.
+        pytest.fail("\n---\n".join(f"{n}: rc {r.returncode}\n{r.stderr}"
+                                     for n, r in zip(nodes, runs)))
     trees = {_repo_of(r) for r in runs}
     assert len(trees) == 3                       # one per node, not one per job
     assert all((t / "code.py").read_text() == "VERSION = 'old'\n" for t in trees)
@@ -319,3 +324,57 @@ def test_no_batch_file_header_shows_a_bare_sbatch():
                  for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
                  if bare.match(line)]
     assert offenders == [], offenders
+
+
+# ── the lock across nodes (#360) ────────────────────────────────────────────
+def _repo_lock(repo: Path) -> Path:
+    return repo / ".git" / "pin_code.lock.d"
+
+
+def test_the_lock_on_the_main_checkout_is_gone_once_the_tree_is_made(checkout, tmp_path):
+    repo, old, _ = checkout
+    done = _pin(repo, tmp_path / "wt", old, node="gnode25")
+    assert done.returncode == 0, done.stderr
+    assert not _repo_lock(repo).exists()
+
+
+def test_a_node_waits_for_another_nodes_checkout_and_says_so(checkout, tmp_path):
+    """The per-node flock cannot see a job on another node; this lock can."""
+    repo, old, _ = checkout
+    _repo_lock(repo).mkdir()
+    (_repo_lock(repo) / "owner").write_text("gnode26 pid 4242 since now\n")
+    done = _pin(repo, tmp_path / "wt", old, node="gnode25", ATR_PIN_LOCK_WAIT_S="1")
+    assert done.returncode == 7
+    assert "another node is creating a worktree" in done.stderr
+    assert "gnode26 pid 4242" in done.stderr
+    assert _repo_lock(repo).exists(), "a lock somebody else holds is not ours to remove"
+
+
+def test_a_lock_left_by_a_dead_job_is_removed_and_says_whose(checkout, tmp_path):
+    repo, old, _ = checkout
+    _repo_lock(repo).mkdir()
+    (_repo_lock(repo) / "owner").write_text("gnode27 pid 1 since long ago\n")
+    long_ago = _repo_lock(repo).stat().st_mtime - 3600
+    os.utime(_repo_lock(repo), (long_ago, long_ago))
+    done = _pin(repo, tmp_path / "wt", old, node="gnode25")
+    assert done.returncode == 0, done.stderr
+    assert "removing a lock" in done.stderr and "gnode27 pid 1" in done.stderr
+    assert not _repo_lock(repo).exists()
+
+
+def test_a_tree_that_is_ready_takes_no_lock(checkout, tmp_path):
+    """The fast path stays fast: a requeued job on a node with its tree does not
+    queue behind another node's checkout."""
+    repo, old, _ = checkout
+    root = tmp_path / "wt"
+    assert _pin(repo, root, old, node="gnode25").returncode == 0
+    _repo_lock(repo).mkdir()
+    done = _pin(repo, root, old, node="gnode25", ATR_PIN_LOCK_WAIT_S="1")
+    assert done.returncode == 0, done.stderr
+
+
+def test_an_unknown_commit_says_it_is_missing_not_that_git_failed(checkout, tmp_path):
+    repo, _, _ = checkout
+    done = _pin(repo, tmp_path / "wt", "0" * 40)
+    assert "is not in that checkout" in done.stderr
+    assert "failed (git's message above)" not in done.stderr
