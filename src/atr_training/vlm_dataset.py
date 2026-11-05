@@ -823,6 +823,11 @@ class AppliedBudget:
         asked = ""
         if self.asked_pixels is not None and self.asked_pixels != self.max_pixels:
             asked = f" (asked for {self.asked_pixels}, rounded up to a step)"
+        if self.stepped:
+            # The knob is the step; printing the pixels as its value read like a
+            # setting of 322560 soft tokens.
+            return (f"{self.knob}={self.visual_tokens} -> {self.max_pixels} px, "
+                    f"~{self.visual_tokens} visual tokens ({grid}){asked}")
         return (f"{self.knob}={self.max_pixels} -> ~{self.visual_tokens} visual "
                 f"tokens ({grid}){asked}")
 
@@ -866,8 +871,15 @@ def _stepped_budget(image_processor, max_pixels: int) -> AppliedBudget:
             "carries the requested pixels cannot be worked out")
     cell = int(patch) * int(pool)
     carried = {tokens: tokens * cell * cell for tokens in SOFT_TOKEN_STEPS}
-    step = next((t for t in SOFT_TOKEN_STEPS if carried[t] >= max_pixels),
-                SOFT_TOKEN_STEPS[-1])
+    top = SOFT_TOKEN_STEPS[-1]
+    if max_pixels > carried[top]:
+        # Taking the top step here would hand the run fewer pixels than it asked
+        # for and say nothing — a page arm at 4 Mpx would quietly train at 2.6.
+        raise VisualBudgetError(
+            f"asked for {max_pixels} px, but the largest step this processor "
+            f"accepts, max_soft_tokens={top}, carries {carried[top]} px — "
+            "lower max_pixels or use a model that can see more")
+    step = next(t for t in SOFT_TOKEN_STEPS if carried[t] >= max_pixels)
 
     image_processor.max_soft_tokens = step
     read_back = getattr(image_processor, "max_soft_tokens", None)
