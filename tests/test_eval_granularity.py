@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
+import pytest
+
+from atr_training.vlm_dataset import page_sample, write_jsonl
 from scripts.eval_granularity import (
+    Budgets,
+    Client,
+    PageSetError,
     block_boxes,
+    budgets_of,
+    build_parser,
     by_line_count,
     flat,
     line_region_ids,
+    page_lines,
+    read_page_set,
     region_boxes,
     spread_pages,
     summarise,
@@ -109,3 +122,116 @@ def test_a_line_without_transcription_breaks_the_run():
 def test_one_line_blocks_are_the_lines():
     xml = _page(_region("r1", _line("l1", 0, 0, 100, 20, "eins"), _line("l2", 0, 30, 100, 50, "zwei")))
     assert [t for _, _, _, t in block_boxes(xml, (1000, 800), block_lines=1)] == ["eins", "zwei"]
+
+
+# ── prompt and budgets (#376) ───────────────────────────────────────────────
+#: What the script sent before the flags existed, copied from its last version
+#: rather than from the constants that now feed it — so a drift in either the
+#: contract or the defaults fails here.
+OLD_PROMPT = "Transcribe the handwritten text in this image exactly as written."
+OLD_LEVELS = {
+    "line": (256 * 32 * 32, 512),
+    "block@block_budget": (1024 * 32 * 32, 1024),
+    "region@page_budget": (2048 * 32 * 32, 4096),
+    "region@line_budget": (256 * 32 * 32, 4096),
+    "page@page_budget": (2048 * 32 * 32, 4096),
+}
+REQUIRED = ["--model", "m", "--out", "r.json", "--base-url", "http://127.0.0.1:8299"]
+
+
+def test_without_the_flags_every_level_asks_what_it_asked_before():
+    budgets = budgets_of(build_parser().parse_args(["--root", "job", *REQUIRED]))
+    assert budgets == Budgets()
+    assert budgets.prompt == OLD_PROMPT
+    assert budgets.levels() == OLD_LEVELS
+
+
+def test_without_the_flags_the_request_is_byte_identical():
+    url = "data:image/png;base64,AAAA"
+    old = {"model": "m", "temperature": 0.0, "max_tokens": 512,
+           "messages": [{"role": "user", "content": [
+               {"type": "image_url", "image_url": {"url": url}},
+               {"type": "text", "text": OLD_PROMPT}]}]}
+    new = Client("http://127.0.0.1:8299/", "m", None).payload(url, 512)
+    assert json.dumps(new).encode() == json.dumps(old).encode()
+
+
+def test_flags_set_the_prompt_and_each_budget():
+    args = build_parser().parse_args(["--page-set", "set", *REQUIRED, "--prompt", "Lies.\nGanz.",
+                                      "--line-pixels", "1", "--block-pixels", "2",
+                                      "--page-pixels", "4194304", "--max-tokens-page", "3072"])
+    budgets = budgets_of(args)
+    assert budgets.levels() == {"line": (1, 512), "block@block_budget": (2, 1024),
+                                "region@page_budget": (4194304, 3072),
+                                "region@line_budget": (1, 3072),
+                                "page@page_budget": (4194304, 3072)}
+    assert Client("http://x", "m", None, prompt=budgets.prompt).payload("u", 1)[
+        "messages"][0]["content"][1]["text"] == "Lies.\nGanz."
+    record = budgets.record()
+    assert record["prompt"] == "Lies.\nGanz."
+    assert record["budgets"]["page@page_budget"] == {"max_pixels": 4194304, "max_tokens": 3072}
+
+
+def test_root_and_page_set_exclude_each_other():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--root", "a", "--page-set", "b", *REQUIRED])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(REQUIRED)
+
+
+# ── frozen page sets (#376) ─────────────────────────────────────────────────
+def _page_set(tmp_path, xml: str):
+    """A draw laid out as scripts/build_page_benchmark.py writes one."""
+    from PIL import Image
+
+    pages = tmp_path / "data" / "pages"
+    pages.mkdir(parents=True)
+    (pages / "aaa_1.xml").write_text(xml, encoding="utf-8")
+    Image.new("RGB", (1000, 800), "white").save(pages / "aaa_1.jpg")
+    write_jsonl(tmp_path / "pages.jsonl", [page_sample(pages / "aaa_1.xml", root=tmp_path)])
+    record = {"set": "toy-v1", "side": "test", "documents": 1, "pages": 1,
+              "page_digest": "0123456789abcdef", "samples": 1, "draw": "pages.jsonl",
+              "draw_md5": hashlib.md5((tmp_path / "pages.jsonl").read_bytes()).hexdigest()}
+    (tmp_path / "benchmark.json").write_text(json.dumps(record), encoding="utf-8")
+    return tmp_path
+
+
+def test_page_set_reader_names_the_pages_and_the_set(tmp_path):
+    root = _page_set(tmp_path, _page(_region("r1", _line("l1", 100, 100, 500, 140, "eins"))))
+    pages, identity = read_page_set(root)
+    assert pages == ["data/pages/aaa_1.xml"]
+    assert identity["set"] == "toy-v1" and identity["side"] == "test"
+    assert identity["page_digest"] == "0123456789abcdef"
+
+
+def test_page_set_reader_refuses_an_edited_draw(tmp_path):
+    root = _page_set(tmp_path, _page(_region("r1", _line("l1", 100, 100, 500, 140, "eins"))))
+    with open(root / "pages.jsonl", "a", encoding="utf-8") as fh:
+        fh.write("\n")
+    with pytest.raises(PageSetError, match="not the frozen draw"):
+        read_page_set(root)
+
+
+def test_page_set_reader_refuses_a_directory_without_a_record(tmp_path):
+    with pytest.raises(PageSetError, match="benchmark.json"):
+        read_page_set(tmp_path)
+
+
+def test_lines_are_cut_from_the_pagexml_as_training_cuts_them(tmp_path):
+    xml = _page(_region("r1", _line("l1", 100, 100, 500, 140, "eins"),
+                        _line("l2", 0, 0, 0, 0, "zu klein"),          # no legible crop
+                        _line("l3", 2, 780, 990, 799, "unten")))
+    root = _page_set(tmp_path, xml)
+    rows = page_lines(root, "data/pages/aaa_1.xml", (1000, 800))
+    assert [r["text"] for r in rows] == ["eins", "unten"]
+    assert rows[0] == {"image": "data/pages/aaa_1.jpg", "bbox": [92, 92, 508, 148],
+                       "text": "eins", "page": "data/pages/aaa_1.xml"}
+    assert rows[1]["bbox"] == [0, 772, 998, 800]                   # padded by 8, clamped
+
+
+def test_line_and_page_references_come_from_the_same_page(tmp_path):
+    xml = _page(_region("r1", _line("l1", 100, 100, 500, 140, "eins"),
+                        _line("l2", 90, 150, 520, 190, "zwei")))
+    root = _page_set(tmp_path, xml)
+    rows = page_lines(root, "data/pages/aaa_1.xml", (1000, 800))
+    assert "\n".join(r["text"] for r in rows) == page_sample(root / "data/pages/aaa_1.xml").text
