@@ -157,3 +157,60 @@ def test_the_written_block_names_base_and_augmentation(tmp_path):
     block = yaml.safe_load(manifest.read_text())["noise_floor"]
     assert block["base_model"] == "catmus.mlmodel"
     assert block["augment"] is False
+
+
+# ── a fine-tune trains at its base's height, not at --spec's ────────────────
+#
+# The floor of 10.10.2026 fine-tuned catmus-medieval-1.6.0 and was recorded as
+# KRAKEN_PLUS_SPEC, height 64; every seed's train.log showed input [1,1,120,…],
+# because `ketos train` ignores --spec under --load (docs/EVAL_SETS.md).
+
+CATMUS_SPEC = ("[1,120,0,1 Cr{C_0}3,13,32 Do{Do_1}0.1,2 Mp{Mp_2}2,2 "
+               "Cr{C_3}3,13,32 Do{Do_4}0.1,2 Mp{Mp_5}2,2 Cr{C_6}3,9,64 "
+               "Do{Do_7}0.1,2 Mp{Mp_8}2,2 Cr{C_9}3,9,64 Do{Do_10}0.1,2 "
+               "S{S_11}1(1x0)1,3 Lbx{L_12}200 Do{Do_13}0.1,2 Lbx{L_14}200 "
+               "Do{Do_15}0.1,2 Lbx{L_16}200 Do{Do_17} O{O_18}1c305]")
+
+
+def test_a_from_scratch_run_trains_the_spec_it_asks_for(monkeypatch):
+    def no_base(_):
+        raise AssertionError("no base to read")
+
+    monkeypatch.setattr(mnf, "base_spec", no_base)
+    params = mnf.params_for(_ns())
+    assert mnf.trained_spec(_ns(), params) == params.spec
+
+
+def test_a_fine_tune_trains_the_spec_of_its_base(monkeypatch):
+    """The string above is what kraken 7.0.2 read from noise-ft60/seed42 on
+    asteraix: `TorchVGSLModel.load_model(...).spec`."""
+    from atr_training.vgsl_geometry import input_height
+
+    read = []
+    monkeypatch.setattr(mnf, "base_spec", lambda w: read.append(w) or CATMUS_SPEC)
+    args = _ns(base_model="catmus-medieval-1.6.0.mlmodel")
+    spec = mnf.trained_spec(args, mnf.params_for(args))
+    assert read == ["catmus-medieval-1.6.0.mlmodel"]
+    assert spec == CATMUS_SPEC and input_height(spec) == 120
+    assert input_height(mnf.params_for(args).spec) == 64, "what was recorded before"
+
+
+def test_the_summary_of_a_fine_tune_records_the_bases_height(monkeypatch, tmp_path):
+    """Through `main`, so the record and the leaderboard's "height N" read the
+    same number: no GPU, no kraken, every run a no-op."""
+    import json
+
+    monkeypatch.setattr(mnf, "base_spec", lambda _: CATMUS_SPEC)
+    monkeypatch.setattr(mnf.line_ceiling, "aspects_from_arrow",
+                        lambda *_a, **_k: [5.0] * 100)
+    monkeypatch.setattr(mnf, "run", lambda cmd, log: 0)
+    monkeypatch.setattr(mnf, "find_best_weights", lambda *_: None)
+    out = tmp_path / "out"
+    argv = ["--train", str(tmp_path / "t.arrow"), "--benchmark", str(tmp_path / "b.arrow"),
+            "--train-lines", "1000", "--data-digest", "sha256:ab", "--no-augment",
+            "--seeds", "42", "--out", str(out), "--base-model", "catmus.mlmodel"]
+    assert mnf.main(argv) == 1, "no run scored, so no floor — the record is still written"
+    summary = json.loads((out / "noise_floor.json").read_text())
+    assert summary["spec"] == CATMUS_SPEC
+    assert summary["input_height"] == 120
+    assert summary["base_model"] == "catmus.mlmodel"
