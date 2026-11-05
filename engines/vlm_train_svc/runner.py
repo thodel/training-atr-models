@@ -293,7 +293,9 @@ class Pipeline(BasePipeline):
             if params.granularity != "page":        # line and block are cut out;
                 # page samples in a mix pass through untouched (bbox=None), so the
                 # one call handles all three kinds.
-                samples = write_crops(samples, paths.root, paths.data / "crops" / name)
+                samples = write_crops(samples, paths.root, paths.data / "crops" / name,
+                                      scale=params.crop_scale,
+                                      budgets=params.kind_budgets())
             jsonl = paths.data / f"{name}.jsonl"
             written = write_jsonl(jsonl, samples)
             if not written:
@@ -424,7 +426,9 @@ class Pipeline(BasePipeline):
                               root=paths.root)
         if params.granularity == "line":
             samples = write_crops(samples, paths.root,
-                                  paths.data / "crops" / f"benchmark_{benchmark.project}")
+                                  paths.data / "crops" / f"benchmark_{benchmark.project}",
+                                  scale=params.crop_scale,
+                                  budgets=params.kind_budgets())
         if not write_jsonl(jsonl, samples):
             raise StageFailed(
                 f"benchmark {benchmark.hf_repo}/{benchmark.project} produced no samples "
@@ -613,6 +617,12 @@ class Pipeline(BasePipeline):
             # reads crops of several lines, which serving does not cut yet (#57),
             # so it is registered at the level it can be served at today.
             "level": "page" if "page" in params.kinds() else "line",
+            # A block model is served as strips of the same size and scale
+            # (serving-atr-inference#241): the gateway cuts `lines_per_crop`
+            # consecutive lines of a region and enlarges them `crop_scale` times.
+            **({"lines_per_crop": params.block_lines} if params.granularity == "block"
+               and params.block_lines > 1 else {}),
+            **({"crop_scale": params.crop_scale} if params.crop_scale else {}),
             # The prompt travels with the model: serving it with different
             # wording than it was tuned on is a silent distribution shift.
             "prompt": params.prompt,

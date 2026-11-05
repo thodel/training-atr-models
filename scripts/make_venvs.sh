@@ -11,12 +11,21 @@
 #   bash scripts/make_venvs.sh                     # all three
 #   bash scripts/make_venvs.sh vlm-train           # just one (or several)
 #   bash scripts/make_venvs.sh vlm-train-tf5       # transformers 5, for Qwen3.5/3.8
+#   bash scripts/make_venvs.sh vlm-train-apertus   # swiss-ai's fork, for Apertus 1.5
 #
 # vlm-train-tf5 is NOT in the default set: it is the asteraix twin of
 # ubelix/vlm-train-tf5.sif, built from the same requirements with the
 # transformers cap lifted and the four libraries that decide a step's cost pinned
 # to what that image holds (engines/vlm_train_svc/tf5-pins.txt). The trainer picks
 # it for a qwen3_5 base by itself (backends.venv_for).
+#
+# vlm-train-apertus is not in the default set either. Apertus 1.5's model type
+# (`apertus1p5`) exists only in swiss-ai's transformers fork, at the commit the
+# serving box's vllm-apertus venv runs (serving-atr-inference, scripts/
+# make_venvs.sh). The tf5 pins decide peft/accelerate/bitsandbytes; the fork
+# decides transformers, and tokenizers/hub follow the fork's own bounds. The
+# trainer picks it for a swiss-ai/Apertus-v1.5-* base (backends.venv_for).
+# Check it with scripts/apertus_lora_smoke.py before the first job (#316).
 #
 # The SERVICE runs in kraken-train (deploy/systemd/atr-train.service), which is
 # why that venv's requirements carry fastapi and uvicorn as well.
@@ -52,7 +61,7 @@ case "$(stat -f -c %T "${TMPDIR:-/tmp}" 2>/dev/null || echo unknown)" in
 esac
 
 ALL=(kraken-train vlm-train trocr-train)
-KNOWN=("${ALL[@]}" vlm-train-tf5)
+KNOWN=("${ALL[@]}" vlm-train-tf5 vlm-train-apertus)
 TARGETS=("$@")
 [ ${#TARGETS[@]} -eq 0 ] && TARGETS=("${ALL[@]}")
 for t in "${TARGETS[@]}"; do
@@ -67,7 +76,12 @@ declare -A REQS=(
   [vlm-train]=engines/vlm_train_svc/requirements.txt
   [trocr-train]=engines/trocr_train_svc/requirements.txt
   [vlm-train-tf5]=engines/vlm_train_svc/requirements.txt
+  [vlm-train-apertus]=engines/vlm_train_svc/requirements.txt
 )
+# swiss-ai/transformers, branch feature/apertus_1p5_pipeline — the commit
+# serving-atr-inference builds vllm-apertus with. Moving one without the other
+# trains a model on a processor serving does not run.
+APERTUS_TRANSFORMERS_COMMIT=3797303dda74844e3d1f8977ff5518bb91f818b4
 
 mkdir -p "${VENVS}"
 for t in "${TARGETS[@]}"; do
@@ -92,6 +106,21 @@ for t in "${TARGETS[@]}"; do
       -c "${ROOT}/engines/vlm_train_svc/tf5-pins.txt"
     "${VENVS}/${t}/bin/pip" install -c "${ROOT}/engines/vlm_train_svc/tf5-pins.txt" \
       transformers
+  elif [ "${t}" = vlm-train-apertus ]; then
+    grep -v -e '^transformers' -e '^huggingface_hub' "${ROOT}/${REQS[${t}]}" \
+      > "${TMPDIR:-/tmp}/vlm-apertus-reqs.txt"
+    "${VENVS}/${t}/bin/pip" install -r "${TMPDIR:-/tmp}/vlm-apertus-reqs.txt" \
+      -c "${ROOT}/engines/vlm_train_svc/tf5-pins.txt"
+    SRC="${VENVS}/vlm-train-apertus-src/transformers"
+    rm -rf "${SRC}"
+    git clone --filter=blob:none --branch feature/apertus_1p5_pipeline \
+      https://github.com/swiss-ai/transformers.git "${SRC}"
+    git -C "${SRC}" checkout "${APERTUS_TRANSFORMERS_COMMIT}"
+    "${VENVS}/${t}/bin/pip" install "${SRC}"
+    # The fork's own bounds (serving found them the hard way, #234): pip's
+    # newest tokenizers and hub are outside them.
+    "${VENVS}/${t}/bin/pip" install "tokenizers==0.22.2" "huggingface-hub>=1.5.0,<2.0"
+    "${VENVS}/${t}/bin/python" -c 'import transformers, peft; from transformers import AutoProcessor; print("transformers", transformers.__version__, "peft", peft.__version__)'
   else
     "${VENVS}/${t}/bin/pip" install -r "${ROOT}/${REQS[${t}]}"
   fi

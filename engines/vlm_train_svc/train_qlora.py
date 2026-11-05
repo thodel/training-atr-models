@@ -28,7 +28,7 @@ from atr_training.vlm_dataset import (
     template_kwargs,
     apply_visual_budget,
     fit_pixels,
-    chat_example,
+    example_for,
     read_jsonl,
     SequenceTally,
 )
@@ -186,9 +186,10 @@ def assistant_header_ids(processor, prompt: str) -> list[int]:
     tokenizer = processor.tokenizer
     kwargs = template_kwargs(processor)
     without = processor.apply_chat_template(
-        chat_example(prompt), tokenize=False, add_generation_prompt=False, **kwargs)
+        example_for(processor, prompt), tokenize=False, add_generation_prompt=False,
+        **kwargs)
     with_answer = processor.apply_chat_template(
-        chat_example(prompt, _ANSWER_SENTINEL), tokenize=False,
+        example_for(processor, prompt, _ANSWER_SENTINEL), tokenize=False,
         add_generation_prompt=False, **kwargs)
     cut = with_answer.find(_ANSWER_SENTINEL)
     if cut < 0:
@@ -264,7 +265,7 @@ class HTRCollator:
             budget = self.kind_pixels.get(sample.get("source_type"))
             images.append(fit_pixels(image, budget) if budget else image)
             texts.append(self.processor.apply_chat_template(
-                chat_example(self.prompt, sample["text"]), tokenize=False,
+                example_for(self.processor, self.prompt, sample["text"]), tokenize=False,
                 add_generation_prompt=False, **self.template_kwargs,
             ))
 
@@ -600,7 +601,9 @@ def _params_per_device(model) -> dict[str, str]:
 def build_model(args, processor):
     import torch
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-    from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
+    from transformers import BitsAndBytesConfig
+
+    from atr_training.vlm_load import load_vlm
 
     quantization = None
     if args.load_in_4bit:
@@ -636,7 +639,7 @@ def build_model(args, processor):
     # for an 8B the better use of the second A40 is a second job
     # (`max_concurrent`).
     visible = torch.cuda.device_count()
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = load_vlm(
         args.base_model,
         quantization_config=quantization,
         dtype=torch.bfloat16,

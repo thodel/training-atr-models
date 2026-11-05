@@ -36,6 +36,7 @@ from atr_training.vlm_dataset import (
     has_stepped_budget,
     fit_pixels,
     chat_example,
+    example_for,
     read_jsonl,
 )
 
@@ -97,7 +98,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def load_model(args):
     import torch
-    from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
+    from transformers import AutoProcessor, BitsAndBytesConfig
+
+    from atr_training.vlm_load import load_vlm
 
     quantization = None
     if args.load_in_4bit:
@@ -128,7 +131,7 @@ def load_model(args):
     if processor.tokenizer.pad_token_id is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = load_vlm(
         args.base_model, quantization_config=quantization, dtype=torch.bfloat16,
         device_map={"": 0}, trust_remote_code=True,
     )
@@ -232,7 +235,7 @@ def turn_end_ids(processor, tokenizer) -> list[int]:
         return []
     try:
         rendered = processor.apply_chat_template(
-            chat_example("Transcribe.", _ANSWER_SENTINEL), tokenize=False,
+            example_for(processor, "Transcribe.", _ANSWER_SENTINEL), tokenize=False,
             add_generation_prompt=False, **template_kwargs(processor))
         cut = rendered.find(_ANSWER_SENTINEL)
         if cut < 0:
@@ -356,7 +359,7 @@ def generation_prompt(processor, prompt: str, system: str | None,
             chat_example(prompt, system=system), tokenize=False,
             add_generation_prompt=True, **kwargs)
     rendered = processor.apply_chat_template(
-        chat_example(prompt, _ANSWER_SENTINEL, system=system), tokenize=False,
+        example_for(processor, prompt, _ANSWER_SENTINEL, system=system), tokenize=False,
         add_generation_prompt=False, **kwargs)
     cut = rendered.find(_ANSWER_SENTINEL)
     if cut < 0:

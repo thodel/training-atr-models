@@ -424,6 +424,18 @@ class VlmTrainParams(BaseModel):
     granularity: Literal["line", "block", "page", "mixed"] = "line"
     #: Lines per sample at ``granularity: block`` and in a mix; ignored otherwise.
     block_lines: int = Field(default=6, ge=1, le=16)
+    #: Enlarge every line and block crop this many times when it is cut, within
+    #: the kind's pixel budget. None = native pixels. Only for crops: a page
+    #: sample is never enlarged, so the field is refused at ``granularity: page``.
+    #:
+    #: It adds no information, and that is not what it is for. Apertus 1.5 sees
+    #: an image as one discrete code per 16 x 16 pixels, and a letter smaller than
+    #: a cell does not survive the quantisation (training-atr-models#314). On the
+    #: 166 settled GT pages, four-line strips read at 22.4 % CER enlarged 2x
+    #: against 30.4 % at native size and 31.1 % for the whole page; on Basel's
+    #: small scans 16.1 % against 36.3 % (#317). Training has to see the scale
+    #: serving reads at, so the registry entry carries it as well.
+    crop_scale: float | None = Field(default=None, gt=1.0, le=4.0)
     #: Shares per sample kind at ``granularity: mixed``; None takes
     #: :data:`DEFAULT_GRANULARITY_MIX`. Refused for any other granularity, so a
     #: mix that is silently ignored cannot happen.
@@ -675,6 +687,13 @@ class VlmTrainParams(BaseModel):
         if self.max_new_tokens:
             return self.max_new_tokens
         return max(VLM_MAX_NEW_TOKENS[k] for k in self.kinds())
+
+    @model_validator(mode="after")
+    def _check_crop_scale(self) -> "VlmTrainParams":
+        if self.crop_scale is not None and self.granularity == "page":
+            raise ValueError("crop_scale enlarges line and block crops; a page sample "
+                             "is not cut and is never enlarged")
+        return self
 
     @model_validator(mode="after")
     def _check_mix(self) -> "VlmTrainParams":

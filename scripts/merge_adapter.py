@@ -38,6 +38,10 @@ import json
 import sys
 from pathlib import Path
 
+# atr_training.vlm_load, for a base transformers loads through another auto class
+# (Apertus 1.5, #316) — the script also runs outside a job, from a bare checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -97,7 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     import transformers
     from huggingface_hub import HfApi
     from peft import PeftModel
-    from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
+    from transformers import AutoProcessor, BitsAndBytesConfig
+
+    from atr_training.vlm_load import load_vlm
 
     if args.out.exists() and any(args.out.iterdir()):
         print(f"{args.out} exists and is not empty; refusing to mix two merges", file=sys.stderr)
@@ -107,11 +113,11 @@ def main(argv: list[str] | None = None) -> int:
         bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                  bnb_4bit_compute_dtype=torch.bfloat16,
                                  bnb_4bit_use_double_quant=True)
-        base = AutoModelForImageTextToText.from_pretrained(
+        base = load_vlm(
             args.base, quantization_config=bnb, dtype=torch.bfloat16, device_map={"": 0})
         base = base.dequantize().to(torch.bfloat16)
     else:
-        base = AutoModelForImageTextToText.from_pretrained(args.base, dtype=torch.bfloat16)
+        base = load_vlm(args.base, dtype=torch.bfloat16)
 
     model = PeftModel.from_pretrained(base, args.adapter, revision=args.adapter_revision)
     merged = model.base_model.merge_and_unload()

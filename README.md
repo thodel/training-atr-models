@@ -79,6 +79,12 @@ Beschrieben in acht Dokumenten (englisch):
   und der VLM-Zeilenarm mit demselben Korpus auf einer Ziehung, die keiner
   gesehen hat. Gleichauf insgesamt, TrOCR vorn ohne Königsfelden, der VLM vorn
   bei den Urkunden.
+- [`docs/APERTUS_1_5.md`](docs/APERTUS_1_5.md) — Apertus 1.5 auf Handschrift
+  (#314–#317): der diskrete Bild-Tokenizer (16 px pro Code) als Grenze, die
+  Zero-Shot-Messung auf den 276 GT-Seiten in fünf Zuschnitten (4 Zeilen 2×
+  vergrössert 22.4 % gegen 31.1 % für die Seite und 11.2 % für den
+  Qwen-Kurrent-Fine-Tune), und die LoRA-Probe auf vergrösserten Streifen mit
+  Spec, Smoke-Test und Runbook.
 - [`docs/GEMMA_TUNING.md`](docs/GEMMA_TUNING.md) — Gemma liest 3.2 Punkte
   schlechter als Qwen; was davon an unseren eigenen Einstellungen liegt (halbes
   Token-Budget, ein Prompt-Block, den das Training nie sah), was die offizielle

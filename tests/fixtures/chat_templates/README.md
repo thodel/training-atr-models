@@ -10,6 +10,7 @@ a model or the network.
 | `qwen3.5-4b.jinja` | `Qwen/Qwen3.5-4B` (`chat_template.jinja`) | `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a` | 2026-10-22 |
 | `olmocr-2-7b-1025.jinja` | `allenai/olmOCR-2-7B-1025` (`chat_template.jinja`) | `e52d6f090b7a9007afffbbd6ce510876222fea93` | 2026-10-22 |
 | `qwen3-vl-4b-instruct.jinja` | `Qwen/Qwen3-VL-4B-Instruct` (the `chat_template` string of `chat_template.json`) | `ebb281ec70b05090aa6165b016eac8ec08e71b17` | 2026-10-22 |
+| `apertus-v1.5-8b.jinja` | `swiss-ai/Apertus-v1.5-8B` (`chat_template.jinja`, 16 614 bytes) | main | 2026-11-05 |
 | `gemma-4-e4b-it.jinja` | `google/gemma-4-E4B-it` (`chat_template.jinja`) | `ee0ef6023621cff504d758262d4e04895a5af4a2` | 2026-10-22 |
 
 A base model's template can change under the same name; when a run's render

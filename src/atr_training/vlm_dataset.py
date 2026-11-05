@@ -62,6 +62,8 @@ __all__ = [
     "write_jsonl",
     "read_jsonl",
     "chat_example",
+    "assistant_takes_parts",
+    "example_for",
     "SequenceTally",
 ]
 
@@ -654,7 +656,7 @@ def template_kwargs(processor) -> dict:
 
 
 def chat_example(prompt: str, text: str | None = None,
-                 system: str | None = None) -> list[dict]:
+                 system: str | None = None, text_as_string: bool = False) -> list[dict]:
     """The chat turns for one sample, in the shape ``apply_chat_template`` wants.
 
     Built here rather than in the training script so the *exact* conversation the
@@ -668,6 +670,12 @@ def chat_example(prompt: str, text: str | None = None,
     (serving-atr-inference/docs/CHURRO_PLAN.md §1.1). An empty ``prompt`` then means *no* text part in
     the user turn, not an empty one: a stray empty string is still a token
     sequence the model never saw in training.
+
+    ``text_as_string`` puts the answer in as a plain string instead of a list of
+    parts. Apertus 1.5's template takes nothing else for an assistant turn — a
+    list raises ``Invalid assistant content`` — while Qwen's and Gemma's take
+    both. :func:`example_for` decides, per processor, so every other model keeps
+    the render it was measured on.
     """
     messages: list[dict] = []
     if system:
@@ -677,8 +685,42 @@ def chat_example(prompt: str, text: str | None = None,
         content.append({"type": "text", "text": prompt})
     messages.append({"role": "user", "content": content})
     if text is not None:
-        messages.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
+        messages.append({"role": "assistant",
+                         "content": text if text_as_string else [{"type": "text", "text": text}]})
     return messages
+
+
+def assistant_takes_parts(processor) -> bool:
+    """Does this processor's template render an assistant turn given as parts?
+
+    Asked of the template rather than of a list of model names: Apertus 1.5's
+    raises on parts (training-atr-models#316), and a template that raises on
+    both forms raises here too, which is the error worth seeing.
+    """
+    kwargs = template_kwargs(processor)
+    try:
+        processor.apply_chat_template(chat_example("x", "y"), tokenize=False,
+                                      add_generation_prompt=False, **kwargs)
+        return True
+    except Exception:  # noqa: BLE001 — jinja raises its own TemplateError subclass
+        processor.apply_chat_template(chat_example("x", "y", text_as_string=True),
+                                      tokenize=False, add_generation_prompt=False, **kwargs)
+        return False
+
+
+def example_for(processor, prompt: str, text: str | None = None,
+                system: str | None = None) -> list[dict]:
+    """:func:`chat_example` in the form ``processor``'s template accepts."""
+    if text is None:
+        return chat_example(prompt, system=system)
+    form = getattr(processor, "_atr_assistant_parts", None)
+    if form is None:
+        form = assistant_takes_parts(processor)
+        try:
+            processor._atr_assistant_parts = form
+        except AttributeError:                    # a processor that refuses attributes
+            pass
+    return chat_example(prompt, text, system=system, text_as_string=not form)
 
 
 # ── the visual-token budget (#86) ───────────────────────────────────────────
