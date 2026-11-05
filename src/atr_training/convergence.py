@@ -68,6 +68,7 @@ __all__ = [
     "FLOOR_BY_ENGINE",
     "plan_steps",
     "epochs_for",
+    "guaranteed_epochs",
     "floor_for",
     "check_convergence",
     "COLLAPSE_PATIENCE",
@@ -177,6 +178,24 @@ def epochs_for(steps: int, train_samples: int, effective_batch: int) -> int:
     return max(1, math.ceil(steps / per_epoch))
 
 
+def guaranteed_epochs(epochs: int, quit: str | None, min_epochs: int | None,
+                      lag: int | None) -> int:
+    """The epochs a run trains for certain, which is what the floor is held to.
+
+    ``epochs`` under ``quit: fixed``. Under ``quit: early`` kraken may stop as
+    soon as ``lag`` evaluations have not improved and ``min_epochs`` (ketos'
+    default 0) is reached, so the run is guaranteed only the larger of the two.
+    The guard counted ``epochs`` regardless, and a run from scratch that it
+    budgeted at 2,100 steps stopped at epoch 29 — 420 steps, CER 0.987, length
+    ratio 0.015, registered as completed (#171, UBELIX 21271959, 05.11.2026).
+    A collapsed run's accuracy does not improve, so early stopping ends exactly
+    the runs the floor is there for.
+    """
+    if quit != "early":
+        return epochs
+    return min(epochs, max(min_epochs or 0, lag or 0))
+
+
 def floor_for(engine: str, from_scratch: bool) -> int:
     """Minimum optimizer steps this kind of run needs to be worth starting."""
     if from_scratch:
@@ -191,17 +210,23 @@ def check_convergence(
     effective_batch: int,
     epochs: int,
     max_steps: int | None = None,
+    early_stop_epochs: int | None = None,
 ) -> ConvergenceVerdict | None:
     """Judge a configuration. ``None`` when there is nothing to judge.
 
     A missing sample count is not a failure: it means ``prepare`` reported no
     number, and refusing on an absence would block runs for a reason that is
     about us rather than about the configuration.
+
+    ``early_stop_epochs`` is :func:`guaranteed_epochs` for a run that may stop
+    early; below ``epochs`` it is what the budget is counted over.
     """
     if not train_samples or train_samples < 1:
         return None
 
-    budget = plan_steps(train_samples, effective_batch, epochs, cap=max_steps)
+    early = early_stop_epochs is not None and early_stop_epochs < epochs
+    budget = plan_steps(train_samples, effective_batch,
+                        early_stop_epochs if early else epochs, cap=max_steps)
     floor = floor_for(engine, from_scratch)
     if budget.total_steps >= floor:
         return ConvergenceVerdict(True, budget, floor)
@@ -211,6 +236,9 @@ def check_convergence(
     start = "from scratch" if from_scratch else f"as a {engine} fine-tune"
     if max_steps and max_steps < budget.steps_per_epoch * budget.epochs:
         start += f", capped by max_steps {max_steps:,}"
+    if early:
+        start += (f", where early stopping may end it after {budget.epochs} of its "
+                  f"{epochs} epochs (min_epochs and lag)")
     remedy = (
         "fine-tune from a base model instead (`base_model` + `resize: \"union\"`)"
         if from_scratch else "train for longer"
@@ -225,7 +253,8 @@ def check_convergence(
             f"converge — it was 400 steps that produced CER 0.98 on the Thun set "
             f"(see serving-atr-inference/docs/TRAINING_PLAN.md §9a). Either {remedy}, lower batch_size to "
             f"~{suggested_batch} (≈{plan_steps(budget.train_samples, suggested_batch, budget.epochs).total_steps:,} "
-            f"steps), or raise epochs to ~{needed_epochs}. Submit with "
+            f"steps), or raise {'min_epochs' if early else 'epochs'} to ~{needed_epochs}"
+            f"{' or set quit: fixed' if early else ''}. Submit with "
             f'"force": true to run it anyway.'
         ),
     )

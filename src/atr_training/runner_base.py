@@ -48,7 +48,7 @@ from atr_training.contracts import (
     TrainJob,
     utcnow,
 )
-from atr_training.convergence import check_convergence, plan_steps
+from atr_training.convergence import check_convergence, guaranteed_epochs, plan_steps
 from atr_training.gpu import Peak, PeakSampler, read_ledger
 from atr_training.heldout import load_heldout
 from atr_training.hf_source import (data_files_for, granularity_files,
@@ -1063,13 +1063,21 @@ class BasePipeline(ABC):
             effective_batch=params.effective_batch_size,
             epochs=params.epochs,
             max_steps=getattr(params, "max_steps", None),
+            # kraken's `quit: early` (#171); the VLM and TrOCR params have no quit.
+            early_stop_epochs=guaranteed_epochs(params.epochs, getattr(params, "quit", None),
+                                                getattr(params, "min_epochs", None),
+                                                getattr(params, "lag", None)),
         )
         if verdict is None:
             self.store.save(job)
             return
 
         job.progress.steps_per_epoch = verdict.budget.steps_per_epoch
-        job.progress.total_steps = verdict.budget.total_steps
+        # What the trainer is told, as _record_step_budget writes it — not the
+        # shorter guaranteed budget the verdict judged an early-stopping run by.
+        job.progress.total_steps = plan_steps(
+            job.progress.train_samples, params.effective_batch_size, params.epochs,
+            cap=getattr(params, "max_steps", None)).total_steps
         self.store.save(job)
 
         if verdict.ok:
