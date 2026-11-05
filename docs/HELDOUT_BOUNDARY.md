@@ -379,6 +379,41 @@ Three readings, none of them about the XVI–XIX target:
 The XVI–XIX target itself needs a Kurrent page set of its own: way c in
 [EVAL_SETS.md](EVAL_SETS.md).
 
+### The XVI–XIX target, held out (#341)
+
+`german-kurrent-xvi-xix-v1`, part test: **733 pages from 70 documents**,
+977,707 reference characters, held out by document (registered with #319,
+frozen under `eval_sets/german-kurrent-xvi-xix-v1/vlm-pages-test/`). The
+October arms trained on these documents, so both page arms were trained again
+on a corpus built after the registration (`4e2abd840de3`, `reserved_pages`
+2,923 against 1,318) and scored with `rescore_on_shared_draw.py --heldout` at
+`max_new_tokens=3072`, each with its own prompt and pixel budget. Read off
+UBELIX on 05.11.2026 (`eval_report.german-kurrent-xvi-xix-v1-test.json`).
+Both reports say `checked: true` and `shared: []`: none of the 70 documents is
+among the 1,191 of the training manifest (12,001 entries). For the olmOCR arm,
+which adopted the corpus, the check found that manifest in the artefact cache
+entry — the route #320 repaired.
+
+| arm | validation CER (159 pages, drawn by page) | **held-out CER** | `truncated_cer` | `length_ratio` | WER | at the token cap |
+|---|---:|---:|---:|---:|---:|---:|
+| `olmocr2-7b-…-page-px4m-native-v2` | 0.2130 | **0.2485** | 0.2064 | 1.051 | 0.493 | 11 of 733 |
+| `qwen3.5-4b-…-page-v2` | 0.2367 | **0.4181** | 0.2502 | 1.181 | 0.768 | 49 of 733 |
+
+Under `convention_normalized`: 0.2317 and 0.3879; `whitespace_flat`: 0.2474
+and 0.4145.
+
+* **olmOCR `px4m-native` reads unknown Kurrent hands at 24.9 %**, 3.6 points
+  above its own validation. On this corpus the by-page validation flattered
+  little — unlike the medieval arms, which lost 9 to 11 points.
+* **Most of the Qwen arm's gap is text written past the page.** It writes 18 %
+  more characters than the reference, and 49 pages run to the cap. On
+  `truncated_cer`, which clips every reading to the length of its reference,
+  the gap between the arms shrinks from 17.0 to 4.4 points: olmOCR reads better
+  too, but by less.
+* The validation numbers of these v2 runs do not compare with the October v1
+  numbers (0.1571, 0.2704): the corpus lost the held-out documents and the
+  validation draw is another one.
+
 ### The full table
 
 <details>
@@ -386,6 +421,8 @@ The XVI–XIX target itself needs a Kurrent page set of its own: way c in
 
 | Lauf | Store | CER | `reserved_pages` | Verdikt | gefallen | Grund |
 |---|---|---:|---:|---|---:|---|
+| `20261029T151540Z-olmocr2-7b-german-kurrent-xvi-xix-page-px4m-native-v2` | scratch | 0.2130 | 2923 | clean | 0 | added 05.11. (#341), not printed by the audit: adopted 4e2abd840de3 from 20261029T133027Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v2; the held-out rescore found none of the 70 `german-kurrent-xvi-xix-v1` test documents among the 1191 documents of the corpus's training manifest (12001 entries); prepare withheld every registered document (2923 pages), the audit itself was not re-run |
+| `20261029T133027Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v2` | scratch | 0.2367 | 2923 | clean | 0 | added 05.11. (#341), not printed by the audit: built 4e2abd840de3; the held-out rescore found none of the 70 `german-kurrent-xvi-xix-v1` test documents among the 1191 documents of its training manifest (12001 entries); prepare withheld every registered document (2923 pages), the audit itself was not re-run |
 | `20261019T180118Z-olmocr2-7b-medieval-page-px4m-native-r16` | scratch | 0.3214 | 3173 | clean | 0 | added 26.10. (#301), not printed by the audit: the held-out rescore compared the draw with the training manifest of its builder `20261001T093909Z-olmocr2-7b-medieval-german-page-v1` (8104 entries, 1180 documents) and found no shared document; `reserved_pages` read from the record on 30.10. |
 | `20261014T194417Z-ladder-med-qwen35-4b-v2` | scratch | 0.1594 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
 | `20261014T193118Z-ladder-med-qwen35-9b-v2` | scratch | 0.1375 | 3173 | clean | 0 | adopted f7188cd0b798 from 20261013T043436Z-ladder-med-qwen35-27b-v2 (scratch): 8104 of 8104 entries name a document; none reserved |
