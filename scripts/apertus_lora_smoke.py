@@ -19,12 +19,23 @@ the trainer's own code (``vlm_train_svc.train_qlora``), not a copy of it:
 
 Without ``--image`` it draws two synthetic strips, which proves the plumbing and
 nothing about reading. Exit 0 only if every step passed.
+
+**One card, named, with room on it.** A job gets exactly one card through
+``CUDA_VISIBLE_DEVICES``; the smoke test has to see the same, or it measures
+something no job will run. The first run (05.11.2026) saw both cards, spread the
+model over them with ``device_map=auto``, and ran out of memory after three
+minutes of loading on a card a hand-started embedding server held 17.7 GB of.
+So it refuses to start without ``CUDA_VISIBLE_DEVICES`` naming one card, and
+before loading it reads that card's free memory and refuses below
+``--min-free-gib`` (default: the probe's estimate), saying who holds the rest.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -33,6 +44,44 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "engines")]
 
 SPEC = ROOT / "ubelix" / "specs" / "apertus-1.5-8b-kurrent-xix-strip4-x2-probe.json"
+
+#: What one training step of the probe needs, in GiB: ~17 bf16 weights of the
+#: language model, ~1 for the fp32 tokenizers, the LoRA with its optimizer state,
+#: and the activations of a batch whose logits span a 266 752-entry vocabulary.
+#: An estimate until the first passing run reports its peak; then set it to that.
+MIN_FREE_GIB = 32.0
+
+
+def card_problem(visible: str | None, free_gib: float | None, min_free_gib: float) -> str | None:
+    """Why the smoke test must not start on these cards — None if it may.
+
+    Pure, so the rule is tested without a GPU: ``visible`` is the value of
+    ``CUDA_VISIBLE_DEVICES``, ``free_gib`` what the one visible card has free.
+    """
+    if visible is None or not visible.strip():
+        return ("CUDA_VISIBLE_DEVICES is not set: the test would see every card and "
+                "spread the model over them, which no job does. Name one free card, "
+                "e.g. CUDA_VISIBLE_DEVICES=1")
+    cards = [c for c in visible.split(",") if c.strip()]
+    if len(cards) != 1:
+        return (f"CUDA_VISIBLE_DEVICES={visible} names {len(cards)} cards; a job gets one. "
+                "Name exactly one")
+    if free_gib is not None and free_gib < min_free_gib:
+        return (f"card {cards[0]} has {free_gib:.1f} GiB free, the probe needs about "
+                f"{min_free_gib:.0f}. Free the card or lower --min-free-gib if you know better")
+    return None
+
+
+def holders(card: str) -> str:
+    """Who holds memory on ``card``, from nvidia-smi — for the refusal message."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_memory,gpu_bus_id",
+             "--format=csv,noheader", "-i", card],
+            capture_output=True, text=True, timeout=20, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "(nvidia-smi not available)"
+    return out or "(no compute processes listed)"
 
 
 def _synthetic(tmp: Path) -> list[dict]:
@@ -60,9 +109,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--text", action="append", default=[], help="its transcription, \\n between lines")
     ap.add_argument("--report", type=Path, default=None)
     ap.add_argument("--tmp", type=Path, default=Path("apertus-smoke"))
+    ap.add_argument("--min-free-gib", type=float, default=MIN_FREE_GIB,
+                    help="refuse to start below this much free memory on the card")
     args = ap.parse_args(argv)
 
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    problem = card_problem(visible, None, args.min_free_gib)
+    if problem:
+        print(f"[REFUSED] {problem}", file=sys.stderr)
+        return 2
+
     import torch
+
+    free, total = torch.cuda.mem_get_info(0)
+    free_gib = free / 2**30
+    problem = card_problem(visible, free_gib, args.min_free_gib)
+    if problem:
+        print(f"[REFUSED] {problem}\n  on that card: {holders(visible.strip())}", file=sys.stderr)
+        return 2
+    print(f"[card] CUDA_VISIBLE_DEVICES={visible}: {free_gib:.1f} of {total / 2**30:.1f} GiB "
+          "free", flush=True)
     from transformers import AutoProcessor
 
     from atr_training.contracts import TrainRequest
@@ -74,7 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     raw = json.loads(args.spec.read_text(encoding="utf-8"))
     request = TrainRequest(**{k: v for k, v in raw.items() if k != "notes"})
     params = request.params
-    report: dict = {"spec": str(args.spec), "base_model": request.base_model, "steps": {}}
+    report: dict = {"spec": str(args.spec), "base_model": request.base_model,
+                    "card": {"visible": visible, "free_gib": round(free_gib, 2)}, "steps": {}}
 
     def step(name, **facts):
         report["steps"][name] = facts
