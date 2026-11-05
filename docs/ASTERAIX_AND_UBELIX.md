@@ -111,7 +111,8 @@ Three things to read off it:
 ## Who does what
 
 The rule for a *new training* is in [WHERE_A_RUN_RUNS.md](WHERE_A_RUN_RUNS.md):
-UBELIX by default, asteraix when the UBELIX wait would exceed 48 hours or the
+UBELIX by default, asteraix when the UBELIX delay would exceed what the slower
+A40 costs — 0.51 × the run's H100 hours on lines, 2.65 × on pages (#162) — or the
 run is a measurement rather than a training. This table is the result of that
 rule plus the constraints that are not about waiting:
 
