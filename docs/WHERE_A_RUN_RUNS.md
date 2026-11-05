@@ -35,6 +35,67 @@ not fit, the run goes to UBELIX and nothing below applies. Two A40s do hold
 distributes the peak and buys **no** speed (249.7 s against 247.6 s on the same
 work, #137). Use that to make a run *possible*, never to make it faster.
 
+The answer comes from the peak table below, and only from it (#163). **A run
+whose point is missing goes to UBELIX**, and so does a run whose only point is a
+lower bound — a lower bound may stand in the table, but it is not a limit. A
+point is (engine, base, granularity, batch per device, quantisation); gradient
+accumulation does not move it (21,466–22,486 MiB at accumulation 1, 2 and 4 below).
+
+**The peak table.** The training stage's `own_mib`: what nvidia-smi showed
+for the processes descending from the stage's pid, polled every 2 s
+(`gpu.PeakSampler`, recorded on `stages[train].peak_gpu_mib` of every job since
+07.10.2026). The caching allocator keeps what it reserved, so a spike shorter
+than the poll is still seen. 45,486 MiB is what an A40 makes usable.
+
+| Engine | Base | Gran. | Batch × acc. | Quant. | Peak own | Of an A40 | Card | Source | Job |
+|---|---|---|---|---|---:|---:|---|---|---|
+| vllm | Qwen3.5-4B | line | 2 × 8 | 4-bit | 9,954 | 21.9 % | A40 | **lower bound**: 400 steps, 6,400 of 221,523 lines | `20261017T114213Z-throughput-qwen35-4b-a40` |
+| vllm | Qwen3-VL-4B | line | 16 × 1/2/4 | bf16 | 21,466–22,486 | 47.2–49.4 % | A40 | **lower bound**: 750–4,500 steps of 881,902 lines | `20261012T135706Z-vlm-xix-effective-batch-01-noise-s42` and 7 more, 12.–17.10. |
+| vllm | Qwen3.5-4B | line | 16 × 1 | 4-bit | 34,742 | 76.4 % | H100 | full run, 221,523 lines | `20261014T194417Z-ladder-med-qwen35-4b-v2` |
+| vllm | Qwen3.5-4B | line | 16 × 1 | bf16 | 36,414–36,498 | 80.1–80.2 % | H100 | full runs, 221,523 and 473,549 lines | `20261023T194329Z-ladder-med-qwen35-4b-bf16-v2`, `20261009T150138Z-qwen3.5-4b-german-kurrent-xvi-xix-v1` |
+| vllm | Qwen3.5-9B | line | 16 × 1 | 4-bit | 44,412 | **97.6 %** | H100 | full run, 221,523 lines | `20261014T193118Z-ladder-med-qwen35-9b-v2` |
+| vllm | Qwen3.5-27B, Qwen3.8-27B | line | 16 × 1 | 4-bit | 62,324 | **137 %** | H100 | full runs, 221,523 lines | `20261013T043436Z-ladder-med-qwen35-27b-v2`, `20261010T111013Z-ladder-med-qwen38-27b-v2` |
+| vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 27,763 | 61.0 % | A40 | **lower bound**: head of the file, 96 of 9,441 samples (#137) | hand-run |
+| vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 28,612 | 62.9 % | A40 | **lower bound**: 100 steps, 1,600 of 99,933 pages | `20261104T200338Z-throughput-qwen3vl-8b-page-a40` |
+| vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 29,116 | 64.0 % | H100 | **lower bound**: the same 100 steps | `20261026T205257Z-throughput-qwen3vl-8b-page-h100` |
+| vllm | Qwen3.5-4B | page | 2 × 1 | bf16 | 49,916–50,054 | **109.7–110.0 %** | H100 | full runs, 415,545–511,909 lines | `20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1` and 2 more |
+| vllm | olmOCR-2-7B, `max_pixels` 1288² | page | 2 × 8 | bf16 | 42,608 | 93.7 % | H100 | full run | `20261008T103636Z-olmocr2-7b-medieval-page-px1288` |
+| vllm | olmOCR-2-7B, cap 3072 | page | 2 × 8 | bf16 | 49,542 | **109 %** | H100 | full run | `20261008T103636Z-olmocr2-7b-medieval-page-cap3072` |
+| vllm | olmOCR-2-7B, px4m | page | 2 × 8 | bf16 | 63,728–65,558 | **140–144 %** | H100 | full runs | `20261013T121310Z-olmocr2-7b-medieval-page-px4m-native` and 5 more |
+| kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 256 | — | 43,536 | **95.7 %** | A40 | full epoch, `german_val.arrow`, no ceiling (hand-run, 07.10.2026) | `scripts/measure_kraken_arms.py` |
+| kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 256 | — | 8,894 | 19.6 % | A40 | full run, 197,083 lines, ceiling 60:1 (cut 4.8 %) | `20261027T072036Z-kraken-collapse-probe-131` |
+| kraken | fine-tune of `kraken-german-xix-v1` | line | 32 | — | 18,400 | 40.5 % | A40 | full run, 38,360 lines, ceiling as dry run only | `20261026T193646Z-kraken-german-xix-blb-v1` |
+| kraken | fine-tune of `cursive_inzigkofen` and its offspring | line | 16 | — | 3,952–6,930 | 8.7–15.2 % | A40 | full runs, 1,786–4,897 lines | `20261022T110104Z-kraken-bern-hertwig-v1` and 3 more |
+| trocr | `trocr-base-handwritten`, and `trocr-kurrent-XVI-XVII` built on it | line | 4 or 8 | bf16 | 6,830–6,832 | 15.0 % | A40 | full runs, 4,005 to 473,549 lines | `20261024T213142Z-trocr-german-kurrent-xvi-xix-v1` and 5 more |
+
+How to read it:
+
+- **Only a full run says "fits".** A step-bounded run saw a shuffled draw, and
+  the first peak #137 ever measured came from the head of the file; both are
+  floors. The three Qwen3-VL-8B page rows agree within 1,353 MiB, which says
+  the floor is stable, not that the tail of 99,933 pages stays under it.
+- **An H100 figure transfers below the line, not above it.** The same 100 steps
+  peaked at 29,116 MiB on the H100 and 28,612 MiB on the A40, 1.8 % apart. A
+  full run that stayed under 45,486 on an H100 fits an A40. One that went over
+  does not fit *as measured*: on an 80 GB card the allocator is never under
+  pressure, so it may have held cache an A40 would have had to give back. Such a
+  run goes to UBELIX until an A40 says otherwise.
+- **A row closer to the line than that 1.8 % does not fit.** Qwen3.5-9B lines in
+  4-bit (97.6 %, and 98.2 % for the whole card) is that row.
+- **What drives the peak is batch per device and pixels, not the corpus.**
+  Qwen3.5-4B lines in 4-bit: 9,954 MiB at batch 2 against 34,742 at batch 16.
+  olmOCR-2-7B pages at the same batch: 42,608, 49,542 and up to 65,558 MiB as the
+  pixel budget grows. kraken pads a batch to its widest line, which is why the
+  60:1 ceiling of #145 matters. The corpora differ, so the two batch-256 rows
+  are not a clean before/after, but they are a factor of five apart. trocr's
+  processor resizes every line image to one fixed shape (384 × 384): 6,830 MiB over 53,008 lines and over
+  473,549, at batch 4 and at batch 8.
+- **Not a row: what the card held.** `card_mib` adds everything else on the card.
+  The first A40 throughput run (`20261026T205256Z`) died at 26,950 MiB of its own
+  (`torch.OutOfMemoryError`) because a kraken job held 18,400 MiB on the same
+  card; that was the
+  card-assignment bug fixed in 8b4c2b9, not a peak.
+
 **2. Is it a measurement rather than a training?** A re-evaluation is generation
 with no optimizer steps: minutes to about two hours, run repeatedly, and usually
 wanted the same day. Those go to asteraix, where there is no queue. This is the
@@ -177,42 +238,32 @@ pin holds across the queue but not across that resume.
   both. Not measured: which of granularity, size and quantisation moves the
   ratio, a 12B or 27B on either card, and kraken or trocr at all. A third point
   that changes one variable at a time (8B lines in bf16, say) would say which.
-- **Peak memory per (engine, model size, granularity).** §1's first branch is a
-  number nobody has tabulated. #137 measured one point — an 8B VLM on page
-  samples, 27 763 MiB peak — from 96 of 9 441 samples, and said so: that figure
-  is a lower bound, not a guarantee. kraken and trocr have no such figure at all.
+- **Peak memory: what the table in §1 does not have yet.** It has full-run
+  points for every engine (#163), filled from the job records rather than
+  hand-run: every stage samples the card while its subprocess runs and records
+  the peak on `StageRecord.peak_gpu_mib`, with the job's maximum on
+  `Progress.peak_gpu_mib`. Two numbers per card: `own_mib`, the compute apps
+  whose ancestor chain contains the pid the stage spawned, and `card_mib`, what
+  the card reported in use at the same instant. VLM runs add the allocator's own
+  marks, `reserved_mib` and `allocated_mib` — a floor, because the CUDA context
+  lies outside them. Until #163 the VLM runner *assigned* those marks to the job
+  after the train stage, which wiped the sampled training peak and left the test
+  stage's in its place (28,612 MiB trained, 18,872 recorded); and it named them
+  after torch's card index instead of nvidia-smi's. Both are fixed; the stage
+  records were never affected, and they are what the table reads.
 
-  **Since 07.10.2026 the gap is the measurement, not the means (#163).** Every
-  stage now samples the card while its subprocess runs and records the peak on
-  `StageRecord.peak_gpu_mib`, with the job's maximum on `Progress.peak_gpu_mib`.
-  Two numbers per card: `own_mib`, the compute apps whose ancestor chain contains
-  the pid the stage spawned, and `card_mib`, what the card reported in use at the
-  same instant. VLM runs add the allocator's own marks, `reserved_mib` and
-  `allocated_mib`, into the same row — a floor, because the CUDA context lies
-  outside them and `expandable_segments:True` accounts the reserve differently
-  from the driver.
+  Missing:
+  - **A full VLM run on an A40.** Every A40 VLM row is step-bounded. The first
+    full run there turns its lower bound into a point.
+  - **An A40 figure for the H100 rows above the line.** Qwen3.5-4B pages at batch
+    2 (109.7–110.0 %) and olmOCR at cap 3072 (109 %) are near enough that an
+    allocator under pressure might fit them; nobody has tried.
+  - **kraken before and after the ceiling on one corpus.** The two batch-256 rows
+    differ in corpus as well as ceiling.
+  - **trocr beyond `trocr-base`.** Every trocr point is the base model; a large
+    one has none, and goes to UBELIX.
 
-  This is how kraken gets a figure at all: it drives `ketos` as an external CLI
-  and imports no torch, and its log carries no numbers because ketos renders
-  through `rich`. Where the ancestry cannot be traced — a PID namespace would do
-  it — `own_mib` is omitted rather than written as 0, because "could not look" is
-  not "used nothing" (#165).
-
-  **kraken's first point, measured 07.10.2026 on asteraix** with
-  `scripts/measure_kraken_arms.py`: `german_val.arrow` as training data,
-  `KRAKEN_PLUS_SPEC`, batch 256 — the project default — one full epoch in ~215 s.
-
-  | Engine | Spec | Batch | Peak own | Peak card | Of 45,486 usable | Source |
-  |---|---|---:|---:|---:|---:|---|
-  | kraken | `KRAKEN_PLUS_SPEC` | 256 | **43,536 MiB** | 43,579 MiB | **95.7 %** | full epoch over the arrow, asteraix 07.10.2026 |
-
-  So §1's first branch, for kraken: **it fits one A40 and very nearly does
-  not** — 1,950 MiB of headroom at the default batch. The limit for this engine
-  is the batch geometry, not the model size; a kraken model is ~16 MB. And the
-  card must be empty: while a colleague's job held 740 MiB of gpu0, `card_mib`
-  rose to 44,319 while `own_mib` stayed at 43,536.
-
-  The rest of the sweep, the same day and setup (#171):
+  The kraken batch sweep on the uncut arrow, 07.10.2026 (#171):
 
   | Batch | Peak own | Of an A40 (45,486) | Of an RTX 4090 (23,028) |
   |---:|---:|---:|---:|
@@ -228,22 +279,8 @@ pin holds across the queue but not across that resume.
   (`ubelix/kraken_batch_fits.py`, for `KRAKEN_PLUS_SPEC` from scratch; another
   network is "not checked"). The path there is `ubelix/kraken-train.def`
   (ketos 7.0.2, as on asteraix) and the two stages in `ubelix/README.md`.
-  Still missing for this table: a peak measured on UBELIX itself, and the
-  numbers after the image ceiling of #145, which cuts the widest lines.
-
-  **trocr still has no number, and gets one by sampling rather than by
-  plumbing.** Its runner does not read its own `training_summary.json`, so torch
-  marks written there would be a number nobody reads; the external sampler covers
-  it through `_run` instead. Real runs exist since 26.10.2026, all on
-  asteraix ([TROCR.md](TROCR.md)): 53,008 lines in 3 epochs took 86–88 min and
-  0.43–0.44 kWh, 473,549 lines in one epoch 3 h 29 of training and 1.2 kWh for
-  the whole job. None of them recorded a peak, so the tree still sends trocr
-  to UBELIX.
-
-  `scripts/measure_vlm_arms.py --worst-case` is the other half: it replaces the
-  head of the file with the longest transcriptions and the largest crops, which
-  is where the peak lives. Without it a figure is a lower bound however carefully
-  it was sampled.
+  Still missing for this sweep: a peak measured on UBELIX itself. What the
+  image ceiling of #145 does at batch 256 is the collapse-probe row in §1.
 - **Whether a run on asteraix can be reported.** It writes no job record, so it
   appears in no report and no comparison (#156). A rule that sends work there and
   loses its provenance is a bad trade; this gap bounds how much work should move

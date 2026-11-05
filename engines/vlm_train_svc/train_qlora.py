@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -584,6 +585,24 @@ def device_map_for(visible: int) -> dict[str, int] | str:
     return {"": 0} if visible <= 1 else "auto"
 
 
+def card_key(device: int, visible: str | None) -> str:
+    """The name of torch's `cuda:<device>` as nvidia-smi numbers it, `gpu<n>`.
+
+    Torch counts from 0 inside ``CUDA_VISIBLE_DEVICES``; nvidia-smi counts the
+    box. The pipeline's sampler writes nvidia-smi's names into the same mapping
+    (`runner_base._record_peak`), so a job on card 1 had its allocator marks
+    under `gpu0` and its sampled peak under `gpu1` — one run, two rows, and the
+    row that looked like a card's peak was the other card's (#163).
+
+    Falls back to torch's own index where the list is absent or not integers
+    (UUIDs, `MIG-…`): a name that might be wrong is better than a guessed one.
+    """
+    entries = [part.strip() for part in (visible or "").split(",") if part.strip()]
+    if device < len(entries) and entries[device].isdigit():
+        return f"gpu{entries[device]}"
+    return f"gpu{device}"
+
+
 def _params_per_device(model) -> dict[str, str]:
     """Parameters per card, in millions — the only cheap proof that a shard happened.
 
@@ -942,8 +961,9 @@ def main(argv: list[str] | None = None) -> int:
     # matches what the driver sees.
     peak_gpu_mib = {}
     if torch.cuda.is_available():
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
         for device in range(torch.cuda.device_count()):
-            peak_gpu_mib[f"gpu{device}"] = {
+            peak_gpu_mib[card_key(device, visible)] = {
                 "reserved_mib": round(torch.cuda.max_memory_reserved(device) / 2 ** 20),
                 "allocated_mib": round(torch.cuda.max_memory_allocated(device) / 2 ** 20),
             }

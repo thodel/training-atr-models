@@ -463,7 +463,17 @@ class Pipeline(BasePipeline):
         job.progress.max_sequence_tokens = written.get("max_sequence_tokens")
         peak = written.get("peak_gpu_mib")
         if isinstance(peak, dict):
-            job.progress.peak_gpu_mib = peak
+            # Merged, not assigned: this runs after the train stage's sampled
+            # peak is already on the record, and assigning wiped it — every VLM
+            # job on asteraix kept its test stage's peak instead (28,612 MiB
+            # trained, 18,872 MiB recorded, #163). Same rule as _record_peak.
+            for card, marks in peak.items():
+                if not isinstance(marks, dict):
+                    continue
+                into = job.progress.peak_gpu_mib.setdefault(card, {})
+                for key, value in marks.items():
+                    if isinstance(value, int):
+                        into[key] = max(into.get(key, 0), value)
         self.store.save(job)
 
         # The first branch of docs/WHERE_A_RUN_RUNS.md needs this per (engine,

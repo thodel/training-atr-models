@@ -295,6 +295,49 @@ def test_the_peak_reaches_the_record(tmp_path):
         "gpu0": {"reserved_mib": 27763, "allocated_mib": 26104}}
 
 
+def test_the_sampled_training_peak_survives_the_summary(tmp_path):
+    """The train stage's sampled peak is on the record before the summary is
+    read. Assigning the summary's marks wiped it, and the test stage's smaller
+    peak took its place: 28,612 MiB trained, 18,872 MiB recorded (#163)."""
+    job = _Job()
+    job.progress.peak_gpu_mib = {"gpu1": {"own_mib": 28612, "card_mib": 29009}}
+    (tmp_path / "training_summary.json").write_text(json.dumps({
+        "peak_gpu_mib": {"gpu1": {"reserved_mib": 28278, "allocated_mib": 26466}},
+    }), encoding="utf-8")
+
+    _runner()._record_sequence_budget(job, tmp_path)
+
+    assert job.progress.peak_gpu_mib == {"gpu1": {
+        "own_mib": 28612, "card_mib": 29009,
+        "reserved_mib": 28278, "allocated_mib": 26466}}
+
+
+def test_a_summary_cannot_lower_a_peak_already_recorded(tmp_path):
+    job = _Job()
+    job.progress.peak_gpu_mib = {"gpu0": {"reserved_mib": 30000}}
+    (tmp_path / "training_summary.json").write_text(json.dumps({
+        "peak_gpu_mib": {"gpu0": {"reserved_mib": 27763}},
+    }), encoding="utf-8")
+
+    _runner()._record_sequence_budget(job, tmp_path)
+
+    assert job.progress.peak_gpu_mib["gpu0"]["reserved_mib"] == 30000
+
+
+@pytest.mark.parametrize("device, visible, key", [
+    (0, "1", "gpu1"),        # a job on card 1: torch's cuda:0 is nvidia-smi's 1
+    (1, "0,1", "gpu1"),
+    (0, "0", "gpu0"),
+    (0, None, "gpu0"),       # nothing set: torch's index is all there is
+    (0, "GPU-5f3c", "gpu0"), # a UUID names no index; do not guess one
+    (2, "1", "gpu2"),        # past the list: torch's index rather than an error
+])
+def test_allocator_marks_are_named_after_the_physical_card(device, visible, key):
+    from engines.vlm_train_svc.train_qlora import card_key
+
+    assert card_key(device, visible) == key
+
+
 def test_two_cards_are_kept_apart(tmp_path):
     """`device_map="auto"` spreads the peak; one number would hide which card."""
     job = _Job()
