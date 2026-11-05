@@ -36,6 +36,7 @@ from atr_training.vlm_dataset import (
     has_stepped_budget,
     fit_pixels,
     chat_example,
+    example_for,
     read_jsonl,
 )
 
@@ -232,7 +233,7 @@ def turn_end_ids(processor, tokenizer) -> list[int]:
         return []
     try:
         rendered = processor.apply_chat_template(
-            chat_example("Transcribe.", _ANSWER_SENTINEL), tokenize=False,
+            example_for(processor, "Transcribe.", _ANSWER_SENTINEL), tokenize=False,
             add_generation_prompt=False, **template_kwargs(processor))
         cut = rendered.find(_ANSWER_SENTINEL)
         if cut < 0:
@@ -356,7 +357,7 @@ def generation_prompt(processor, prompt: str, system: str | None,
             chat_example(prompt, system=system), tokenize=False,
             add_generation_prompt=True, **kwargs)
     rendered = processor.apply_chat_template(
-        chat_example(prompt, _ANSWER_SENTINEL, system=system), tokenize=False,
+        example_for(processor, prompt, _ANSWER_SENTINEL, system=system), tokenize=False,
         add_generation_prompt=False, **kwargs)
     cut = rendered.find(_ANSWER_SENTINEL)
     if cut < 0:

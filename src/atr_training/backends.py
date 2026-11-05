@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = ["UnknownBackend", "Backend", "BACKENDS", "backend_for", "runner_python",
-           "venv_for", "TF5_VENV", "needs_transformers_5"]
+           "venv_for", "TF5_VENV", "needs_transformers_5", "APERTUS_VENV",
+           "needs_apertus_fork"]
 
 
 class UnknownBackend(ValueError):
@@ -112,9 +113,29 @@ def needs_transformers_5(base_model: str | None) -> bool:
     return name.startswith(_TF5_FAMILIES)
 
 
+#: The VLM venv for Apertus 1.5 (training-atr-models#316). Its model type,
+#: ``apertus1p5``, exists only in swiss-ai's transformers fork
+#: (``feature/apertus_1p5_pipeline``), the same commit the serving box's
+#: ``vllm-apertus`` venv runs (serving-atr-inference#234). A venv of its own
+#: because that fork is a transformers 5 dev build that the Qwen3.5 runs must not
+#: be moved onto.
+APERTUS_VENV = "vlm-train-apertus"
+_APERTUS_FAMILIES = ("apertus-v1.5-",)
+
+
+def needs_apertus_fork(base_model: str | None) -> bool:
+    """Is ``base_model`` an Apertus 1.5 hub id (``swiss-ai/Apertus-v1.5-8B``)?"""
+    if not base_model:
+        return False
+    name = str(base_model).rsplit("/", 1)[-1].lower()
+    return name.startswith(_APERTUS_FAMILIES)
+
+
 def venv_for(engine: str, base_model: str | None = None) -> str:
     """The venv directory a job of ``engine`` on ``base_model`` runs in."""
     backend = backend_for(engine)
+    if engine == "vllm" and needs_apertus_fork(base_model):
+        return APERTUS_VENV
     if engine == "vllm" and needs_transformers_5(base_model):
         return TF5_VENV
     return backend.venv

@@ -61,7 +61,7 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from atr_training.backends import needs_transformers_5
+from atr_training.backends import needs_apertus_fork, needs_transformers_5
 from atr_training.contracts import MODEL_ID_RE
 from atr_training.weights_digest import WeightsDigest
 
@@ -347,6 +347,23 @@ HYBRID_VLLM_VENV = "vllm-next"
 #: The ceiling the curated Qwen3.5 entries use. The gateway sends a handful of
 #: requests at a time, so a lower one costs nothing there.
 HYBRID_MAX_NUM_SEQS = 64
+#: The serving venv with swiss-ai's vLLM fork, the only one that loads an
+#: Apertus 1.5 base (serving-atr-inference#234).
+APERTUS_VLLM_VENV = "vllm-apertus"
+#: What every Apertus entry in the gateway's config/models.yaml launches with,
+#: and each flag was a failure on idhefix first: the fork's content format; a
+#: context above the box's 8192 for a ~7 750-token page (#234); the checkpoint
+#: read in one pass from the share (#237); a whole prompt in one prefill chunk
+#: (#238); and a KV cache of 3 GiB so the fp32 vision encoder has its peak
+#: (#239). Copied, not imported: this repo cannot read the gateway's file, and
+#: tests/test_registration.py pins the copy.
+APERTUS_VLLM_ARGS = ["--chat-template-content-format", "string", "--max-model-len", "16384",
+                     "--safetensors-load-strategy", "prefetch",
+                     "--max-num-batched-tokens", "16384",
+                     "--kv-cache-memory-bytes", "3221225472"]
+#: A cold start reads ~17 GB from the research share, then compiles: ~6 min
+#: cached, ~10 min the first time (serving#237).
+APERTUS_STARTUP_TIMEOUT_S = 900
 #: Mamba blocks idhefix had for a 4B Qwen3.5 on 02.11.2026. It moves with the
 #: card's share and the model's size, so above it is a warning, not a refusal.
 HYBRID_MAMBA_BLOCKS_SEEN = 130
@@ -360,7 +377,12 @@ def vllm_launch_defaults(engine: str | None, base_model: str | None) -> dict[str
     that picks the training venv). Meant for ``setdefault``: a value a runner or
     an operator set on purpose stays.
     """
-    if engine != "vllm" or not needs_transformers_5(base_model):
+    if engine != "vllm":
+        return {}
+    if needs_apertus_fork(base_model):
+        return {"vllm_venv": APERTUS_VLLM_VENV, "vllm_args": list(APERTUS_VLLM_ARGS),
+                "startup_timeout_s": APERTUS_STARTUP_TIMEOUT_S}
+    if not needs_transformers_5(base_model):
         return {}
     return {"vllm_venv": HYBRID_VLLM_VENV, "max_num_seqs": HYBRID_MAX_NUM_SEQS}
 
@@ -374,6 +396,12 @@ def launch_problems(spec: Registration) -> list[str]:
     """
     needed = vllm_launch_defaults(spec.engine, spec.base_model)
     problems = []
+    if needs_apertus_fork(spec.base_model) and spec.engine == "vllm" \
+            and spec.vllm_venv != APERTUS_VLLM_VENV:
+        problems.append(
+            f"{spec.base_model} is an Apertus 1.5 base, which only swiss-ai's vLLM fork "
+            f"loads; set vllm_venv: {APERTUS_VLLM_VENV}")
+        return problems
     if "vllm_venv" in needed and spec.vllm_venv is None:
         problems.append(
             f"{spec.base_model} is a qwen3_5 base, which the gateway's default vLLM cannot "
@@ -563,7 +591,7 @@ def write_registration(root: str | Path, spec: dict[str, Any]) -> Path:
         raise RegistrationError(where, "the gateway could not start this model: "
                                 + "; ".join(problems) + " (#357)")
     if (registration.max_num_seqs or 0) > HYBRID_MAMBA_BLOCKS_SEEN \
-            and vllm_launch_defaults(registration.engine, registration.base_model):
+            and needs_transformers_5(registration.base_model):
         logger.warning("registering {} with max_num_seqs {}: idhefix had {} Mamba cache "
                        "blocks for a 4B Qwen3.5, and above that vLLM does not start",
                        registration.id, registration.max_num_seqs, HYBRID_MAMBA_BLOCKS_SEEN)

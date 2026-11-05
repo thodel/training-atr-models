@@ -1305,3 +1305,16 @@ def test_an_adopted_corpus_is_counted_as_it_stands(store, settings):
     assert second.progress.train_samples == first.progress.train_samples == 4
     assert _trained_rows(runner) == 4
     assert second.progress.steps_per_epoch == first.progress.steps_per_epoch == 4
+
+
+def test_a_strip_model_registers_the_strips_it_trained_on(store, settings):
+    """A block model trained on enlarged crops is served as strips of the same
+    size and scale (serving-atr-inference#241, training-atr-models#316)."""
+    run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner(),
+                 request=request_with(model_id="strip-probe-v1", params=VlmTrainParams(
+                     granularity="block", block_lines=4, crop_scale=2.0,
+                     max_pixels=1_000_000)))
+    spec = read_registration(settings.registry_root, "strip-probe-v1")
+    assert spec.level == "line"
+    assert spec.lines_per_crop == 4 and spec.crop_scale == 2.0
+    assert spec.max_pixels == 1_000_000

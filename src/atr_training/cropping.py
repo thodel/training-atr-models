@@ -23,13 +23,33 @@ from loguru import logger
 
 from atr_training.vlm_dataset import MIN_CROP_PX, Sample
 
-__all__ = ["write_crops"]
+__all__ = ["enlarge", "write_crops"]
+
+
+def enlarge(image, scale: float, max_pixels: int | None = None):
+    """``image`` enlarged ``scale`` times, bicubic, within ``max_pixels``.
+
+    The same rule as serving's ``pipeline.crop_strip`` (serving-atr-inference
+    #241, #243), so a model is trained at the scale it is served at: the factor
+    is ``min(scale, sqrt(max_pixels / area))``, which shrinks a crop that is
+    already over budget rather than enlarging it.
+    """
+    from PIL import Image
+
+    if max_pixels:
+        scale = min(scale, (max_pixels / (image.width * image.height)) ** 0.5)
+    if scale == 1.0:
+        return image
+    return image.resize((max(1, round(image.width * scale)),
+                         max(1, round(image.height * scale))), Image.Resampling.BICUBIC)
 
 
 def write_crops(
     samples: list[Sample],
     root: Path | str,
     dest: Path | str,
+    scale: float | None = None,
+    budgets: dict[str, int] | None = None,
 ) -> list[Sample]:
     """Crop each sample's bbox from its page scan and write a JPEG.
 
@@ -52,6 +72,13 @@ def write_crops(
         Job root: the directory under which ``sample.image`` is relative.
     dest
         Directory to write crops into. Created if it does not exist.
+    scale
+        Enlarge each crop this many times (``VlmTrainParams.crop_scale``), but
+        never past its kind's entry in ``budgets``: four lines of a large scan
+        are most of a budget already. None writes native pixels, as before.
+    budgets
+        Pixels per ``source_type`` (``VlmTrainParams.kind_budgets``). Only read
+        when ``scale`` is set; the collator still fits every image on its own.
 
     Returns
     -------
@@ -116,7 +143,10 @@ def write_crops(
             continue
 
         crop_path = dest / f"{index:07d}.jpg"
-        page.crop(box).save(crop_path, format="JPEG", quality=95)
+        crop = page.crop(box)
+        if scale:
+            crop = enlarge(crop, scale, (budgets or {}).get(sample.source_type))
+        crop.save(crop_path, format="JPEG", quality=95)
         logger.debug("cropped {} -> {}", sample.image, crop_path.name)
 
         out.append(
