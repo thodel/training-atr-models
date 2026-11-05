@@ -19,9 +19,11 @@ is no longer held free for urgent work. Something urgent displaces a run by hand
   a run arrives ─────┤
                      │                     ┌─ a re-evaluation, or < ~2 h? ─ yes ─→ asteraix
                      └─ fits one A40? ─────┤
-                                           │                      ┌─ ≥ 48 h ──→ asteraix
-                                           └─ UBELIX wait is … ───┤
-                                                                  └─ < 48 h ──→ UBELIX
+                                           │                      ┌─ > (r − 1) · T ──→ asteraix
+                                           └─ UBELIX delay is … ──┤
+                                                                  └─ ≤ (r − 1) · T ──→ UBELIX
+
+  T = the run's expected H100 hours;  r = A40/H100 time ratio (§1, measured, #162)
 ```
 
 Read top to bottom; the first branch that matches decides.
@@ -40,10 +42,30 @@ branch that would have saved the two rescoring jobs that died on a walltime
 guess (`17310472`, `17310473`, fixed in #155 after two lost allocations) — on
 asteraix there would have been no walltime to guess.
 
-**3. Otherwise: how long is the UBELIX wait?** `squeue --start` gives an estimate,
-and the preemption record gives the rest (§4). **48 hours of expected
-wall-clock delay is the line.** Below it, UBELIX — an H100 is the faster card and
-the queue is the price. Above it, asteraix, if the run fits.
+**3. Otherwise: how long is the UBELIX delay, against what the A40 costs?**
+`squeue --start` gives an estimate of the wait, and the preemption record gives
+the rest (§4). A run that needs **T** hours on an H100 needs **r · T** on an A40,
+so asteraix finishes first only when the expected UBELIX delay exceeds
+**(r − 1) · T**. Below that, UBELIX — the H100 is the faster card and the queue is
+the price. Above it, asteraix, if the run fits.
+
+r is measured on identical work, one run on each card (#162):
+
+| load | H100 | A40 | r | asteraix wins above |
+|---|---:|---:|---:|---|
+| Qwen3.5-4B, lines, 4-bit, batch 2 × 8 (point 1, 17.10.2026) | 4.37 s/step | 6.61 s/step | **1.51** | 0.51 · T |
+| Qwen3-VL-8B, pages, bf16, batch 1 × 16 (point 2, 04.11.2026) | 11.28 s/step | 41.20 s/step | **3.65** | 2.65 · T |
+
+Worked through: the 70-H100-hour line run of §4 would take ~106 h on an A40, so
+it belonged on asteraix once the delay passed **36 h** — an estimate, since that
+run was a Gemma 4 12B and the line row is a 4B. A page run of 10 H100-hours
+takes ~36.5 h on an A40 and belongs there only past **26.5 h** of delay; a
+40-hour page run never does in practice (106 h of delay).
+
+The two points differ in three things at once — granularity, model size and
+quantisation (4-bit under transformers 5.17 against bf16 under 4.57.6) — so two
+points give two ratios for these two loads, not a curve. For anything in between,
+use the nearer row and say which; for a page run, the A40 is the much slower card.
 
 What the size costs, so the choice is priced and not only placed: on the medieval
 line ladder **a CER point costs about 0.3 kWh up to 9B and 3.5 kWh above it**
@@ -53,9 +75,14 @@ rule above — #138 settled that a footprint prices a default and does not shift
 — but a 27B arm asked for "because it is better" is asked for at thirteen times the
 energy per point of the 9B step.
 
-### Why 48 hours and not a day
+### Why the line is a delay and not a queue position
 
-Because a chunked run pays the wait more than once. A run longer than the 24 h
+Until #162 measured r the line was a judgement: **48 hours**. It was close for
+lines (36 h for the §4 run) and wrong for most page runs: 48 hours of delay
+justify an A40 only for a page run under ~18 H100-hours (2.65 · 18 ≈ 48).
+
+What carries over is why the delay is counted in wall-clock: a chunked run pays
+the wait more than once. A run longer than the 24 h
 preemptable wall is interrupted *by design*, and each interruption costs a fresh
 wait: the live case in §4 paid 17 h 11 and 9 h 43 between its three attempts. One
 day of queue is the normal cost of a free H100. Two days means the run is being
@@ -133,7 +160,9 @@ What the case does show is that **a run longer than the wall pays the queue once
 per chunk**, which is why §1 measures the wait in wall-clock delay rather than in
 queue position. It is also the strongest argument for asteraix that exists today —
 *if* an A40 can finish 70 H100-hours of this work in less than the four to five
-days UBELIX takes. Nobody has measured that, which is §5.
+days UBELIX takes. Measured since (#162, point 1): r = 1.51 for lines (on a 4B,
+so an estimate for this 12B), so ~106 h — 4.4 days — on asteraix. Close to a draw against four to five
+days of UBELIX, and a clear win only past 36 h of delay (§1).
 
 Two further frictions, both already fixed, both worth remembering as the kind of
 cost the queue adds: a walltime guess carried over from the line case killed two
@@ -143,11 +172,11 @@ pin holds across the queue but not across that resume.
 
 ## 5. What is not measured, and what each gap blocks
 
-- **The A40-to-H100 throughput ratio on identical work.** Without it §1's third
-  branch cannot be computed: "48 hours of UBELIX delay" is only worth paying if
-  the A40 finishes sooner than that, and the A40 is the slower card. This is the
-  one measurement that makes the rule quantitative instead of a judgement, and it
-  is cheap: the same corpus, the same step budget, one short run on each.
+- **The A40-to-H100 ratio for anything but the two measured loads.** #162
+  measured lines (4B, 4-bit) at 1.51 and pages (8B, bf16) at 3.65; §1 carries
+  both. Not measured: which of granularity, size and quantisation moves the
+  ratio, a 12B or 27B on either card, and kraken or trocr at all. A third point
+  that changes one variable at a time (8B lines in bf16, say) would say which.
 - **Peak memory per (engine, model size, granularity).** §1's first branch is a
   number nobody has tabulated. #137 measured one point — an 8B VLM on page
   samples, 27 763 MiB peak — from 96 of 9 441 samples, and said so: that figure
