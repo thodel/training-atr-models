@@ -61,7 +61,7 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from atr_training.backends import needs_apertus_fork, needs_transformers_5
+from atr_training.backends import is_hybrid_base, needs_apertus_fork, needs_transformers_5
 from atr_training.contracts import MODEL_ID_RE
 from atr_training.weights_digest import WeightsDigest
 
@@ -342,7 +342,8 @@ class Registration(BaseModel):
 # entries carry the same two values (serving config/models.yaml); a trained
 # model gets them from its base instead of from whoever writes the file.
 
-#: The serving venv whose vLLM can load a ``qwen3_5`` base (serving#132).
+#: The serving venv whose vLLM can load a ``qwen3_5`` base (serving#132), and a
+#: Gemma 4 one (#83).
 HYBRID_VLLM_VENV = "vllm-next"
 #: The ceiling the curated Qwen3.5 entries use. The gateway sends a handful of
 #: requests at a time, so a lower one costs nothing there.
@@ -372,10 +373,11 @@ HYBRID_MAMBA_BLOCKS_SEEN = 130
 def vllm_launch_defaults(engine: str | None, base_model: str | None) -> dict[str, Any]:
     """The launch fields a model on ``base_model`` needs and vLLM does not default.
 
-    Empty for every engine but vLLM and every base outside the ``qwen3_5``
-    family (:func:`~atr_training.backends.needs_transformers_5`, the same test
-    that picks the training venv). Meant for ``setdefault``: a value a runner or
-    an operator set on purpose stays.
+    Empty for every engine but vLLM and every base transformers 4 can load
+    (:func:`~atr_training.backends.needs_transformers_5`, the same test that
+    picks the training venv). A hybrid ``qwen3_5`` base also needs a lower
+    ``max_num_seqs``; Gemma 4 only the venv. Meant for ``setdefault``: a value a
+    runner or an operator set on purpose stays.
     """
     if engine != "vllm":
         return {}
@@ -384,6 +386,8 @@ def vllm_launch_defaults(engine: str | None, base_model: str | None) -> dict[str
                 "startup_timeout_s": APERTUS_STARTUP_TIMEOUT_S}
     if not needs_transformers_5(base_model):
         return {}
+    if not is_hybrid_base(base_model):
+        return {"vllm_venv": HYBRID_VLLM_VENV}
     return {"vllm_venv": HYBRID_VLLM_VENV, "max_num_seqs": HYBRID_MAX_NUM_SEQS}
 
 
@@ -404,8 +408,8 @@ def launch_problems(spec: Registration) -> list[str]:
         return problems
     if "vllm_venv" in needed and spec.vllm_venv is None:
         problems.append(
-            f"{spec.base_model} is a qwen3_5 base, which the gateway's default vLLM cannot "
-            f"load; set vllm_venv: {HYBRID_VLLM_VENV}")
+            f"{spec.base_model} needs transformers 5, which the gateway's default vLLM "
+            f"does not have; set vllm_venv: {HYBRID_VLLM_VENV}")
     if "max_num_seqs" in needed and spec.max_num_seqs is None:
         problems.append(
             f"{spec.base_model} is a hybrid (qwen3_5) base; at vLLM's default of 256 "
@@ -591,7 +595,7 @@ def write_registration(root: str | Path, spec: dict[str, Any]) -> Path:
         raise RegistrationError(where, "the gateway could not start this model: "
                                 + "; ".join(problems) + " (#357)")
     if (registration.max_num_seqs or 0) > HYBRID_MAMBA_BLOCKS_SEEN \
-            and needs_transformers_5(registration.base_model):
+            and is_hybrid_base(registration.base_model):
         logger.warning("registering {} with max_num_seqs {}: idhefix had {} Mamba cache "
                        "blocks for a 4B Qwen3.5, and above that vLLM does not start",
                        registration.id, registration.max_num_seqs, HYBRID_MAMBA_BLOCKS_SEEN)

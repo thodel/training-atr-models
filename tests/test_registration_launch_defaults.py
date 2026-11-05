@@ -29,6 +29,7 @@ from atr_training.registration import (
 from atr_training.settings import TrainerSettings
 
 QWEN35 = "Qwen/Qwen3.5-4B"
+GEMMA4 = "google/gemma-4-12B-it"
 
 
 def _spec(tmp_path: Path, model_id: str, base: str | None, **extra) -> dict:
@@ -44,6 +45,27 @@ def test_a_qwen35_base_needs_the_next_venv_and_a_lower_ceiling():
     assert vllm_launch_defaults("vllm", QWEN35) == {
         "vllm_venv": HYBRID_VLLM_VENV, "max_num_seqs": HYBRID_MAX_NUM_SEQS}
     assert HYBRID_MAX_NUM_SEQS == 64, "the value of the curated Qwen3.5 entries"
+
+
+@pytest.mark.parametrize("base", [GEMMA4, "google/gemma-4-E4B-it"])
+def test_a_gemma4_base_needs_the_next_venv_and_no_ceiling(base):
+    """#83: vLLM 0.11 knows neither Gemma 4 architecture, 0.29 both. Gemma is not
+    hybrid, so there is no Mamba cache to keep the sequence count under."""
+    assert vllm_launch_defaults("vllm", base) == {"vllm_venv": HYBRID_VLLM_VENV}
+
+
+def test_a_gemma4_without_the_venv_is_refused(tmp_path):
+    spec = _spec(tmp_path, "gemma4-novenv", GEMMA4)
+    with pytest.raises(RegistrationError, match="vllm_venv: vllm-next"):
+        write_registration(tmp_path / "registry", spec)
+
+
+def test_a_gemma4_with_the_venv_is_written(tmp_path):
+    root = tmp_path / "registry"
+    root.mkdir()
+    write_registration(root, _spec(tmp_path, "gemma4-ok", GEMMA4, vllm_venv=HYBRID_VLLM_VENV))
+    written = read_registration(root, "gemma4-ok")
+    assert (written.vllm_venv, written.max_num_seqs) == (HYBRID_VLLM_VENV, None)
 
 
 @pytest.mark.parametrize("engine, base", [
