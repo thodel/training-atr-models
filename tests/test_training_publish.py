@@ -898,3 +898,111 @@ def test_a_base_trained_here_and_published_links_its_repo(tmp_path: Path, curate
 def test_only_owner_slash_name_is_a_hub_repo(ref, ok):
     from atr_training import publish
     assert publish._is_hub_repo(ref) is ok
+
+
+# ── #87: base-model licence, licence files, granularity ─────────────────────
+GEMMA_META = {
+    **VLM_META,
+    "model_id": "gemma4-e4b-medieval-german-v1",
+    "base_model": "google/gemma-4-E4B-it",
+    "request": {**VLM_META["request"], "model_id": "gemma4-e4b-medieval-german-v1",
+                "base_model": "google/gemma-4-E4B-it"},
+}
+
+
+def gemma_dir(tmp_path: Path, metadata: dict = GEMMA_META, licence: bool = True) -> Path:
+    directory = trained_dir(tmp_path, metadata, weights="adapter_model.safetensors")
+    if licence:
+        (directory / "LICENSE").write_text("Apache License\nVersion 2.0\n", encoding="utf-8")
+    return directory
+
+
+def test_a_gemma_4_card_names_the_base_terms_without_declaring_a_licence(tmp_path: Path):
+    gemma_dir(tmp_path)
+    card = model_card(scan_trained(tmp_path).models[0], "dh-unibe/x")
+    assert "license" not in frontmatter(card)          # still not invented
+    assert "This repo declares no licence." in card
+    assert "`apache-2.0`" in card
+    assert "https://ai.google.dev/gemma/docs/gemma_4_license" in card
+
+
+def test_license_base_takes_the_id_from_the_recorded_terms(tmp_path: Path):
+    gemma_dir(tmp_path)
+    card = model_card(scan_trained(tmp_path).models[0], "dh-unibe/x", licence="base")
+    assert frontmatter(card)["license"] == "apache-2.0"
+    assert "This repo: `apache-2.0`." in card
+
+
+def test_license_base_is_refused_for_a_base_whose_terms_were_not_read(tmp_path: Path):
+    card = card_for(tmp_path, VLM_META, weights="adapter_model.safetensors")
+    assert "its terms were not recorded with this card" in card
+    with pytest.raises(PublishError, match="not recorded in BASE_MODEL_TERMS"):
+        card_for(tmp_path, VLM_META, weights="adapter_model.safetensors", licence="base")
+
+
+def test_a_licence_file_is_uploaded_but_not_counted_as_a_weight(tmp_path: Path):
+    gemma_dir(tmp_path)
+    (tmp_path / GEMMA_META["model_id"] / "NOTICE.txt").write_text("n", encoding="utf-8")
+    model = scan_trained(tmp_path).models[0]
+    assert [p.name for p in model.weights] == ["adapter_model.safetensors"]
+    assert [p.name for p in model.licence_files] == ["LICENSE", "NOTICE.txt"]
+    card = model_card(model, "dh-unibe/x")
+    assert "| weights | `adapter_model.safetensors` |" in card
+    assert "Beside the weights: `LICENSE`, `NOTICE.txt`." in card
+
+
+def test_licence_files_alone_are_not_a_model(tmp_path: Path):
+    directory = tmp_path / "terms-only"
+    directory.mkdir()
+    (directory / METADATA_FILENAME).write_text(json.dumps(GEMMA_META), encoding="utf-8")
+    (directory / "LICENSE").write_text("Apache", encoding="utf-8")
+    assert scan_trained(tmp_path).models == []
+
+
+def test_an_apache_base_without_its_licence_copy_is_not_uploaded(tmp_path: Path):
+    gemma_dir(tmp_path, licence=False)
+    uploader = FakeUploader()
+    publication = plan(scan_trained(tmp_path).models)[0]
+    for dry_run in (True, False):
+        result = publish_one(publication, uploader, dry_run=dry_run)
+        assert result.status == "failed" and "LICENSE" in result.detail
+    assert uploader.created == [] and uploader.uploads == []
+
+
+def test_an_apache_base_with_its_licence_copy_is_uploaded(tmp_path: Path):
+    gemma_dir(tmp_path)
+    uploader = FakeUploader()
+    result = publish_one(plan(scan_trained(tmp_path).models)[0], uploader, licence="base")
+    assert result.status == "published"
+    assert uploader.created == [("dh-unibe/gemma4-e4b-medieval-german-v1", True)]
+
+
+def test_a_card_with_measured_granularity_names_level_n_cer_and_ratio(tmp_path: Path):
+    metadata = {**VLM_META, "granularity_measured": {
+        "registered_level": "line",
+        "measured_on": "14 held-out pages",
+        "levels": [{"level": "line", "n": 412, "cer": 0.111, "length_ratio": 0.99},
+                   {"level": "page", "n": 14, "cer": 1.32, "length_ratio": 0.41}],
+    }}
+    card = card_for(tmp_path, metadata, weights="adapter_model.safetensors")
+    assert "| line | 412 | 11.10 % | 0.99 |" in card
+    assert "| page | 14 | 132.00 % | 0.41 |" in card
+    assert "Measured on 14 held-out pages." in card
+    assert "Registered for serving at level `line`." in card
+    assert "Not measured" not in card
+
+
+def test_a_card_without_a_measurement_says_not_measured_and_claims_no_level(tmp_path: Path):
+    card = card_for(tmp_path, VLM_META, weights="adapter_model.safetensors")
+    section = card.split("## Granularity")[1].split("\n## ")[0]
+    assert "**Not measured.**" in section
+    assert "|" not in section and "Registered" not in section
+
+
+def test_the_training_granularity_comes_from_params_not_the_dataset_spec(tmp_path: Path):
+    request = {**VLM_META["request"],
+               "dataset": {**VLM_META["request"]["dataset"], "granularity": "page"}}
+    card = card_for(tmp_path, {**VLM_META, "request": request},
+                    weights="adapter_model.safetensors")
+    assert "Trained on **line** images" in card
+    assert "Trained on **page**" not in card

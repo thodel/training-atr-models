@@ -21,6 +21,8 @@ run it with the trainer venv, and authenticate first:
     --org OWNER               target org/user (default: dh-unibe)
     --public                  create public repos (default: private)
     --license apache-2.0      set a licence in the card's frontmatter
+    --license base            the base model's own licence id, if publish.py has
+                              read its terms (BASE_MODEL_TERMS); refused otherwise
     --force                   re-upload models already recorded as published
 
 Repos are **private** unless ``--public`` is passed, and no licence is invented:
@@ -89,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--public", action="store_true",
                     help="create public repos (default: private)")
     ap.add_argument("--license", dest="licence", default=None,
-                    help="licence id for the card frontmatter, e.g. apache-2.0")
+                    help="licence id for the card frontmatter, e.g. apache-2.0, or "
+                         "'base' for the base model's recorded licence")
     ap.add_argument("--force", action="store_true",
                     help="upload again even if metadata.json records a previous push")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, upload nothing")
