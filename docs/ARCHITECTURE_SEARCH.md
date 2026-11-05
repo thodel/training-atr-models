@@ -542,5 +542,22 @@ not code:
    above it. The table says so rather than letting its own ranks imply
    otherwise.
 
+   **Measured 09./10.10.2026, reported 05.11.2026, not in either manifest.**
+   On asteraix (`~/atr-cache/noise-ft60/noise_floor.json`): `sweep_train-60`
+   (225,590 lines, ceiling applied), a fine-tune of `catmus-medieval-1.6.0`,
+   no augmentation, effective batch 256, 4,410 steps, seeds 42–45, scored on
+   `german_test`: CER 0.2068–0.2084, mean 0.2073, **spread 0.0016**. Two
+   corrections to its own record: it says height 64, but under `--load` the
+   runs trained at CATMuS's height 120 (the network table in each `train.log`
+   reads 120); and it is stamped with digest `c8f420ec…`, which the manifests
+   left on 27.10.2026 when #301 reserved 130 more documents — 111 of them in the
+   shard this floor was trained on. `write_into_manifest` refuses it for that
+   reason, and the manifests' notes record it instead. It is a floor for a
+   fine-tune at h120 on the old digest, not for sweep 1's from-scratch cells.
+
+   The same correction applies to sweep 1's premise above: `kraken-medieval-german-v2`
+   is itself a fine-tune of `catmus-medieval-1.6.0` (its job record's `--load`),
+   so the shape behind 0.2131 is CATMuS's h120 / `Lbx200`, not `KRAKEN_PLUS_SPEC`.
+
 In that order: the ceiling before the floor, because a floor measured on the
 uncut corpus would have to be measured again.
