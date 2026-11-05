@@ -98,7 +98,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def load_model(args):
     import torch
-    from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
+    from transformers import AutoProcessor, BitsAndBytesConfig
+
+    from atr_training.vlm_load import load_vlm
 
     quantization = None
     if args.load_in_4bit:
@@ -129,7 +131,7 @@ def load_model(args):
     if processor.tokenizer.pad_token_id is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = load_vlm(
         args.base_model, quantization_config=quantization, dtype=torch.bfloat16,
         device_map={"": 0}, trust_remote_code=True,
     )

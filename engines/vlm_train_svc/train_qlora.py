@@ -601,7 +601,9 @@ def _params_per_device(model) -> dict[str, str]:
 def build_model(args, processor):
     import torch
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-    from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
+    from transformers import BitsAndBytesConfig
+
+    from atr_training.vlm_load import load_vlm
 
     quantization = None
     if args.load_in_4bit:
@@ -637,7 +639,7 @@ def build_model(args, processor):
     # for an 8B the better use of the second A40 is a second job
     # (`max_concurrent`).
     visible = torch.cuda.device_count()
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = load_vlm(
         args.base_model,
         quantization_config=quantization,
         dtype=torch.bfloat16,

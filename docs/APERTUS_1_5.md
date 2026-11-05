@@ -117,6 +117,10 @@ stay a clean comparison after the probe.
 - `vlm_dataset.example_for`: Apertus' chat template accepts the assistant's
   answer only as a string (a list of parts raises `Invalid assistant content`);
   the form is asked of the template, so Qwen and Gemma keep their renders.
+- `vlm_load.load_vlm`: Apertus' model card loads it through
+  `AutoModelForMultimodalLM`; the image-text auto class every other base uses has
+  no mapping for `apertus1p5`. Training, evaluation and `merge_adapter.py` try the
+  second class only when the first says it does not know the model.
 - `registration.vllm_launch_defaults`: a trained Apertus registers with
   `vllm_venv: vllm-apertus`, the gateway's Apertus `vllm_args` and a 900 s start
   timeout; a block model registers `lines_per_crop` and `crop_scale` so the

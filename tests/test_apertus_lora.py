@@ -189,3 +189,57 @@ def test_the_smoke_script_parses_the_trainers_own_argv_for_the_probe():
     job = parse_args(argv)
     assert job.max_pixels == 1_000_000 and job.load_in_4bit is False
     assert "vision_tokenizer" in job.exclude_modules
+
+
+# ── loading ────────────────────────────────────────────────────────────────
+
+def _fake_transformers(monkeypatch, image_text_knows: bool, multimodal: bool = True):
+    import sys
+    calls = []
+
+    class ImageText:
+        @staticmethod
+        def from_pretrained(name, **kw):
+            calls.append("image-text")
+            if not image_text_knows:
+                raise ValueError("Unrecognized configuration class Apertus1p5Config for "
+                                 "this kind of AutoModel: AutoModelForImageTextToText.")
+            return "image-text model"
+
+    class Multimodal:
+        @staticmethod
+        def from_pretrained(name, **kw):
+            calls.append("multimodal")
+            return "multimodal model"
+
+    fake = SimpleNamespace(AutoModelForImageTextToText=ImageText)
+    if multimodal:
+        fake.AutoModelForMultimodalLM = Multimodal
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    return calls
+
+
+def test_apertus_loads_as_a_multimodal_lm(monkeypatch):
+    """Its model card loads it through AutoModelForMultimodalLM; the image-text
+    class has no mapping for apertus1p5."""
+    from atr_training.vlm_load import load_vlm
+
+    calls = _fake_transformers(monkeypatch, image_text_knows=False)
+    assert load_vlm("swiss-ai/Apertus-v1.5-8B") == "multimodal model"
+    assert calls == ["image-text", "multimodal"]
+
+
+def test_every_other_base_loads_as_before(monkeypatch):
+    from atr_training.vlm_load import load_vlm
+
+    calls = _fake_transformers(monkeypatch, image_text_knows=True)
+    assert load_vlm("Qwen/Qwen3.5-4B") == "image-text model"
+    assert calls == ["image-text"]
+
+
+def test_an_unmapped_model_without_the_second_class_says_so(monkeypatch):
+    from atr_training.vlm_load import load_vlm
+
+    _fake_transformers(monkeypatch, image_text_knows=False, multimodal=False)
+    with pytest.raises(ValueError, match="Unrecognized configuration class"):
+        load_vlm("swiss-ai/Apertus-v1.5-8B")
