@@ -44,12 +44,35 @@ on a spare card instead — asteraix when it is not training — bound to 127.0.
 `--jsonl` rows need `image` (a line crop, relative to --root), `text` and `page`
 (the PageXML beside its .jpg). `--max-pages` draws that many pages, spread over the
 sources the file names start with.
+
+A frozen held-out page set (`eval_sets/<set>/vlm-pages-<side>/`, written by
+`scripts/build_page_benchmark.py`) is read with `--page-set` instead of
+`--root`/`--jsonl`. It holds pages only, so the line level is cut from the same
+PageXML with the rule training cuts it by (`line_samples`): every level then
+reads the same pages (#376). The draw's md5 is checked against its
+`benchmark.json` first, and the set's identity goes into the report.
+
+    ... --page-set <share>/eval_sets/german-kurrent-xvi-xix-v1/vlm-pages-test
+
+The prompt and the budgets default to the Qwen line contract the script was
+written for (`VLM_PROMPT`, `VLM_PIXEL_BUDGET`). A model trained on another
+contract is asked on its own terms — an olmOCR px4m-native page arm with its
+spec's prompt and 4 MP:
+
+    ... --prompt "$(jq -r .params.prompt ubelix/specs/<spec>.json)" \\
+        --page-pixels 4194304
+
+`--page-pixels` is the budget of both `@page_budget` levels, `--line-pixels`
+of `line` and `region@line_budget`, `--max-tokens-page` the generation cap of
+the region and page levels. The report records the prompt and every level's
+budget, so two reports say themselves whether they asked the same question.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import io
 import json
 import os
@@ -59,22 +82,96 @@ import time
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from atr_training.contracts import VLM_PIXEL_BUDGET  # noqa: E402
+from atr_training.contracts import VLM_PIXEL_BUDGET, VLM_PROMPT  # noqa: E402
 from atr_training.pagexml import _localname, line_boxes  # noqa: E402
 from atr_training.textmetrics import score_pairs  # noqa: E402
-from atr_training.vlm_dataset import page_sample  # noqa: E402
+from atr_training.vlm_dataset import line_samples, page_sample  # noqa: E402
 
-PROMPT = "Transcribe the handwritten text in this image exactly as written."
-LINE_PX, PAGE_PX = VLM_PIXEL_BUDGET["line"], VLM_PIXEL_BUDGET["page"]
+LINE_PX, BLOCK_PX, PAGE_PX = (VLM_PIXEL_BUDGET[k] for k in ("line", "block", "page"))
+#: Generation caps per call. Line and block are fixed; the region and page
+#: levels share one, ``--max-tokens-page``.
+LINE_TOKENS, BLOCK_TOKENS, PAGE_TOKENS = 512, 1024, 4096
 REGION_PAD = 12
-BLOCK_PX = 1024 * 32 * 32          # VLM_PIXEL_BUDGET["block"] in training-atr-models
 DEFAULT_BLOCK_LINES = 6
 LEVELS = ("line", "block@block_budget", "region@page_budget", "region@line_budget",
           "page@page_budget")
+
+
+class Budgets(NamedTuple):
+    """The question every call asks: the prompt, and per level pixels and tokens.
+
+    The defaults are the Qwen line contract (`VLM_PROMPT`, `VLM_PIXEL_BUDGET`)
+    and the caps this script always used, so a run without the flags sends the
+    requests it sent before they existed. A NamedTuple, not a dataclass: the
+    script is also loaded without a module entry (`tests/test_moved_scripts.py`),
+    which a dataclass under `from __future__ import annotations` cannot survive.
+    """
+
+    prompt: str = VLM_PROMPT
+    line_pixels: int = LINE_PX
+    block_pixels: int = BLOCK_PX
+    page_pixels: int = PAGE_PX
+    max_tokens_page: int = PAGE_TOKENS
+
+    def levels(self) -> dict[str, tuple[int, int]]:
+        """``(max_pixels, max_tokens)`` per level, in `LEVELS` order."""
+        return {
+            "line": (self.line_pixels, LINE_TOKENS),
+            "block@block_budget": (self.block_pixels, BLOCK_TOKENS),
+            "region@page_budget": (self.page_pixels, self.max_tokens_page),
+            "region@line_budget": (self.line_pixels, self.max_tokens_page),
+            "page@page_budget": (self.page_pixels, self.max_tokens_page),
+        }
+
+    def record(self) -> dict:
+        """What the report keeps of it."""
+        return {"prompt": self.prompt,
+                "budgets": {k: {"max_pixels": px, "max_tokens": tok}
+                            for k, (px, tok) in self.levels().items()}}
+
+
+class PageSetError(RuntimeError):
+    """The directory is not a frozen page draw, or not the one its record names."""
+
+
+def read_page_set(path: Path) -> tuple[list[str], dict]:
+    """The pages of a draw `build_page_benchmark.py` wrote, and its identity.
+
+    Refuses a draw whose md5 is not the one its ``benchmark.json`` recorded: the
+    set's name is what every number from it cites, so an edited draw must not
+    carry it.
+    """
+    record_path = path / "benchmark.json"
+    if not record_path.is_file():
+        raise PageSetError(f"{path} has no benchmark.json; build it with "
+                           "scripts/build_page_benchmark.py")
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    draw = path / record.get("draw", "pages.jsonl")
+    md5 = hashlib.md5(draw.read_bytes()).hexdigest()
+    if md5 != record.get("draw_md5"):
+        raise PageSetError(f"{draw} has md5 {md5}, benchmark.json records "
+                           f"{record.get('draw_md5')}: not the frozen draw")
+    with open(draw, encoding="utf-8") as fh:
+        rows = [json.loads(line) for line in fh if line.strip()]
+    pages = sorted({r["page"] for r in rows})
+    identity = {k: record.get(k) for k in
+                ("set", "side", "documents", "pages", "page_digest", "samples", "draw_md5")}
+    return pages, identity
+
+
+def page_lines(root: Path, page: str, page_size: tuple[int, int]) -> list[dict]:
+    """The page's line rows — ``image``, ``bbox``, ``text``, ``page`` — cut as training cuts them.
+
+    `line_samples` is the rule `granularity: line` trains on: padded line
+    boxes clamped to the page, implausible and empty lines dropped.
+    """
+    return [{"image": s.image, "bbox": s.bbox, "text": s.text, "page": page}
+            for s in line_samples(root / page, root=root, page_size=page_size)]
 
 
 def flat(text: str) -> str:
@@ -226,9 +323,17 @@ def spread_pages(pages: list[str], limit: int | None) -> list[str]:
 
 
 class Client:
-    def __init__(self, base_url: str, model: str, api_key: str | None) -> None:
-        self.base_url, self.model = base_url.rstrip("/"), model
+    def __init__(self, base_url: str, model: str, api_key: str | None,
+                 prompt: str = VLM_PROMPT) -> None:
+        self.base_url, self.model, self.prompt = base_url.rstrip("/"), model, prompt
         self.headers = {"X-API-Key": api_key} if api_key else {}
+
+    def payload(self, url: str, max_tokens: int) -> dict:
+        """The chat request for one image, given as a data URL."""
+        return {"model": self.model, "temperature": 0.0, "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": url}},
+                    {"type": "text", "text": self.prompt}]}]}
 
     def chat(self, img, max_tokens: int) -> tuple[str, str, float]:
         import httpx
@@ -236,10 +341,7 @@ class Client:
         buf = io.BytesIO()
         img.convert("RGB").save(buf, "PNG")
         url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-        payload = {"model": self.model, "temperature": 0.0, "max_tokens": max_tokens,
-                   "messages": [{"role": "user", "content": [
-                       {"type": "image_url", "image_url": {"url": url}},
-                       {"type": "text", "text": PROMPT}]}]}
+        payload = self.payload(url, max_tokens)
         t0 = time.time()
         resp = httpx.post(f"{self.base_url}/v1/chat/completions", json=payload,
                           headers=self.headers, timeout=900)
@@ -260,10 +362,15 @@ class Client:
         return (body.get("text") or "").strip(), body.get("finish_reason") or "n/a", time.time() - t0
 
 
-def main() -> int:
+
+
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--root", type=Path, required=True)
-    ap.add_argument("--jsonl", default="val_heldout.jsonl")
+    source = ap.add_mutually_exclusive_group(required=True)
+    source.add_argument("--root", type=Path, help="a job dir with data/<jsonl> and data/pages/")
+    source.add_argument("--page-set", type=Path,
+                        help="a frozen held-out draw, eval_sets/<set>/vlm-pages-<side>/")
+    ap.add_argument("--jsonl", default="val_heldout.jsonl", help="with --root only")
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--base-url", required=True,
@@ -274,42 +381,83 @@ def main() -> int:
                     help="lines per block; must match the model's block_lines")
     ap.add_argument("--recognize", action="store_true",
                     help="also send each page through the gateway's /recognize")
-    args = ap.parse_args()
+    ap.add_argument("--prompt", default=VLM_PROMPT,
+                    help="the model's own prompt (default: VLM_PROMPT, the Qwen line contract)")
+    ap.add_argument("--line-pixels", type=int, default=LINE_PX,
+                    help="budget of line and region@line_budget")
+    ap.add_argument("--block-pixels", type=int, default=BLOCK_PX, help="budget of the blocks")
+    ap.add_argument("--page-pixels", type=int, default=PAGE_PX,
+                    help="budget of region@page_budget and page@page_budget")
+    ap.add_argument("--max-tokens-page", type=int, default=PAGE_TOKENS,
+                    help="generation cap of the region and page levels")
+    return ap
+
+
+def budgets_of(args: argparse.Namespace) -> Budgets:
+    return Budgets(prompt=args.prompt, line_pixels=args.line_pixels,
+                   block_pixels=args.block_pixels, page_pixels=args.page_pixels,
+                   max_tokens_page=args.max_tokens_page)
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    budgets = budgets_of(args)
+    levels = budgets.levels()
 
     from PIL import Image
 
-    client = Client(args.base_url, args.model, None if args.no_auth else os.environ.get("ATR_API_KEY"))
-    with open(args.root / "data" / args.jsonl, encoding="utf-8") as fh:
-        rows = [json.loads(line) for line in fh if line.strip()]
-    pages = spread_pages(sorted({r["page"] for r in rows}), args.max_pages)
-    rows = [r for r in rows if r["page"] in set(pages)]
+    client = Client(args.base_url, args.model, None if args.no_auth else os.environ.get("ATR_API_KEY"),
+                    prompt=budgets.prompt)
+    page_set = None
+    if args.page_set:
+        root = args.page_set
+        pages, page_set = read_page_set(root)
+        pages = spread_pages(pages, args.max_pages)
+        rows = []
+        for p in pages:
+            with Image.open((root / p).with_suffix(".jpg")) as im:
+                rows.extend(page_lines(root, p, im.size))
+    else:
+        root = args.root
+        with open(root / "data" / args.jsonl, encoding="utf-8") as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+        pages = spread_pages(sorted({r["page"] for r in rows}), args.max_pages)
+        rows = [r for r in rows if r["page"] in set(pages)]
     results: dict[str, list[dict]] = {k: [] for k in LEVELS}
     if args.recognize:
         results["page@recognize"] = []
 
+    px, tok = levels["line"]
+    opened = (None, None)
     for r in rows:
-        hyp, fin, sec = client.chat(fit(Image.open(args.root / r["image"]), LINE_PX), 512)
+        if opened[0] != r["image"]:      # a page set's lines come page by page
+            opened = (r["image"], Image.open(root / r["image"]))
+        img = opened[1].crop(tuple(r["bbox"])) if r.get("bbox") else opened[1]
+        hyp, fin, sec = client.chat(fit(img, px), tok)
         results["line"].append({"page": r["page"], "ref": r["text"], "hyp": hyp, "finish": fin, "sec": sec})
     print(f"lines: {len(rows)}", flush=True)
 
     for p in pages:
-        xml = args.root / p
+        xml = root / p
         img = Image.open(xml.with_suffix(".jpg"))
         img.load()
         xml_text = xml.read_text(encoding="utf-8")
+        px, tok = levels["block@block_budget"]
         for bid, nlines, box, ref in block_boxes(xml_text, img.size, args.block_lines):
-            hyp, fin, sec = client.chat(fit(img.crop(box), BLOCK_PX), 1024)
+            hyp, fin, sec = client.chat(fit(img.crop(box), px), tok)
             results["block@block_budget"].append({"page": p, "block": bid, "lines": nlines,
                                                   "size": (box[2] - box[0], box[3] - box[1]),
                                                   "ref": ref, "hyp": hyp, "finish": fin, "sec": sec})
         for rid, nlines, box, ref in region_boxes(xml_text, img.size):
             crop = img.crop(box)
-            for level, budget in (("region@page_budget", PAGE_PX), ("region@line_budget", LINE_PX)):
-                hyp, fin, sec = client.chat(fit(crop, budget), 4096)
+            for level in ("region@page_budget", "region@line_budget"):
+                px, tok = levels[level]
+                hyp, fin, sec = client.chat(fit(crop, px), tok)
                 results[level].append({"page": p, "region": rid, "lines": nlines, "size": crop.size,
                                        "ref": ref, "hyp": hyp, "finish": fin, "sec": sec})
         ref = page_sample(xml).text
-        hyp, fin, sec = client.chat(fit(img, PAGE_PX), 4096)
+        px, tok = levels["page@page_budget"]
+        hyp, fin, sec = client.chat(fit(img, px), tok)
         results["page@page_budget"].append({"page": p, "size": img.size, "ref": ref, "hyp": hyp,
                                             "finish": fin, "sec": sec})
         if args.recognize:
@@ -318,7 +466,9 @@ def main() -> int:
         print(f"page {p}", flush=True)
 
     summary = [summarise(k, v) for k, v in results.items()]
-    report = {"model": args.model, "jsonl": args.jsonl, "pages": pages, "summary": summary,
+    report = {"model": args.model, "jsonl": None if page_set else args.jsonl,
+              "page_set": page_set and {"path": str(args.page_set), **page_set},
+              **budgets.record(), "pages": pages, "summary": summary,
               "block_lines": args.block_lines,
               "regions_by_line_count": {k: by_line_count(results[k])
                                         for k in ("block@block_budget", "region@page_budget",
