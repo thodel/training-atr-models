@@ -530,7 +530,8 @@ class BasePipeline(ABC):
             self._record_cpu_model(job, record)
 
     def _run(self, job: TrainJob, stage: JobStage, cmd: list[str], record: StageRecord,
-             on_start: Callable[[int], None] | None = None) -> None:
+             on_start: Callable[[int], None] | None = None,
+             env: dict[str, str] | None = None) -> None:
         # Watch the card while the subprocess runs (#163). This is the only route
         # to a peak for kraken, which drives `ketos` as an external CLI and holds
         # no torch handle, and it is the figure comparable to a card's capacity
@@ -561,7 +562,8 @@ class BasePipeline(ABC):
             # scheduler refused card 1 as busy, and a job still in prepare could
             # have had a second one put on the same card (#162, 26.10.2026).
             code = self.runner.run(cmd, log_path,
-                                   env=self.settings.env_for_child(job.gpus),
+                                   env={**self.settings.env_for_child(job.gpus),
+                                        **(env or {})},
                                    on_start=started)
         finally:
             if sampler is not None:

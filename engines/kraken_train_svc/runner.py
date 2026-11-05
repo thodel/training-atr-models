@@ -34,7 +34,9 @@ from atr_training.ketos_cmd import (
     evaluate_cmd,
     find_best_weights,
     parse_test_report,
+    RESUME_ENV,
     resume_point,
+    set_aside_failed_abort,
     train_cmd,
     weights_suffix,
 )
@@ -592,13 +594,20 @@ class Pipeline(BasePipeline):
                     if job.request.base_model else None)
         watch = self._collapse_watch(job, ckpt_dir,
                                      from_scratch=not job.request.base_model)
+        started = time.time()
         try:
             self._run(job, "train",
                       train_cmd(self.settings.ketos, params=params,
                                 training_manifest=train_bin, evaluation_manifest=val_bin,
                                 checkpoint_dir=ckpt_dir, load=load, resume=resume),
-                      record, on_start=watch.start if watch is not None else None)
+                      record, on_start=watch.start if watch is not None else None,
+                      env=RESUME_ENV if resume is not None else None)
         except StageFailed as exc:
+            if resume is not None:
+                aside = set_aside_failed_abort(ckpt_dir, started)
+                if aside is not None:
+                    logger.warning("train: the resume failed before an epoch; its abort "
+                                   "checkpoint is set aside as {}", aside.name)
             if watch is not None and watch.reason:
                 raise StageFailed(f"train stopped: {watch.reason}") from exc
             raise
