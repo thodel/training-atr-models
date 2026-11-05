@@ -134,8 +134,16 @@ On **asteraix**, card 1 free:
 ```bash
 cd ~/Repo/training-atr-models && git pull
 bash scripts/make_venvs.sh vlm-train-apertus          # once, ~10 min
-.venvs/vlm-train-apertus/bin/python scripts/apertus_lora_smoke.py --report ~/apertus-smoke.json
+nvidia-smi --query-compute-apps=pid,used_memory,gpu_bus_id --format=csv   # who holds what
+CUDA_VISIBLE_DEVICES=1 .venvs/vlm-train-apertus/bin/python scripts/apertus_lora_smoke.py \
+    --report ~/apertus-smoke.json
 ```
+
+The smoke test refuses to start without `CUDA_VISIBLE_DEVICES` naming exactly one
+card, and below ~32 GiB free on it (`--min-free-gib`), naming the processes that
+hold the rest. Its first run (05.11.2026) saw both cards, split the model over them
+and ran out of memory beside a hand-started embedding server
+(`Qwen3-Embedding-4B`, `--data-parallel-size 2`) that held 40 % of each card.
 
 The smoke test must end with `all steps passed`. It reports the assistant header,
 the labelled tokens, the LoRA tensors (none in the tokenizers), the peak memory of

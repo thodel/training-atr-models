@@ -243,3 +243,27 @@ def test_an_unmapped_model_without_the_second_class_says_so(monkeypatch):
     _fake_transformers(monkeypatch, image_text_knows=False, multimodal=False)
     with pytest.raises(ValueError, match="Unrecognized configuration class"):
         load_vlm("swiss-ai/Apertus-v1.5-8B")
+
+
+# ── the smoke test's card check ────────────────────────────────────────────
+
+def _smoke():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "apertus_lora_smoke", ROOT / "scripts" / "apertus_lora_smoke.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("visible", [None, "", "0,1"])
+def test_the_smoke_test_wants_exactly_one_named_card(visible):
+    """05.11.2026: with both cards visible it split the model over them and ran
+    out of memory beside an embedding server on card 1."""
+    assert _smoke().card_problem(visible, None, 32) is not None
+
+
+def test_the_smoke_test_refuses_a_card_without_room():
+    smoke = _smoke()
+    assert "26.0 GiB free" in smoke.card_problem("1", 26.0, 32)
+    assert smoke.card_problem("1", 43.5, 32) is None
