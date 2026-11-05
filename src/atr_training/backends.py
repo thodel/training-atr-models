@@ -28,8 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = ["UnknownBackend", "Backend", "BACKENDS", "backend_for", "runner_python",
-           "venv_for", "TF5_VENV", "needs_transformers_5", "APERTUS_VENV",
-           "needs_apertus_fork"]
+           "venv_for", "TF5_VENV", "needs_transformers_5", "is_hybrid_base",
+           "APERTUS_VENV", "needs_apertus_fork"]
 
 
 class UnknownBackend(ValueError):
@@ -98,19 +98,31 @@ def backend_for(engine: str) -> Backend:
 #: upgrade, for the reason the image gives: the Qwen3-VL runs keep the stack they
 #: were measured on, and the two differ in exactly one pin.
 TF5_VENV = "vlm-train-tf5"
-_TF5_FAMILIES = ("qwen3.5-", "qwen3.8-")
+#: Hybrid bases (``qwen3_5``): transformers 5, and a Mamba-style state per sequence.
+_HYBRID_FAMILIES = ("qwen3.5-", "qwen3.8-")
+#: Gemma 4 (``gemma4``, ``gemma4_unified``) is not in 4.57.6 either, but it is a
+#: plain transformer. Measured 05.11.2026 (#83): idhefix's ``vllm`` (0.11.0,
+#: transformers 4.57.6) knows neither architecture, ``vllm-next`` (0.29.0, 5.17.0)
+#: knows both; the UBELIX Gemma runs trained in ``vlm-train-tf5.sif``.
+_GEMMA4_FAMILIES = ("gemma-4-",)
 
 
-def needs_transformers_5(base_model: str | None) -> bool:
-    """Is ``base_model`` a hub id of the ``qwen3_5`` family?
+def _repo_name(base_model: str | None) -> str:
+    return str(base_model).rsplit("/", 1)[-1].lower() if base_model else ""
+
+
+def is_hybrid_base(base_model: str | None) -> bool:
+    """Is ``base_model`` a hub id of the hybrid ``qwen3_5`` family?
 
     Matched on the repo name, case-insensitively: ``Qwen/Qwen3.5-4B``,
     ``Qwen/Qwen3.8-27B``. A Qwen3-VL base, a local path and None are not.
     """
-    if not base_model:
-        return False
-    name = str(base_model).rsplit("/", 1)[-1].lower()
-    return name.startswith(_TF5_FAMILIES)
+    return _repo_name(base_model).startswith(_HYBRID_FAMILIES)
+
+
+def needs_transformers_5(base_model: str | None) -> bool:
+    """Does ``base_model`` need transformers 5 — a ``qwen3_5`` or a Gemma 4 base?"""
+    return is_hybrid_base(base_model) or _repo_name(base_model).startswith(_GEMMA4_FAMILIES)
 
 
 #: The VLM venv for Apertus 1.5 (training-atr-models#316). Its model type,

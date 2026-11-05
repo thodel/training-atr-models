@@ -77,7 +77,8 @@ from atr_training.backends import (  # noqa: E402
 
 
 @pytest.mark.parametrize("base", ["Qwen/Qwen3.5-4B", "Qwen/Qwen3.5-9B", "Qwen/Qwen3.8-27B",
-                                  "qwen/qwen3.5-0.8b"])
+                                  "qwen/qwen3.5-0.8b", "google/gemma-4-E4B-it",
+                                  "google/gemma-4-12B-it"])
 def test_a_qwen3_5_base_runs_in_the_tf5_venv(base):
     assert needs_transformers_5(base)
     assert venv_for("vllm", base) == TF5_VENV
