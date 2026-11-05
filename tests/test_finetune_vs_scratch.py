@@ -181,7 +181,11 @@ def test_no_noise_floor_is_claimed(sweep):
     """For a two-cell question that is less fatal than for a ranking, and the
     file says why rather than assuming it."""
     assert sweep.noise_floor is None
-    assert "NO NOISE FLOOR YET" in SCRATCH_VS_TUNE.read_text(encoding="utf-8")
+    text = SCRATCH_VS_TUNE.read_text(encoding="utf-8")
+    assert "NO NOISE FLOOR YET FOR THIS DIGEST" in text
+    # The floor of 10.10.2026 belongs to the previous digest; the notes keep it
+    # visible without letting the leaderboard rank by it (#115).
+    assert "c8f420ec" in yaml.safe_load(text)["notes"]
 
 
 def test_resize_is_union_because_a_base_codec_will_not_cover_four_corpora(sweep):

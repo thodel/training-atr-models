@@ -819,7 +819,21 @@ notes: |
   The digest changed when the revisions went in, which is correct and is why it
   had to happen before the first run rather than after it.
 
-  NO NOISE FLOOR YET. `noise_floor` is absent on purpose: it is measured on a
-  corpus and a budget and cannot exist before them (#115). Until it is there,
-  every leaderboard gap is reported as a gap and none is known to be one. Measure
-  it with scripts/measure_noise_floor.py --write-to this file.
+  NO NOISE FLOOR YET FOR THIS DIGEST. `noise_floor` is absent on purpose: it is
+  measured on a corpus and a budget and cannot exist before them (#115). Until it
+  is there, every leaderboard gap is reported as a gap and none is known to be
+  one. Measure it with scripts/measure_noise_floor.py --write-to this file.
+
+  A floor WAS measured, on the previous digest, and is recorded here rather than
+  in `noise_floor` because write_into_manifest refuses it: 09./10.10.2026 on
+  asteraix (~/atr-cache/noise-ft60/noise_floor.json), data sha256:c8f420ec3cc0…,
+  commit f84a2e5, sweep_train-60.arrow (225,590 lines, ceiling 60:1 applied),
+  fine-tune of catmus-medieval-1.6.0, no augmentation, effective batch 32 x 8,
+  4,410 steps, four seeds 42-45, scored on german_test (882,255 chars): CER
+  0.2068 / 0.2073 / 0.2084 (min / mean / max), spread 0.0016, stdev 0.0007.
+  Three things keep it out of the block. The digest moved to d7a116… on
+  27.10.2026 (#301), and 111 of the 130 newly reserved documents (566 pages)
+  sit in the training shard it was measured on. The JSON says height 64, but
+  `ketos train` ignores --spec under --load: the runs trained at CATMuS's own
+  height 120, and the block would print "height 64" on the leaderboard. And it
+  is a fine-tune, which no cell of this sweep is (#131).

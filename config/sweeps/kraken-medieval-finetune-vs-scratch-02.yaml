@@ -790,11 +790,22 @@ notes: |
 
   The winner gets measured on german-medieval-v1 afterwards, the way 0.2131 was.
 
-  NO NOISE FLOOR YET (#115). For a two-cell question this is less fatal than for
-  a ranking, and the reason is worth stating rather than assuming: #118 expects a
-  fitting base to beat from scratch by a margin, not by a hair. If the gap comes
-  out large, it is readable without a floor. If it comes out small, it is not a
-  result — it is a reason to measure the floor first.
+  NO NOISE FLOOR YET FOR THIS DIGEST (#115). For a two-cell question this is less
+  fatal than for a ranking, and the reason is worth stating rather than assuming:
+  #118 expects a fitting base to beat from scratch by a margin, not by a hair. If
+  the gap comes out large, it is readable without a floor. If it comes out small,
+  it is not a result — it is a reason to measure the floor first.
+
+  A floor WAS measured, on the previous digest, for the configuration closest to
+  this sweep's fine-tune cell: 09./10.10.2026 on asteraix
+  (~/atr-cache/noise-ft60/noise_floor.json), data sha256:c8f420ec3cc0…, commit
+  f84a2e5, sweep_train-60.arrow (ceiling 60:1 applied), fine-tune of
+  catmus-medieval-1.6.0 at its own height 120, no augmentation, 4,410 steps, four
+  seeds 42-45 on german_test: CER 0.2068 / 0.2073 / 0.2084, spread 0.0016.
+  write_into_manifest refuses it here, correctly: the digest moved to d7a116… on
+  27.10.2026 (#301), and 111 of the 130 newly reserved documents sit in the
+  shard it was trained on. It also says nothing about the from-scratch cell —
+  the from-scratch seeds of 01.10. collapsed (CER 0.985 at 10,186 steps).
 
   RESIZE. `union` rather than `fail`, because the base's codec will not contain
   every character of four German chancery corpora and `fail` would stop the run
