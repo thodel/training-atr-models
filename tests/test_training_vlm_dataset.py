@@ -517,12 +517,17 @@ class TestSteppedVisualBudget:
         applied and be untouched — the #86 failure in a new shape."""
         assert apply_visual_budget(gemma4(), VLM_PIXEL_BUDGET["line"]).visual_tokens != 280
 
-    def test_a_request_above_every_step_takes_the_largest(self):
-        applied = apply_visual_budget(gemma4(), 99_000_000)
-        assert applied.visual_tokens == max(SOFT_TOKEN_STEPS)
+    def test_a_request_above_every_step_is_refused(self):
+        """The top step carries 1120 * 48 * 48 = 2,580,480 px. Asking for more and
+        getting that would be a smaller budget than asked, and nothing would say
+        so (#82)."""
+        assert apply_visual_budget(gemma4(), 1120 * 48 * 48).visual_tokens == 1120
+        for asked in (1120 * 48 * 48 + 1, 4 * 1024 * 1024, 99_000_000):
+            with pytest.raises(VisualBudgetError, match="largest step"):
+                apply_visual_budget(gemma4(), asked)
 
     def test_every_chosen_step_is_one_the_processor_accepts(self):
-        for asked in (1, 262144, 1048576, 2097152, 10**9):
+        for asked in (1, 262144, 1048576, 2097152, 1120 * 48 * 48):
             assert apply_visual_budget(gemma4(), asked).visual_tokens in SOFT_TOKEN_STEPS
 
     def test_it_says_what_was_asked_for_when_that_is_not_what_it_got(self):
@@ -530,7 +535,7 @@ class TestSteppedVisualBudget:
         assert applied.stepped is True
         assert applied.asked_pixels == 262144
         assert str(applied) == (
-            "max_soft_tokens=322560 -> ~140 visual tokens (48px cell) "
+            "max_soft_tokens=140 -> 322560 px, ~140 visual tokens (48px cell) "
             "(asked for 262144, rounded up to a step)")
 
     def test_a_processor_that_will_not_say_its_grid_is_refused(self):

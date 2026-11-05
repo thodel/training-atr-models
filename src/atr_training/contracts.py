@@ -56,7 +56,7 @@ VLM_PROMPT = "Transcribe the handwritten text in this image exactly as written."
 #: 28² is Qwen2-VL (patch 14 x merge 2), while Qwen3-VL is patch 16 x merge 2 = 32².
 #: These figures carry the intended *token* counts — 256 for a line, 2048 for a page,
 #: as in lassberg/vlm_training's collator — against Qwen3-VL's grid, because that is
-#: what ``VlmTrainParams.base_model`` points at. The runtime does not trust this: it
+#: what ``TrainRequest.base_model`` defaults to. The runtime does not trust this: it
 #: re-derives the cap from the processor's own patch_size/merge_size and reports it
 #: (``vlm_dataset.apply_visual_budget``), so a base with a different grid cannot
 #: quietly train at another budget than the one written here (#86). Counted on a
@@ -72,7 +72,10 @@ VLM_PROMPT = "Transcribe the handwritten text in this image exactly as written."
 #: height, and a whole page fits 2048 at ~0.75.
 VLM_PIXEL_BUDGET: dict[str, int] = {"line": 256 * 32 * 32, "block": 1024 * 32 * 32,
                                     "page": 2048 * 32 * 32}
-#: Token budget per sample kind (prompt + image + transcription).
+#: Token budget per sample kind (prompt + image + transcription). The image share
+#: is counted against Qwen3-VL's grid, like ``VLM_PIXEL_BUDGET``; Gemma 4's step
+#: (140/560/1120) is smaller than Qwen's 256/1024/2048 at each of these budgets,
+#: so for Gemma the figures are an upper bound and need no family of their own.
 VLM_MAX_SEQ_LEN: dict[str, int] = {"line": 512, "block": 2048, "page": 4096}
 #: Tokens the model may *generate* at evaluation, per sample kind. This has to
 #: scale with granularity for the same reason the input budget does, and it did

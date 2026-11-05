@@ -615,8 +615,10 @@ processor. Corrected against transformers 5.17.0 in `vlm-train-tf5.sif`
 
 - `max_soft_tokens` is a real knob and it is honoured. It accepts exactly five
   values — `(70, 140, 280, 560, 1120)` — and raises `ValueError` for anything
-  else. There is no rounding: a request lands on a step or the run does not
-  start.
+  else. The processor does no rounding of its own; `apply_visual_budget` picks
+  the cheapest step that carries the requested pixels, says so in the log, and
+  refuses a request above the top step (2,580,480 px) rather than handing the
+  run less than it asked for (#82).
 - The grid is `patch_size` 16 × `pooling_kernel_size` 3, so one soft token covers
   a **48 px cell** against Qwen3-VL's 32. At step 280 the patch count before
   pooling is exactly 2520 = 280 × 3².
