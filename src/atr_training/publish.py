@@ -57,6 +57,11 @@ __all__ = [
     "ADAPTER_CONFIG_FILENAME",
     "EVALUATION_FILENAME",
     "IGNORE_PATTERNS",
+    "LICENCE_FILE_STEMS",
+    "LICENCE_FROM_BASE",
+    "BASE_MODEL_TERMS",
+    "BaseTerms",
+    "GRANULARITY_KEY",
     "DatasetLink",
     "TrainedModel",
     "Scan",
@@ -67,6 +72,7 @@ __all__ = [
     "scan_trained",
     "repo_id_for",
     "model_card",
+    "resolve_licence",
     "plan",
     "publish_one",
     "publish_all",
@@ -101,6 +107,46 @@ IGNORE_PATTERNS: tuple[str, ...] = (".*", "*.tmp", "*.part", "__pycache__/*")
 
 #: ``library_name`` in the card's frontmatter — what a reader needs installed.
 LIBRARY_BY_ENGINE: dict[str, str] = {"kraken": "kraken", "vllm": "peft"}
+
+#: Files that carry terms, not weights: uploaded with the payload, named on the
+#: card as the licence, and never counted as a weight (#87). Matched on the name
+#: before the first dot, case-insensitively — ``LICENSE``, ``LICENSE.txt``,
+#: ``NOTICE``, ``LICENSE-base.md``.
+LICENCE_FILE_STEMS: tuple[str, ...] = ("license", "licence", "notice")
+
+#: ``--license`` value that takes the licence id from :data:`BASE_MODEL_TERMS`.
+LICENCE_FROM_BASE = "base"
+
+
+@dataclass(frozen=True)
+class BaseTerms:
+    """The terms a hub base model is released under, as read off the hub."""
+
+    licence: str            # the base's own ``license`` frontmatter value
+    url: str                # its ``license_link``: the text a reader is sent to
+    checked: str            # when, and where, this entry was read
+    #: The licence asks that a copy of it travel with a derivative — Apache-2.0
+    #: §4(a). A repo without one is refused rather than uploaded (#87).
+    copy_required: bool
+
+
+_GEMMA_4 = BaseTerms(
+    licence="apache-2.0",
+    url="https://ai.google.dev/gemma/docs/gemma_4_license",
+    checked="2026-11-05 from the hub API's cardData.license; the repo is ungated "
+            "and ships no LICENSE or NOTICE file",
+    copy_required=True,
+)
+
+#: Bases whose terms were read on the hub, not assumed. **Only these.** Gemma 4
+#: is not Gemma 3: Gemma 3 is gated under the Gemma Terms of Use
+#: (``license: gemma``), Gemma 4 is plain Apache-2.0 — epic #77 was written for
+#: the former. A base not listed here gets no derived licence and a card that
+#: says its terms were not recorded; it is never filled in by family resemblance.
+BASE_MODEL_TERMS: dict[str, BaseTerms] = {
+    "google/gemma-4-E4B-it": _GEMMA_4,
+    "google/gemma-4-12B-it": _GEMMA_4,
+}
 
 
 class PublishError(RuntimeError):
@@ -255,14 +301,32 @@ class TrainedModel:
         return raw if isinstance(raw, dict) else None
 
     @property
+    def base_terms(self) -> BaseTerms | None:
+        """The base model's terms, if :data:`BASE_MODEL_TERMS` has read them."""
+        return BASE_MODEL_TERMS.get(self.base_model or "")
+
+    @property
+    def licence_files(self) -> list[Path]:
+        """``LICENSE``/``NOTICE`` beside the weights: uploaded, but not a weight."""
+        return [p for p in self._payload() if _is_licence_file(p)]
+
+    @property
     def weights(self) -> list[Path]:
-        """Payload files — everything but the metadata and the generated card."""
+        """Payload files — everything but the metadata, the generated card and
+        the licence files."""
+        return [p for p in self._payload() if not _is_licence_file(p)]
+
+    def _payload(self) -> list[Path]:
         return [
             p for p in sorted(self.directory.iterdir())
             if p.is_file()
             and p.name not in (METADATA_FILENAME, CARD_FILENAME, EVALUATION_FILENAME)
             and not p.name.startswith(".")
         ]
+
+
+def _is_licence_file(path: Path) -> bool:
+    return path.name.split(".", 1)[0].lower().split("-", 1)[0] in LICENCE_FILE_STEMS
 
 
 @dataclass(frozen=True)
@@ -472,6 +536,49 @@ def _benchmark_repo(model: TrainedModel) -> str | None:
     first = benchmarks[0]
     repo = first.get("hf_repo") if isinstance(first, dict) else None
     return str(repo) if repo else None
+
+
+def resolve_licence(model: TrainedModel, licence: str | None) -> str | None:
+    """The ``license`` id the card declares: as given, or the base's.
+
+    :data:`LICENCE_FROM_BASE` asks for the base model's own licence id, and only
+    a base :data:`BASE_MODEL_TERMS` has read can answer it — otherwise this
+    raises rather than guessing. Without a value nothing is declared, as before.
+    """
+    if licence != LICENCE_FROM_BASE:
+        return licence
+    terms = model.base_terms
+    if terms is None:
+        raise PublishError(
+            f"{model.model_id}: --license {LICENCE_FROM_BASE}, but the terms of base "
+            f"{model.base_model or '(none)'!s} are not recorded in BASE_MODEL_TERMS — "
+            "read them on the hub and add them, or pass an explicit licence id"
+        )
+    return terms.licence
+
+
+def _licence_section(model: TrainedModel, licence: str | None) -> list[str]:
+    """What this repo is licensed under, and what its base is (#87).
+
+    The base's terms are named whenever they are known, declared licence or not:
+    an adapter is a derivative, and a reader needs both answers. A base whose
+    terms were not read says exactly that, with a link to where they are.
+    """
+    lines = ["## Licence", ""]
+    lines.append(f"This repo: `{licence}`." if licence else
+                 "This repo declares no licence.")
+    terms, base = model.base_terms, model.base_model
+    if terms is not None:
+        lines += ["", f"Base model [`{base}`](https://huggingface.co/{base}): "
+                      f"`{terms.licence}`, [terms]({terms.url}) (read {terms.checked}). "
+                      "These weights are a derivative of it."]
+    elif base and _is_hub_repo(base):
+        lines += ["", f"Base model [`{base}`](https://huggingface.co/{base}): its terms "
+                      "were not recorded with this card — they are on its hub page."]
+    files = model.licence_files
+    if files:
+        lines += ["", "Beside the weights: " + ", ".join(f"`{p.name}`" for p in files) + "."]
+    return lines + [""]
 
 
 def _frontmatter(model: TrainedModel, licence: str | None) -> str:
@@ -868,6 +975,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
     metrics = model.metrics
     prompt = model.metadata.get("prompt") or model.params.get("prompt")
     base = _base_cell(model.base_model)
+    licence = resolve_licence(model, licence)
 
     lines: list[str] = [
         _frontmatter(model, licence),
@@ -900,6 +1008,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "",
         *_where_measured(model),
         "",
+        *_granularity(model),
         *_after_training(model),
         "## Training data",
         "",
@@ -931,6 +1040,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         "`metadata.json` in this repo is the record the trainer wrote, verbatim: the "
         "full request, the parsed metrics and the job id.",
         "",
+        *_licence_section(model, licence),
         *_energy_section(model),
         "## Using it",
         "",
@@ -959,6 +1069,52 @@ def _files_rows(model: TrainedModel) -> list[str]:
     if others:
         rows.append(f"| with them | {names(others)} |")
     return rows
+
+
+#: ``metadata.json`` key for the granularities a model was *measured* at — not
+#: the one it was trained at, which is ``params.granularity``. Written by hand
+#: (or by a tool) after ``scripts/eval_granularity.py``::
+#:
+#:     {"registered_level": "line",
+#:      "measured_on": "14 held-out pages of v3",
+#:      "levels": [{"level": "line", "n": 412, "cer": 0.111, "length_ratio": 0.99},
+#:                 {"level": "page", "n": 14, "cer": 1.32, "length_ratio": 0.41}]}
+#:
+#: ``levels`` rows are ``summarise()``'s output; extra keys are ignored.
+GRANULARITY_KEY = "granularity_measured"
+
+
+def _granularity(model: TrainedModel) -> list[str]:
+    """At which granularity the model was measured to read — or that it was not.
+
+    A card that shows a line CER and says nothing about pages is the gap
+    serving-atr-inference#165 found: a line-trained VLM does not read pages. So
+    the section is never left out; without a measurement it says "not measured"
+    and names no level, for the same reason :func:`_code_cell` spells out a
+    missing commit.
+    """
+    lines = ["## Granularity", ""]
+    measured = model.metadata.get(GRANULARITY_KEY)
+    levels = measured.get("levels") if isinstance(measured, dict) else None
+    rows = [r for r in levels or [] if isinstance(r, dict) and r.get("level")]
+    if not rows:
+        return lines + [
+            "**Not measured.** No evaluation at another granularity was recorded for "
+            "this model, so this card claims no level at which it reads. The "
+            "granularity under *Training data* is what it was trained on, not a "
+            "measurement.",
+            "",
+        ]
+    lines += ["| level | n | CER | length ratio |", "|---|---|---|---|"]
+    lines += [f"| {r['level']} | {_plain(r.get('n'))} | {_pct(r.get('cer'))} "
+              f"| {_plain(r.get('length_ratio'))} |" for r in rows]
+    lines.append("")
+    if measured.get("measured_on"):
+        lines += [f"Measured on {measured['measured_on']}.", ""]
+    registered = measured.get("registered_level")
+    lines += [f"Registered for serving at level `{registered}`." if registered else
+              "The level it is registered at was not recorded.", ""]
+    return lines
 
 
 def _after_training(model: TrainedModel) -> list[str]:
@@ -1133,6 +1289,14 @@ def _training_data(model: TrainedModel) -> list[str]:
         return ["The training request was not recorded with this model."]
 
     lines: list[str] = []
+    # From the training params, never from the dataset spec: its `granularity`
+    # is the source's shape on the hub (`page` for PageXML), and a line-trained
+    # run would read as page-trained — the confusion of serving#165 (#87).
+    trained_at = model.params.get("granularity")
+    if trained_at:
+        lines += [f"Trained on **{trained_at}** images (`params.granularity`).", ""]
+    elif model.engine == "vllm":
+        lines += ["The training granularity was not recorded with this model.", ""]
     for link in datasets:
         lines.append(
             f"- {link.link}" + (f" @ `{link.revision}`" if link.revision else "")
@@ -1317,7 +1481,19 @@ def publish_one(
                              url=(model.published or {}).get("url"),
                              detail=publication.skip_reason)
 
-    card = model_card(model, publication.repo_id, licence=licence)
+    terms = model.base_terms
+    if terms is not None and terms.copy_required and not model.licence_files:
+        # Checked in a dry run too: it is the run that should find it.
+        return PublishResult(
+            model.model_id, publication.repo_id, "failed",
+            detail=f"base {model.base_model} is {terms.licence}, which asks for a copy "
+                   f"of its licence with a derivative: put LICENSE ({terms.url}) beside "
+                   "the weights",
+        )
+    try:
+        card = model_card(model, publication.repo_id, licence=licence)
+    except PublishError as exc:
+        return PublishResult(model.model_id, publication.repo_id, "failed", detail=str(exc))
     if dry_run:
         return PublishResult(
             model.model_id, publication.repo_id, "planned",
