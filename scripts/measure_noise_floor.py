@@ -82,6 +82,26 @@ def params_for(args: argparse.Namespace) -> KrakenTrainParams:
         resize=args.resize or ("union" if args.base_model else "fail"))
 
 
+def base_spec(weights: str) -> str:
+    """The VGSL spec stored in the base weights — kraken is imported here, not at
+    the top, for the reason `line_ceiling` imports pyarrow locally."""
+    from kraken.lib.vgsl import TorchVGSLModel
+
+    return TorchVGSLModel.load_model(weights).spec
+
+
+def trained_spec(args: argparse.Namespace, params: KrakenTrainParams) -> str:
+    """The spec the runs actually train, which is not always ``params.spec``.
+
+    Under ``--load``, ``ketos train`` ignores ``--spec``: the loaded net keeps its
+    own geometry (docs/EVAL_SETS.md). The floor of 10.10.2026 fine-tuned
+    catmus-medieval-1.6.0 and was recorded as height 64, while every seed's
+    train.log showed input [1,1,120,…]. So a fine-tune's spec is read from the
+    base it starts from.
+    """
+    return params.spec if args.base_model is None else base_spec(args.base_model)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -153,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     effective = params.effective_batch_size
     epochs = epochs_for(steps, args.train_lines, effective)
     actual = plan_steps(args.train_lines, effective, epochs).total_steps
+    # Read before the first run: a base whose spec cannot be read would otherwise
+    # cost hours of training and then a floor with no shape attached.
+    spec = trained_spec(args, params)
 
     # Before four runs of several hours each: is this the corpus today's
     # pipeline would build? `sweep_train.arrow` was compiled from a page pool
@@ -181,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  {args.train_lines} lines, effective batch {effective}, "
           f"{epochs} epoch(s) = {actual} steps (asked for {steps}, "
           f"floor {floor_for('kraken', from_scratch)})")
+    print(f"  input height {input_height(spec)}"
+          + (f", from {args.base_model}" if args.base_model else ""))
     print(f"  scored on {args.benchmark.name}\n", flush=True)
 
     results: list[dict] = []
@@ -231,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
         # The configuration, because the floor is a property of one. #115's own
         # table: 0.0085 spread at one shape, 0.1924 at another — so a floor
         # measured here is a LOWER BOUND for a taller cell, not its error bar.
-        "spec": params.spec, "input_height": input_height(params.spec),
+        "spec": spec, "input_height": input_height(spec),
         "augment": params.augment, "batch_size": params.batch_size,
         "epochs": epochs, "steps": actual, "from_scratch": from_scratch,
         "base_model": args.base_model, "seeds": args.seeds, "runs": results,
