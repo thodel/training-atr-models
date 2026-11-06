@@ -152,6 +152,26 @@ def du(path: Path) -> int:
         return 0
 
 
+def _jobs(jobs: Path, record: dict) -> int:
+    """``training_folder/jobs`` mit ``data/`` je Job einzeln (#387).
+
+    ``ubelix/plan_purge.py`` nennt je Eintrag, wie gross das ``data/`` ist, das
+    er löschen würde, und misst dafür nicht selbst: ein ``du`` über Hunderte
+    Jobs gehört in einen Slurm-Job, nicht auf den Login-Knoten. Gemessen wird
+    je Kind eines Jobs, die Summe ist die Gesamtgrösse wie bisher — kein Byte
+    wird zweimal gezählt.
+    """
+    sizes = record.setdefault("jobs_data", {})
+    total = 0
+    for job in sorted(p for p in jobs.iterdir() if p.is_dir()):
+        for child in job.iterdir():
+            size = du(child)
+            total += size
+            if child.name == "data" and child.is_dir():
+                sizes[job.name] = size
+    return total
+
+
 def inventory(root: Path = ROOT, write: Path | None = None,
               with_top: bool = True) -> dict:
     """Der teure Lauf: je Verzeichnis eine Grösse. Gehört in einen Slurm-Job.
@@ -214,7 +234,10 @@ def inventory(root: Path = ROOT, write: Path | None = None,
         folder = ours / "training_folder"
         if folder.is_dir():
             for entry in sorted(p for p in folder.iterdir() if p.is_dir()):
-                record["ours"][f"training_folder/{entry.name}"] = du(entry)
+                if entry.name == "jobs":
+                    record["ours"]["training_folder/jobs"] = _jobs(entry, record)
+                else:
+                    record["ours"][f"training_folder/{entry.name}"] = du(entry)
                 save()
     record["ours_complete"] = True
     save()
