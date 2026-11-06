@@ -73,6 +73,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
 from atr_training.contracts import VLM_BASE_MODEL, VlmTrainParams  # noqa: E402
+from atr_training.backends import runner_python  # noqa: E402
 from atr_training.gpu import PeakSampler  # noqa: E402
 from atr_training.vlm_cmd import train_cmd  # noqa: E402
 from atr_training.vlm_dataset import read_jsonl, worst_case_samples  # noqa: E402
@@ -157,6 +158,11 @@ def plan_arms(card: int, like: dict | None) -> list[tuple[str, str, bool]]:
     return [("fourbit_one_card", str(card), True),
             ("bf16_one_card", str(card), False),
             ("bf16_two_cards", "0,1", False)]
+
+
+def engine_python(explicit: Path | None, venvs: Path, base_model: str) -> Path:
+    """``--python`` if given, else the venv the trainer would run ``base_model`` in."""
+    return explicit or runner_python("vllm", venvs, base_model)
 
 
 def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path,
@@ -261,8 +267,11 @@ def main() -> int:
     # NOT resolved: a venv's `bin/python` is a symlink to the system interpreter,
     # and following it leaves the venv behind — which is how the first run of this
     # script ended up in /usr/bin/python3.12 without the stack.
-    ap.add_argument("--python", type=Path,
-                    default=REPO / ".venvs" / "vlm-train" / "bin" / "python")
+    ap.add_argument("--python", type=Path, default=None,
+                    help="the engine venv's interpreter; by default the one the "
+                         "trainer would pick for the base model (backends.runner_python)")
+    ap.add_argument("--venvs", type=Path, default=REPO / ".venvs",
+                    help="where the engine venvs live; a worktree has none of its own")
     ap.add_argument("--only", default="", help="comma-separated arm names")
     ap.add_argument("--card", type=int, default=0,
                     help="physical card for the one-card arms (#379)")
@@ -277,6 +286,11 @@ def main() -> int:
     args = ap.parse_args()
 
     like, base_model = load_like(args.like) if args.like else (None, VLM_BASE_MODEL)
+    # The venv follows the base model, as it does for the trainer: Qwen3.5 needs
+    # the transformers-5 venv, and the fixed `vlm-train` default stopped the first
+    # --like run of a Qwen3.5 page geometry after 12 s with "does not recognize
+    # this architecture" (#379, 06.11.2026).
+    python = engine_python(args.python, args.venvs, base_model)
     plan = plan_arms(args.card, like)
     wanted = {a for a in args.only.split(",") if a}
     results = []
@@ -286,7 +300,7 @@ def main() -> int:
         print(f"== {name} ==", flush=True)
         result = run_arm(name, cards=cards, four_bit=four_bit, root=args.root,
                          out_root=args.work, samples=args.samples,
-                         val_samples=args.val_samples, python=args.python,
+                         val_samples=args.val_samples, python=python,
                          epochs=args.epochs, worst_case=args.worst_case,
                          like=like, base_model=base_model)
         print(json.dumps(result, indent=2), flush=True)
