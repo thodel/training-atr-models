@@ -531,12 +531,35 @@ host, and `forcegid` is why that works.
 
 ## The cards
 
-- **Today:** both A40s are free for training. Every job runs on the card
-  `ATR_TRAIN_GPU` names (`1`, a **physical** index as `nvidia-smi` counts). The
-  child process gets `CUDA_VISIBLE_DEVICES=1` and sees it as `cuda:0`. One job
-  at a time. The service holds no card.
-- **Later (#12):** a card allocated per job, parallel runs, and models larger
-  than one A40 across both cards over NVLink.
+- **Today (since #12, 22.10.2026):** the service trains on both A40s,
+  `ATR_TRAIN_GPUS=0,1` (**physical** indices, as `nvidia-smi` counts). Each
+  job is given one card when it starts (`job.gpus`); its child gets
+  `CUDA_VISIBLE_DEVICES` set to that card and sees it as `cuda:0`. Two jobs
+  run in parallel. The oldest queued job starts on a card that no job of this
+  host holds and that has `min_free_vram_mb` (12,000) free, or
+  `vlm_min_free_vram_mb` (24,000) for a VLM job. That check is the only gate;
+  the service holds no card itself, and a model across both cards over NVLink
+  is not built.
+- **Sharing the cards (#396).** Other work on the box (weightspace passes,
+  ad-hoc scripts) may use either card while it has headroom. The A40s have no
+  MIG and run in Default compute mode, so nothing in the hardware decides who
+  goes first; the convention does:
+  - The service says when one of its jobs waits for memory: `waiting` in
+    `GET /health` (no key) and `GET /gpu` is
+    `{"job_id": …, "engine": "kraken", "needs_mib": 12000}`, or `null`.
+    It is set only when the oldest queued job was refused because **no** card
+    it may use has `needs_mib` free. It is `null` when nothing is queued, when
+    a card is free, and when the job waits on a run of this host (every slot
+    or every card held by our own jobs), since no foreign process can help
+    then. Every scheduling pass (every `poll_interval_s`, 10 s) sets it anew.
+  - Foreign work checks `waiting` before each unit of its work (a pass, not a
+    kernel). When a job is waiting and the card it holds is one the job could
+    use, it releases that card: CPU, the other card, or a pause.
+  - The service never signals a foreign process. A process that ignores the
+    convention is what it was before: memory the scheduler waits for, listed
+    as unaccounted in `GET /gpu`.
+  - Manual scripts of this repo that default to `cuda:0`
+    (`scripts/measure_noise_floor.py` and friends) do not follow it yet.
 - **`GET /gpu`** reads this machine's cards: every process holding memory,
   which job it belongs to (only live jobs of this host count), and
   `unaccounted_mib`. No service of ours holds memory here except through a job,

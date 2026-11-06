@@ -198,6 +198,31 @@ def _spawn(settings: TrainerSettings, job: TrainJob) -> int:
     return proc.pid
 
 
+#: The queued job that is waiting for a card, as the last scheduling pass found
+#: it, or None (#396). Written by every pass of :func:`schedule_once`, read by
+#: ``/gpu`` and ``/health``.
+_waiting: dict | None = None
+
+
+def waiting_for_card() -> dict | None:
+    """``{"job_id", "engine", "needs_mib"}`` while a job of this host waits for VRAM.
+
+    The cooperative half of a preemptable card (#396). The service trains on both
+    cards, and other work on the box — weightspace passes, ad-hoc scripts — may
+    use a card with headroom, but yields when this says a job is waiting. Set
+    only when the oldest queued job was refused because **no** card it may use
+    has enough free memory: then a foreign process releasing one is what would
+    let it start. None when nothing is queued, when a card was free, and when
+    the job waits on our own runs (every slot or every card held by a job of
+    this host), because no foreign process can help with that.
+
+    ``needs_mib`` is the engine's threshold as the scheduler applies it
+    (``min_free_vram_mb``, ``vlm_min_free_vram_mb``): what a card must show free
+    for the job to start.
+    """
+    return _waiting
+
+
 def schedule_once(
     store: JobStore, settings: TrainerSettings, spawn=_spawn, vram_check=check_vram
 ) -> TrainJob | None:
@@ -214,6 +239,10 @@ def schedule_once(
     reaped = reap_children()
     if reaped:
         logger.debug("reaped {} finished runner(s)", reaped)
+    # Every pass answers afresh: a job that started, was cancelled, or now waits
+    # on our own run is no longer waiting for somebody else's card.
+    global _waiting
+    _waiting = None
 
     jobs = [store.reconcile(j) for j in store.list()]
     # Only this host's jobs, for the count as much as for the queue (#15):
@@ -313,6 +342,9 @@ def schedule_once(
         # has too little" names half the problem and sends the reader to the
         # wrong card.
         hold(" / ".join(refusals))
+        # Written down for whoever else holds memory here (#396): this is the
+        # one refusal a foreign process can end by letting go of a card.
+        _waiting = {"job_id": job.id, "engine": job.request.engine, "needs_mib": need}
         return None
 
     # The claim is what makes "listed as unspawned" and "started by us" one
@@ -663,6 +695,10 @@ def _health_body(*, deep: bool = False) -> dict:
                  "running": len([j for j in jobs if j.status in RUNNING_STATUSES]),
                  "queued": len([j for j in jobs if j.status == "queued"])},
         "gateway_auth_configured": bool(settings.gateway_api_key),
+        # A yes/no with the job and the memory it needs (#396), here as well as
+        # in /gpu because this route needs no key: whoever shares the cards
+        # should not need a secret to learn that it is asked to step aside.
+        "waiting": waiting_for_card(),
     }
 
     if deep and settings.gateway_api_key:
@@ -758,7 +794,9 @@ async def gpu() -> dict:
     rows = gpu_probe.card_rows(cards, services_expected=False)
     return {"host": socket.gethostname(), "cards": rows,
             "unplaced_processes": [vars(p) for p in unplaced],
-            "job_attribution_available": attribution, "known_job_pids": len(job_pids)}
+            "job_attribution_available": attribution, "known_job_pids": len(job_pids),
+            # The queued job that no card has room for, or None (#396).
+            "waiting": waiting_for_card()}
 # ════════════════════════════════════════════════════════════════════════════
 #  Base-model discovery (#39) — script class outranks century
 # ════════════════════════════════════════════════════════════════════════════
