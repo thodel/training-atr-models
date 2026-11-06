@@ -53,5 +53,6 @@
     "running": 1,
     "queued": 0
   },
-  "gateway_auth_configured": true
+  "gateway_auth_configured": true,
+  "waiting": null
 }
