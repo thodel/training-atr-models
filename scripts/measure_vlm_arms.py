@@ -39,6 +39,17 @@ remain reproducible.
     .venvs/kraken-train/bin/python scripts/measure_vlm_arms.py \\
         --root <job dir> --out report.json
 
+`--like <job.json>` measures the geometry of a real run instead of #137's fixed
+arms (#379): base model and every parameter come from the record's request, so
+the row it produces belongs to that run's line in the peak table of
+`docs/WHERE_A_RUN_RUNS.md`. Only the step budget is replaced — one epoch over the
+selected samples, no `max_steps`, no checkpoints. `--card` picks the card for the
+one-card arms; the two-card arm keeps both.
+
+The peak is read twice: per card, as before, and `peak_own_mib` from
+`gpu.PeakSampler`, which counts only the processes descending from the run. On a
+card someone else is using, the first includes them and the second does not.
+
 Run it with the REPO venv: it only builds the argv (`vlm_cmd.train_cmd`, so the
 command is the one the pipeline would run) and spawns the engine's venv for the
 work.
@@ -62,6 +73,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
 from atr_training.contracts import VLM_BASE_MODEL, VlmTrainParams  # noqa: E402
+from atr_training.gpu import PeakSampler  # noqa: E402
 from atr_training.vlm_cmd import train_cmd  # noqa: E402
 from atr_training.vlm_dataset import read_jsonl, worst_case_samples  # noqa: E402
 
@@ -109,9 +121,48 @@ def take_lines(src: Path, dest: Path, count: int, worst_case: bool) -> dict:
             "widest_pixels": picked.widest_pixels, "page_samples": picked.page_samples}
 
 
+def arm_params(four_bit: bool, epochs: int, like: dict | None = None) -> VlmTrainParams:
+    """The parameters one arm trains with.
+
+    Without ``like``: #137's page arms, unchanged. With it: the request of a real
+    run, so the peak belongs to that run's geometry — batch, accumulation,
+    granularity, pixel budget, LoRA rank, all of it (#379). Three things are
+    replaced, because they bound the work rather than shape a step: one epoch
+    over the selected samples, no ``max_steps`` (a step-bounded source run would
+    otherwise loop over 96 samples a hundred steps long), and no checkpoints.
+    """
+    fixed = {"load_in_4bit": four_bit, "epochs": epochs, "max_epochs": epochs,
+             "save_steps": 10_000}
+    if like is None:
+        return VlmTrainParams(granularity="page", **fixed)
+    return VlmTrainParams(**{**like, **fixed, "max_steps": None})
+
+
+def load_like(path: Path) -> tuple[dict, str]:
+    """``(params, base_model)`` from a job record's request."""
+    request = json.loads(path.read_text(encoding="utf-8"))["request"]
+    params = dict(request.get("params") or {})
+    base = request.get("base_model") or params.get("base_model") or VLM_BASE_MODEL
+    return params, base
+
+
+def plan_arms(card: int, like: dict | None) -> list[tuple[str, str, bool]]:
+    """``(name, CUDA_VISIBLE_DEVICES, four_bit)`` per arm.
+
+    ``--like`` is one arm, quantised as the run was; #137's three arms vary
+    exactly that, and comparing them against a fixed run would vary it twice.
+    """
+    if like is not None:
+        return [("like_job", str(card), bool(like.get("load_in_4bit", True)))]
+    return [("fourbit_one_card", str(card), True),
+            ("bf16_one_card", str(card), False),
+            ("bf16_two_cards", "0,1", False)]
+
+
 def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path,
             samples: int, val_samples: int, python: Path, epochs: int,
-            worst_case: bool = False) -> dict:
+            worst_case: bool = False, like: dict | None = None,
+            base_model: str = VLM_BASE_MODEL) -> dict:
     work = out_root / name
     if work.exists():
         shutil.rmtree(work)
@@ -130,9 +181,8 @@ def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path
     selection = take_lines(root / "data" / "train.jsonl", train_jsonl, samples, worst_case)
     take_lines(root / "data" / "val.jsonl", val_jsonl, val_samples, worst_case=False)
 
-    params = VlmTrainParams(granularity="page", load_in_4bit=four_bit, epochs=epochs,
-                            max_epochs=epochs, save_steps=10_000)
-    cmd = train_cmd(python, params=params, base_model=VLM_BASE_MODEL,
+    params = arm_params(four_bit, epochs, like)
+    cmd = train_cmd(python, params=params, base_model=base_model,
                     train_jsonl=train_jsonl, val_jsonl=val_jsonl,
                     data_root=root, output_dir=work / "adapter")
 
@@ -149,7 +199,13 @@ def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path
     log = (work / "train.log").open("w", encoding="utf-8")
     t0 = time.perf_counter()
     sampler.start()
-    proc = subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, cwd=REPO)
+    proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
+                            start_new_session=True)
+    own_sampler = PeakSampler(proc.pid, interval_s=2.0).start()
+    try:
+        proc.wait()
+    finally:
+        own = own_sampler.stop()
     stop.set()
     sampler.join(timeout=15)
     log.close()
@@ -167,6 +223,9 @@ def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path
     per_second = re.search(r"'train_samples_per_second':\s*([0-9.]+)", text)
     return {
         "arm": name,
+        "base_model": base_model,
+        "granularity": params.granularity,
+        "batch": f"{params.batch_size} x {params.accumulate_grad_batches}",
         "cards": cards,
         "four_bit": four_bit,
         "exit_code": proc.returncode,
@@ -176,6 +235,10 @@ def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path
         "samples": samples,
         "effective_batch": params.batch_size * params.accumulate_grad_batches,
         "peak_mib": peak,
+        # Only this run's processes; `peak_mib` adds whoever else is on the card.
+        # Omitted rather than 0 when the ancestry could not be traced (#165).
+        "peak_own_mib": ({} if own.own_is_unknown else
+                         {f"gpu{i}": v for i, v in sorted(own.own_mib.items())}),
         # Where the samples came from. #163: a peak from the head of the file is a
         # lower bound and must not be read as a ceiling, so every row says which
         # it is rather than leaving the reader to remember.
@@ -201,6 +264,11 @@ def main() -> int:
     ap.add_argument("--python", type=Path,
                     default=REPO / ".venvs" / "vlm-train" / "bin" / "python")
     ap.add_argument("--only", default="", help="comma-separated arm names")
+    ap.add_argument("--card", type=int, default=0,
+                    help="physical card for the one-card arms (#379)")
+    ap.add_argument("--like", type=Path,
+                    help="a job.json: measure that run's geometry instead of the "
+                         "fixed arms (#379)")
     ap.add_argument("--worst-case", action="store_true",
                     help="train on the most expensive samples (longest text, largest "
                          "crops) instead of the head of the file — the peak #163 asks "
@@ -208,9 +276,8 @@ def main() -> int:
                          "reproducible.")
     args = ap.parse_args()
 
-    plan = [("fourbit_one_card", "0", True),
-            ("bf16_one_card", "0", False),
-            ("bf16_two_cards", "0,1", False)]
+    like, base_model = load_like(args.like) if args.like else (None, VLM_BASE_MODEL)
+    plan = plan_arms(args.card, like)
     wanted = {a for a in args.only.split(",") if a}
     results = []
     for name, cards, four_bit in plan:
@@ -220,7 +287,8 @@ def main() -> int:
         result = run_arm(name, cards=cards, four_bit=four_bit, root=args.root,
                          out_root=args.work, samples=args.samples,
                          val_samples=args.val_samples, python=args.python,
-                         epochs=args.epochs, worst_case=args.worst_case)
+                         epochs=args.epochs, worst_case=args.worst_case,
+                         like=like, base_model=base_model)
         print(json.dumps(result, indent=2), flush=True)
         results.append(result)
         args.out.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
