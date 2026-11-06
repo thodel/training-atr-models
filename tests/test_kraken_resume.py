@@ -38,6 +38,7 @@ from atr_training.contracts import KrakenTrainParams
 from atr_training.ketos_cmd import (
     ABORT_CHECKPOINT,
     FAILED_ABORT_PREFIX,
+    checkpoint_state,
     KetosCommandError,
     resume_point,
     set_aside_failed_abort,
@@ -257,34 +258,70 @@ def test_a_fresh_run_keeps_torchs_default(store, settings):
 
 def test_the_abort_of_a_failed_resume_is_set_aside(tmp_path):
     """Epoch 0, step 0, and newest: resuming from it would start from scratch."""
-    started = time.time()
-    _touch(tmp_path / "checkpoint_51-0.0382.ckpt", started - 200)
-    _touch(tmp_path / ABORT_CHECKPOINT, started + 20)
-    aside = set_aside_failed_abort(tmp_path, started)
+    _touch(tmp_path / "checkpoint_51-0.0382.ckpt", 2000)
+    before = checkpoint_state(tmp_path)
+    _touch(tmp_path / ABORT_CHECKPOINT, 3000)
+    aside = set_aside_failed_abort(tmp_path, before)
     assert aside is not None and aside.name.startswith(FAILED_ABORT_PREFIX)
     assert aside.exists(), "set aside, not deleted"
     assert resume_point(tmp_path).name == "checkpoint_51-0.0382.ckpt"
 
 
+@pytest.mark.parametrize("stamp", [2000, 1000], ids=["same-tick", "behind"])
+def test_the_attempts_abort_is_set_aside_whatever_its_mtime(tmp_path, stamp):
+    """Written by the attempt, so its own — even stamped no later than its start."""
+    _touch(tmp_path / "checkpoint_51-0.0382.ckpt", 2000)
+    before = checkpoint_state(tmp_path)
+    _touch(tmp_path / ABORT_CHECKPOINT, stamp)
+    assert set_aside_failed_abort(tmp_path, before) is not None
+
+
+def test_an_abort_replacing_an_earlier_one_is_set_aside(tmp_path):
+    """The resume read the earlier abort, failed, and wrote its own over it.
+
+    Same name, size and mtime: Lightning's temp file and rename is what tells it.
+    """
+    _touch(tmp_path / "checkpoint_51-0.0382.ckpt", 1000)
+    _touch(tmp_path / ABORT_CHECKPOINT, 2000)
+    before = checkpoint_state(tmp_path)
+    os.replace(_touch(tmp_path / "abort.tmp", 2000), tmp_path / ABORT_CHECKPOINT)
+    assert set_aside_failed_abort(tmp_path, before) is not None
+
+
 def test_an_abort_after_progress_or_from_before_stays(tmp_path):
-    started = time.time()
-    _touch(tmp_path / "checkpoint_52-0.0400.ckpt", started + 10)
-    _touch(tmp_path / ABORT_CHECKPOINT, started + 20)
-    assert set_aside_failed_abort(tmp_path, started) is None, "the attempt trained an epoch"
+    before = checkpoint_state(tmp_path)
+    _touch(tmp_path / "checkpoint_52-0.0400.ckpt", 1000)
+    _touch(tmp_path / ABORT_CHECKPOINT, 2000)
+    assert set_aside_failed_abort(tmp_path, before) is None, "the attempt trained an epoch"
     (tmp_path / "checkpoint_52-0.0400.ckpt").unlink()
-    _touch(tmp_path / ABORT_CHECKPOINT, started - 20)
-    assert set_aside_failed_abort(tmp_path, started) is None, "an earlier interruption's"
-    assert set_aside_failed_abort(tmp_path / "none", started) is None
+    before = checkpoint_state(tmp_path)
+    assert set_aside_failed_abort(tmp_path, before) is None, "an earlier interruption's"
+    assert set_aside_failed_abort(tmp_path / "none", {}) is None
 
 
-def test_a_failed_resume_leaves_the_epoch_checkpoint_as_the_resume_point(store, settings):
+@pytest.mark.parametrize("stamp", [None, "behind"], ids=["as-written", "clock-behind"])
+def test_a_failed_resume_leaves_the_epoch_checkpoint_as_the_resume_point(store, settings,
+                                                                          stamp):
+    """Whatever time the file system stamps on the abort the attempt wrote.
+
+    Linux before 6.13 stamps a new file with the coarse clock, which trails
+    ``time.time()`` by up to a tick: on idhefix (6.8) and UBELIX (5.14) a file
+    written after ``time.time()`` was read came out older than it 1,999 times
+    in 2,000. When the fake ``ketos`` wrote its abort in the same tick the
+    attempt began, an mtime comparison took it for an earlier interruption's and
+    kept it as the resume point — the flake of CI run 42195528859. "behind"
+    makes that stamp certain.
+    """
     job, ckpt = _resumable_job(store, settings)
-    _touch(ckpt / "checkpoint_51-0.0382.ckpt", time.time() - 60)
+    epoch = _touch(ckpt / "checkpoint_51-0.0382.ckpt", time.time() - 60)
 
     class AbortingRunner(FakeRunner):
         def run(self, cmd, log_path, env=None, on_start=None):
             if "train" in cmd:
-                (ckpt / ABORT_CHECKPOINT).write_bytes(b"epoch 0")
+                abort = ckpt / ABORT_CHECKPOINT
+                abort.write_bytes(b"epoch 0")
+                if stamp == "behind":
+                    _touch(abort, epoch.stat().st_mtime + 1)
             return super().run(cmd, log_path, env=env, on_start=on_start)
 
     done = Pipeline(store, settings, runner=AbortingRunner(fail_on="train"),

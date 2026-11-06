@@ -347,28 +347,51 @@ RESUME_ENV = {"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}
 FAILED_ABORT_PREFIX = "failed-resume_"
 
 
-def set_aside_failed_abort(checkpoint_dir: str | Path, since: float) -> Path | None:
+def checkpoint_state(checkpoint_dir: str | Path) -> dict[str, tuple[int, int, int]]:
+    """Inode, mtime in ns and size of each checkpoint, by name.
+
+    Taken before an attempt, it is what :func:`set_aside_failed_abort` tells the
+    attempt's own writes by. A file the attempt wrote is a new inode (Lightning
+    saves by temp file and rename) or at least a new mtime, whatever clock
+    stamped it.
+    """
+    state = {}
+    for path in Path(checkpoint_dir).glob("checkpoint_*.ckpt"):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        state[path.name] = (st.st_ino, st.st_mtime_ns, st.st_size)
+    return state
+
+
+def set_aside_failed_abort(checkpoint_dir: str | Path,
+                           before: dict[str, tuple[int, int, int]]) -> Path | None:
     """Move away the abort checkpoint a failed resume wrote, or None.
 
     A ``ketos train --resume`` that fails at load still writes
     ``checkpoint_abort.ckpt`` — of the model it built afresh, epoch 0, step 0
     (21288367 again). It is then the newest checkpoint, and the next attempt
     would "resume" from it: training from scratch under a resume banner. It is
-    set aside, not deleted, and only when the attempt that started at ``since``
-    wrote no epoch checkpoint — after one, the abort is real progress.
+    set aside, not deleted, and only when the attempt wrote no epoch checkpoint —
+    after one, the abort is real progress.
+
+    ``before`` is :func:`checkpoint_state` as the attempt began. What the attempt
+    wrote is what changed since, not what is newer than a ``time.time()`` taken
+    at its start: Linux before 6.13 stamps a new file with the coarse clock,
+    which trails ``time.time()`` by up to a tick, so an abort written in the
+    tick the attempt began looked older than the attempt and stayed.
     """
     directory = Path(checkpoint_dir)
-    abort = directory / ABORT_CHECKPOINT
-    try:
-        if abort.stat().st_mtime < since:
-            return None
-    except OSError:
+    now = checkpoint_state(directory)
+    abort = now.get(ABORT_CHECKPOINT)
+    if abort is None or abort == before.get(ABORT_CHECKPOINT):
         return None
-    for path in directory.glob("checkpoint_*.ckpt"):
-        if _CKPT_RE.match(path.name) and path.stat().st_mtime >= since:
+    for name, st in now.items():
+        if _CKPT_RE.match(name) and st != before.get(name):
             return None
-    target = directory / f"{FAILED_ABORT_PREFIX}{int(since)}.ckpt"
-    abort.rename(target)
+    target = directory / f"{FAILED_ABORT_PREFIX}{abort[1] // 1_000_000_000}.ckpt"
+    (directory / ABORT_CHECKPOINT).rename(target)
     return target
 
 
