@@ -56,7 +56,8 @@ than the poll is still seen. 45,486 MiB is what an A40 makes usable.
 | vllm | Qwen3.5-9B | line | 16 × 1 | 4-bit | 44,412 | **97.6 %** | H100 | full run, 221,523 lines | `20261014T193118Z-ladder-med-qwen35-9b-v2` |
 | vllm | Qwen3.5-27B, Qwen3.8-27B | line | 16 × 1 | 4-bit | 62,324 | **137 %** | H100 | full runs, 221,523 lines | `20261013T043436Z-ladder-med-qwen35-27b-v2`, `20261010T111013Z-ladder-med-qwen38-27b-v2` |
 | vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 27,763 | 61.0 % | A40 | **lower bound**: head of the file, 96 of 9,441 samples (#137) | hand-run |
-| vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 28,612 | 62.9 % | A40 | **lower bound**: 100 steps, 1,600 of 99,933 pages | `20261104T200338Z-throughput-qwen3vl-8b-page-a40` |
+| vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 28,612 | 62.9 % | A40 | **lower bound**: 100 steps, 1,600 of 2,724 pages | `20261104T200338Z-throughput-qwen3vl-8b-page-a40` |
+| vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | **28,570** | **62.8 %** | A40 | **worst case**: the 96 most expensive of the same 2,724 pages, longest transcription 4,628 chars (06.11.2026, #379) | `measure_vlm_arms.py --like` that job `--worst-case` |
 | vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 29,116 | 64.0 % | H100 | **lower bound**: the same 100 steps | `20261026T205257Z-throughput-qwen3vl-8b-page-h100` |
 | vllm | Qwen3.5-4B | page | 2 × 1 | bf16 | 49,916–50,054 | **109.7–110.0 %** | H100 | full runs, 415,545–511,909 lines | `20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1` and 2 more |
 | vllm | olmOCR-2-7B, `max_pixels` 1288² | page | 2 × 8 | bf16 | 42,608 | 93.7 % | H100 | full run | `20261008T103636Z-olmocr2-7b-medieval-page-px1288` |
@@ -70,10 +71,17 @@ than the poll is still seen. 45,486 MiB is what an A40 makes usable.
 
 How to read it:
 
-- **Only a full run says "fits".** A step-bounded run saw a shuffled draw, and
-  the first peak #137 ever measured came from the head of the file; both are
-  floors. The three Qwen3-VL-8B page rows agree within 1,353 MiB, which says
-  the floor is stable, not that the tail of 99,933 pages stays under it.
+- **Only a full run or a worst-case draw says "fits".** A step-bounded run saw
+  a shuffled draw, and the first peak #137 ever measured came from the head of
+  the file; both are floors. A worst-case draw
+  (`scripts/measure_vlm_arms.py --like <job.json> --worst-case`) trains on the
+  run's most expensive samples, which is where the peak lives. On pages it
+  selects by text: a page sample has no box, and its pixels are capped by the
+  page budget whatever the scan. The Qwen3-VL-8B page geometry is such a point
+  since 06.11.2026: 28,570 MiB over the 96 most expensive of 2,724 pages,
+  against 28,612 MiB from 100 shuffled steps. At this vocabulary (151,936) the
+  text tail does not move the peak; the page budget sets it. It fits an A40
+  with 16,916 MiB to spare.
 - **An H100 figure transfers below the line, not above it.** The same 100 steps
   peaked at 29,116 MiB on the H100 and 28,612 MiB on the A40, 1.8 % apart. A
   full run that stayed under 45,486 on an H100 fits an A40. One that went over
@@ -253,8 +261,9 @@ pin holds across the queue but not across that resume.
   records were never affected, and they are what the table reads.
 
   Missing:
-  - **A full VLM run on an A40.** Every A40 VLM row is step-bounded. The first
-    full run there turns its lower bound into a point.
+  - **A40 points for the line rows.** Qwen3.5-4B (2 × 8, 4-bit) and
+    Qwen3-VL-4B (16 × 1/2/4, bf16) on lines are step-bounded; a worst-case draw
+    (#379) turns each into a point, as it did for the 8B pages.
   - **An A40 figure for the H100 rows above the line.** Qwen3.5-4B pages at batch
     2 (109.7–110.0 %) and olmOCR at cap 3072 (109 %) are near enough that an
     allocator under pressure might fit them; nobody has tried.
