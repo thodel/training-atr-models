@@ -59,6 +59,7 @@ from atr_training.preflight import free_disk_gb
 from atr_training.access import AccessGuard, key_refusal
 from atr_training.shared_registry import BaseEntry, RegistryUnavailable, load_shared_registry
 from atr_training.base_models import BaseModelError, resolve_base_model
+from atr_training.artefact_cache import BUILDING_DIR, sweep_builds
 from atr_training.backends import BACKENDS, UnknownBackend, backend_for
 from atr_training.contracts import TrainJob, TrainRequest
 from atr_training.curves import (
@@ -463,6 +464,35 @@ def _registration_for(directory: Path, registered: list[tuple[str, Path | None]]
     return None
 
 
+def _cleanup_local_builds(cache_root: Path | str, store: JobStore) -> list[str]:
+    """Remove the local corpus builds of jobs that will never store them (#309).
+
+    A VLM job on asteraix builds its corpus under ``<cache>/.building/<job>``,
+    and its runner removes the build when the job fails or is cancelled. A
+    runner that was killed outright cannot, and the corpus would sit on the
+    system disk outside the cache budget. Kept: every job that is not terminal,
+    and every directory whose record cannot be read — only a record that says
+    the job is over, or no record at all, lets a build go.
+    """
+    def is_live(job_id: str) -> bool:
+        try:
+            if not store.paths(job_id).job_json.exists():
+                return False
+            return not store.load(job_id).is_terminal
+        except JobStoreError:
+            return True
+
+    try:
+        removed = sweep_builds(Path(cache_root) / BUILDING_DIR, is_live)
+    except OSError as exc:
+        logger.warning("local build cleanup skipped ({})", exc)
+        return []
+    for job_id in removed:
+        logger.warning("removed the local corpus build of {}: the job is over and "
+                       "never stored it", job_id)
+    return removed
+
+
 def _cleanup_orphaned_weights(trained_root: Path | str, store: JobStore,
                               min_age_h: float, *, registry_root: Path | str,
                               now: float | None = None) -> int:
@@ -574,6 +604,7 @@ async def lifespan(_app: FastAPI):  # pragma: no cover - process lifecycle
     # safe here only because of the conditions #15 added.
     _cleanup_orphaned_weights(settings.trained_root, _store(), settings.orphan_weights_min_age_h,
                               registry_root=settings.registry_root)
+    _cleanup_local_builds(settings.artefact_cache_root, _store())
     task = asyncio.create_task(_scheduler())
     _app.state.scheduler = task
     try:
@@ -1415,8 +1446,10 @@ async def delete_job(job_id: str) -> dict:
     orphaned = _cleanup_orphaned_weights(settings.trained_root, store,
                                          settings.orphan_weights_min_age_h,
                                          registry_root=settings.registry_root)
+    builds = _cleanup_local_builds(settings.artefact_cache_root, store)
     return {"job_id": job_id, "deleted": True, "record_kept": True,
-            "checkpoints_removed": ckpt is not None, "orphaned_weights_removed": orphaned}
+            "checkpoints_removed": ckpt is not None, "orphaned_weights_removed": orphaned,
+            "local_build_removed": job_id in builds}
 
 
 if __name__ == "__main__":  # pragma: no cover

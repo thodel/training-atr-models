@@ -138,7 +138,7 @@ class Pipeline(BasePipeline):
                 return sum(1 for row in rows if row.strip())
         try:
             samples = samples_for(read_manifest(path), params.granularity,
-                                  root=self.store.paths(job.id).root,
+                                  root=self.store.paths(job.id).corpus_root,
                                   block_lines=params.block_lines,
                                   mix=params.granularity_mix, seed=params.seed)
         except (OSError, VlmDatasetError) as exc:
@@ -187,6 +187,9 @@ class Pipeline(BasePipeline):
     #: An entry has to contain ``data/``: samples name their images as
     #: ``data/pages/<file>.jpg``, relative to a corpus root.
     ARTEFACT_INNER = "data"
+    #: The entry is the whole ``data/``, so a job that will store it can build
+    #: it on the cache's disk and store it by a rename (#309).
+    BUILD_IN_CACHE = True
 
     @staticmethod
     def _corpus_root(jsonl: Path) -> Path:
@@ -254,14 +257,15 @@ class Pipeline(BasePipeline):
 
         A directory rather than a file list, unlike kraken: the images sit under
         ``pages/`` and a flat list would lose that, and with it every sample's
-        path. It costs one copy of ~36 GB from the share to ``/home``.
+        path.
 
-        The job keeps its own copy. kraken deletes its arrows once the manifests
-        point at the cache, because nothing reads them afterwards; here
+        Built on the cache's disk (#309, see ``_begin_local_build``), this is the
+        local build directory and the store moves it. Built in the job directory
+        — UBELIX, or asteraix when the system disk is short — it is copied (or
+        hard-linked on one filesystem), and the job keeps its own copy: here
         ``pages_train.lst`` and ``pages_val.lst`` still name these files by
         absolute path, and a later look at what a run trained on should not find
-        an empty directory. Only the job that *builds* an entry pays that
-        duplication — a job that reuses one never materializes pages at all.
+        an empty directory.
         """
         data = self.store.paths(job.id).data
         pages = data / "pages"
@@ -293,7 +297,8 @@ class Pipeline(BasePipeline):
         dropped_total = longest = short_total = 0
 
         for name, manifest in (("train", pages_train), ("val", pages_val)):
-            samples = samples_for(read_manifest(manifest), params.granularity, root=paths.root,
+            samples = samples_for(read_manifest(manifest), params.granularity,
+                                  root=paths.corpus_root,
                                   block_lines=params.block_lines,
                                   mix=params.granularity_mix, seed=params.seed)
             # Before cropping: a sample too long to afford is dropped whether or
@@ -327,7 +332,7 @@ class Pipeline(BasePipeline):
             if params.granularity != "page":        # line and block are cut out;
                 # page samples in a mix pass through untouched (bbox=None), so the
                 # one call handles all three kinds.
-                samples = write_crops(samples, paths.root, paths.data / "crops" / name,
+                samples = write_crops(samples, paths.corpus_root, paths.data / "crops" / name,
                                       scale=params.crop_scale,
                                       budgets=params.kind_budgets())
             jsonl = paths.data / f"{name}.jsonl"
@@ -457,9 +462,9 @@ class Pipeline(BasePipeline):
         # crops here, a compiled arrow for kraken.
         manifest, pages_written = self._benchmark_pages(job, benchmark)
         samples = samples_for(read_manifest(manifest), params.granularity,
-                              root=paths.root)
+                              root=paths.corpus_root)
         if params.granularity == "line":
-            samples = write_crops(samples, paths.root,
+            samples = write_crops(samples, paths.corpus_root,
                                   paths.data / "crops" / f"benchmark_{benchmark.project}",
                                   scale=params.crop_scale,
                                   budgets=params.kind_budgets())
