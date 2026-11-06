@@ -81,6 +81,17 @@ from atr_training.vlm_dataset import read_jsonl, worst_case_samples  # noqa: E40
 STEP_RE = re.compile(r"'(?:train_runtime|loss)':")
 
 
+def trainer_figure(text: str, key: str) -> float | None:
+    """A number from the trainer's summary line, quoted or not.
+
+    transformers 4 logs ``'train_runtime': 725.09``; transformers 5 logs
+    ``'train_runtime': '1493'``, and the unquoted pattern read every Qwen3.5 arm
+    as None (#379, 06.11.2026).
+    """
+    found = re.search(rf"'{key}':\s*'?([0-9.]+)'?", text)
+    return float(found.group(1)) if found else None
+
+
 def sample_cards(stop: threading.Event, every: float, into: list[dict[int, int]]) -> None:
     """Poll nvidia-smi until told to stop. MiB in use per physical card."""
     while not stop.is_set():
@@ -225,8 +236,8 @@ def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path
     # The trainer's own runtime, which excludes the model load — and the load is
     # most of the wall clock here: the HF cache is a symlink onto CIFS and the
     # four shards take ~42 s each, the same on every arm.
-    runtime = re.search(r"'train_runtime':\s*([0-9.]+)", text)
-    per_second = re.search(r"'train_samples_per_second':\s*([0-9.]+)", text)
+    runtime = trainer_figure(text, "train_runtime")
+    per_second = trainer_figure(text, "train_samples_per_second")
     return {
         "arm": name,
         "base_model": base_model,
@@ -236,8 +247,8 @@ def run_arm(name: str, *, cards: str, four_bit: bool, root: Path, out_root: Path
         "four_bit": four_bit,
         "exit_code": proc.returncode,
         "wall_seconds": round(wall, 1),
-        "train_runtime_s": float(runtime.group(1)) if runtime else None,
-        "train_samples_per_second": float(per_second.group(1)) if per_second else None,
+        "train_runtime_s": runtime,
+        "train_samples_per_second": per_second,
         "samples": samples,
         "effective_batch": params.batch_size * params.accumulate_grad_batches,
         "peak_mib": peak,

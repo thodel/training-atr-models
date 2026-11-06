@@ -71,3 +71,13 @@ def test_the_venv_follows_the_base_model(tmp_path):
     assert mva.engine_python(None, tmp_path, "Qwen/Qwen3-VL-8B-Instruct").parts[-3] == "vlm-train"
     chosen = tmp_path / "x" / "bin" / "python"
     assert mva.engine_python(chosen, tmp_path, "Qwen/Qwen3.5-4B") == chosen
+
+
+def test_the_trainer_summary_is_read_from_both_transformers_majors():
+    """transformers 5 quotes the numbers; the Qwen3.5 arms reported None."""
+    tf4 = "{'train_runtime': 725.0927, 'train_samples_per_second': 0.132}"
+    tf5 = "{'train_runtime': '1493', 'train_samples_per_second': '0.064'}"
+    assert mva.trainer_figure(tf4, "train_runtime") == 725.0927
+    assert mva.trainer_figure(tf5, "train_runtime") == 1493.0
+    assert mva.trainer_figure(tf5, "train_samples_per_second") == 0.064
+    assert mva.trainer_figure("no summary", "train_runtime") is None
