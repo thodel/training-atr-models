@@ -38,6 +38,7 @@ from atr_training.artefact_cache import key_for_specs
 from atr_training.base_models import Provenance, provenance
 from atr_training.contracts import DatasetSpec
 from atr_training.shared_registry import BaseEntry, SharedRegistry
+from atr_training.sweep_driver import effective_batch
 from atr_training.sweep_manifest import (
     BASE_AXIS,
     ManifestError,
@@ -198,6 +199,16 @@ def test_resize_is_union_because_a_base_codec_will_not_cover_four_corpora(sweep)
     scratch cell: ketos_cmd emits --resize only alongside --load."""
     for config in sweep.configs():
         assert config.params["resize"] == "union"
+
+
+def test_both_cells_step_at_256_in_micro_batches_of_32(sweep):
+    """The fine-tune cell trains at the base's height 120, where 256 x 1 ran out
+    of memory; 32 x 8 is what the floor on this digest ran at, and both cells
+    take it so that the base stays the only difference."""
+    for config in sweep.configs():
+        assert config.params["batch_size"] == 32
+        assert config.params["accumulate_grad_batches"] == 8
+        assert effective_batch(config.params) == 256
 
 
 def test_the_scratch_cell_is_its_own_control_not_sweep_one_s(sweep, first):
