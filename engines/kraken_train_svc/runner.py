@@ -29,6 +29,7 @@ from atr_training.base_models import BaseModelError, resolve_base_model
 from atr_training.contracts import (DatasetSelectionError, Metrics, StageRecord,
                                     TrainJob, utcnow)
 from atr_training.ketos_cmd import (
+    checkpoint_state,
     compile_cmd,
     compile_workers,
     evaluate_cmd,
@@ -594,7 +595,7 @@ class Pipeline(BasePipeline):
                     if job.request.base_model else None)
         watch = self._collapse_watch(job, ckpt_dir,
                                      from_scratch=not job.request.base_model)
-        started = time.time()
+        before = checkpoint_state(ckpt_dir)
         try:
             self._run(job, "train",
                       train_cmd(self.settings.ketos, params=params,
@@ -604,7 +605,7 @@ class Pipeline(BasePipeline):
                       env=RESUME_ENV if resume is not None else None)
         except StageFailed as exc:
             if resume is not None:
-                aside = set_aside_failed_abort(ckpt_dir, started)
+                aside = set_aside_failed_abort(ckpt_dir, before)
                 if aside is not None:
                     logger.warning("train: the resume failed before an epoch; its abort "
                                    "checkpoint is set aside as {}", aside.name)
