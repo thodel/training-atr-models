@@ -1233,6 +1233,10 @@ def _load(job_id: str) -> TrainJob:
 #: the truth about what this process can see, not a gap to paper over.
 _LAST_OBSERVATION: dict[str, runtime_probe.Sample] = {}
 
+#: The job directory's size is walked beside the request, not in it (#402): on
+#: the share, during prepare, one walk took longer than any client waits.
+_DIR_WALKER = runtime_probe.DirWalker()
+
 
 def _observe(job) -> dict | None:
     """What this box sees of *job* right now, or None when there is nothing to see.
@@ -1248,29 +1252,35 @@ def _observe(job) -> dict | None:
     The remembered sample is dropped when a job ends: there is nothing left to
     compare against, and a dict that only ever grows is a leak on a service that
     runs for months.
+
+    ``job_dir_mib`` is the last *finished* walk of the job directory and
+    ``job_dir_at`` says when it finished; both are None until the first walk
+    does (#402).
     """
     if job.is_terminal or not job.pid:
         _LAST_OBSERVATION.pop(job.id, None)
+        _DIR_WALKER.forget(job.id)
         return None
     if job.host and job.host != _settings().host_id:
         return None
 
     paths = _store().paths(job.id)
     now = time.time()
-    current = runtime_probe.Sample(
-        at=now,
-        rss_mib=runtime_probe.rss_mib(job.pid),
-        job_dir_mib=runtime_probe.dir_mib(paths.root),
-    )
+    current = runtime_probe.Sample(at=now, rss_mib=runtime_probe.rss_mib(job.pid),
+                                   job_dir_mib=None)
     previous = _LAST_OBSERVATION.get(job.id)
     _LAST_OBSERVATION[job.id] = current
+    walked_before, walked = _DIR_WALKER.read(job.id, paths.root)
 
     observed = {
         "at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
         "rss_mib": current.rss_mib,
         "rss_trend": runtime_probe.trend(previous, current, "rss_mib"),
-        "job_dir_mib": current.job_dir_mib,
-        "job_dir_trend": runtime_probe.trend(previous, current, "job_dir_mib"),
+        "job_dir_mib": walked.job_dir_mib if walked else None,
+        "job_dir_at": (datetime.fromtimestamp(walked.at, tz=timezone.utc).isoformat()
+                       if walked else None),
+        "job_dir_trend": (runtime_probe.trend(walked_before, walked, "job_dir_mib")
+                          if walked else None),
     }
     # Only when the run is chunked, and then it is a count of what the compile
     # recorded rather than anything derived here (#250).

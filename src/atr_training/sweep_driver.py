@@ -93,6 +93,13 @@ STATE_VERSION = 1
 #: job is training.
 POLL_S = 60.0
 
+#: How many polls in a row may go unanswered before a waiting driver gives up.
+#: A job read can take minutes while a run is busy on the share (#402), and a
+#: driver that died of the first timeout left a sweep running with nobody
+#: watching it; one that never gives up would wait on a trainer that is gone.
+#: Twenty polls is twenty minutes at POLL_S plus the timeouts themselves.
+MAX_UNANSWERED_POLLS = 20
+
 
 def _minutes(started: str | None, finished: str | None) -> float | None:
     """Wall-clock minutes between two ISO timestamps, or None.
@@ -121,6 +128,14 @@ class SubmitConflict(RuntimeError):
     def __init__(self, job_id: str, detail: str = "") -> None:
         super().__init__(detail or f"already live as {job_id}")
         self.job_id = job_id
+
+
+class TrainerUnreachable(RuntimeError):
+    """A call to the trainer got no answer — a timeout or a refused connection.
+
+    Not a verdict on the job: the run goes on whether or not anybody asked
+    after it, so a waiting driver asks again rather than giving up (#402).
+    """
 
 
 class Preempted(RuntimeError):
@@ -505,8 +520,20 @@ class SweepDriver:
         ``None`` means this cell was given up. It is not an error and not a
         result: the configuration stays unscored and comes back on a later pass.
         """
+        unanswered = 0
         while True:
-            job = self.client.job(job_id)
+            try:
+                job = self.client.job(job_id)
+            except TrainerUnreachable as exc:
+                unanswered += 1
+                if unanswered >= MAX_UNANSWERED_POLLS:
+                    raise
+                logger.warning("no answer about {} ({}), poll {} of {} — asking "
+                               "again; the job runs either way", job_id, exc,
+                               unanswered, MAX_UNANSWERED_POLLS)
+                self.sleep(self.poll_s)
+                continue
+            unanswered = 0
             if str(job.get("status")) in TERMINAL:
                 return job
             if config is not None and self._holding is None:

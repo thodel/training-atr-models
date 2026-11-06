@@ -323,6 +323,91 @@ def test_a_sample_carries_its_clock_reading():
     assert runtime_probe.Sample.__dataclass_fields__["at"].type in ("float", float)
 
 
+# ── the walk beside the request (#402) ──────────────────────────────────────
+#
+# On the share a job directory in prepare holds one file per page, and walking
+# it took longer than any client waits. These prove the walker answers fast,
+# walks once however many ask, and says how old its answer is.
+
+import threading                                                 # noqa: E402
+
+
+class GatedWalk:
+    """A walk that runs only when the test lets it, and counts how often."""
+
+    def __init__(self, mib=7):
+        self.mib = mib
+        self.calls = 0
+        self.go = threading.Event()
+
+    def __call__(self, _path):
+        self.calls += 1
+        self.go.wait(5)
+        return self.mib
+
+
+def _settle(walker, key, path):
+    """Let a running walk finish and come back."""
+    for _ in range(200):
+        _before, walked = walker.read(key, path)
+        if walked is not None:
+            return walked
+        time.sleep(0.01)
+    raise AssertionError("the walk never finished")
+
+
+def test_a_slow_walk_does_not_hold_the_reader():
+    walk = GatedWalk()
+    walker = runtime_probe.DirWalker(wait_s=0.05, walk=walk)
+
+    started = time.monotonic()
+    before, walked = walker.read("job", "/share/job")
+    assert time.monotonic() - started < 1.0, "the reader waited on the share"
+    assert (before, walked) == (None, None), "no reading yet is not a reading of zero"
+
+    walk.go.set()
+    assert _settle(walker, "job", "/share/job").job_dir_mib == 7
+
+
+def test_many_readers_mean_one_walk():
+    walk = GatedWalk()
+    walker = runtime_probe.DirWalker(wait_s=0.01, walk=walk)
+    for _ in range(5):
+        walker.read("job", "/share/job")
+    walk.go.set()
+    _settle(walker, "job", "/share/job")
+    assert walk.calls == 1
+
+
+def test_a_fresh_reading_is_not_walked_again():
+    walk = GatedWalk()
+    walk.go.set()
+    walker = runtime_probe.DirWalker(every_s=3600.0, walk=walk)
+    first = _settle(walker, "job", "/share/job")
+    assert walker.read("job", "/share/job") == (None, first)
+    assert walk.calls == 1
+
+
+def test_a_stale_reading_is_walked_again_and_kept_as_the_previous_one():
+    walk = GatedWalk()
+    walk.go.set()
+    walker = runtime_probe.DirWalker(every_s=0.0, walk=walk)
+    first = _settle(walker, "job", "/share/job")
+    walk.mib = 9
+    before, walked = walker.read("job", "/share/job")
+    assert before == first and walked.job_dir_mib == 9
+
+
+def test_a_forgotten_job_drops_the_walk_that_was_running():
+    walk = GatedWalk()
+    walker = runtime_probe.DirWalker(wait_s=0.01, walk=walk)
+    walker.read("job", "/share/job")
+    walker.forget("job")
+    walk.go.set()
+    time.sleep(0.1)
+    assert "job" not in walker
+
+
 # ── on the wire: GET /jobs/{id} ─────────────────────────────────────────────
 #
 # The unit tests above prove the probe; these prove the route — that the sample
@@ -375,6 +460,8 @@ def svc(tmp_path, trainer_key, monkeypatch):
     app.state.vram_check = lambda gpu, min_free_mb: GpuInfo(index=gpu, free_mb=40000,
                                                             total_mb=46068)
     monkeypatch.setattr(app_module, "_LAST_OBSERVATION", {})
+    # Every read walks: the route tests compare two reads a moment apart.
+    monkeypatch.setattr(app_module, "_DIR_WALKER", runtime_probe.DirWalker(every_s=0.0))
     with TestClient(app, client=LOOPBACK, headers={"X-API-Key": trainer_key}) as client:
         yield client, app.state.store
     for attr in ("settings", "store", "spawn", "vram_check", "verify_spec"):
@@ -405,7 +492,8 @@ def test_a_running_job_carries_what_this_box_sees(svc):
 
     observed = client.get(f"/jobs/{job.id}").json()["observed"]
 
-    assert set(observed) == {"at", "rss_mib", "rss_trend", "job_dir_mib", "job_dir_trend"}
+    assert set(observed) == {"at", "rss_mib", "rss_trend", "job_dir_mib", "job_dir_at",
+                             "job_dir_trend"}
     assert observed["rss_mib"] > 0, "this process is resident; the reading is real"
     assert observed["job_dir_mib"] is not None, "the job directory exists"
     assert observed["rss_trend"] is None, "nothing to compare the first sample against"
@@ -535,10 +623,12 @@ def test_the_memory_is_dropped_when_a_job_ends(svc):
     job = _running(store)
     client.get(f"/jobs/{job.id}")
     assert job.id in app_module._LAST_OBSERVATION
+    assert job.id in app_module._DIR_WALKER
 
     store.fail(store.load(job.id), "cancelled by hand")
     client.get(f"/jobs/{job.id}")
     assert job.id not in app_module._LAST_OBSERVATION
+    assert job.id not in app_module._DIR_WALKER
 
 
 def test_a_chunked_run_reports_its_compiled_chunks_on_the_wire(svc):

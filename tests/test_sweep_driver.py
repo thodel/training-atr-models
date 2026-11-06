@@ -22,7 +22,8 @@ import yaml
 
 from atr_training.convergence import plan_steps
 from atr_training.sweep_driver import (
-    METRICS, SweepDriver, SweepError, SweepState, epochs_for, steps_at_rung,
+    MAX_UNANSWERED_POLLS, METRICS, SweepDriver, SweepError, SweepState, TrainerUnreachable,
+    epochs_for, steps_at_rung,
 )
 from atr_training.sweep_manifest import parse_manifest
 
@@ -462,6 +463,47 @@ def test_the_driver_polls_until_a_job_is_terminal():
     SweepDriver(m, state, slow, sleep=naps.append).run()
 
     assert naps, "the driver never waited"
+
+
+class Unanswered(FakeTrainer):
+    """A trainer whose job reads time out *misses* times per job, then answer."""
+
+    def __init__(self, inner, misses):
+        self.__dict__.update(inner.__dict__)
+        self.misses = misses
+        self._looks: dict[str, int] = {}
+
+    def job(self, job_id):
+        self._looks[job_id] = self._looks.get(job_id, 0) + 1
+        if self._looks[job_id] <= self.misses:
+            raise TrainerUnreachable(f"GET /jobs/{job_id}: ReadTimeout")
+        return self.records[job_id]
+
+
+def test_an_unanswered_poll_is_asked_again_not_fatal():
+    """#402: a job read took minutes while the run was in prepare on the share,
+    and the driver died of the first timeout — twice — leaving a sweep running
+    that nobody was watching. The run goes on either way; so does the asking."""
+    m = manifest()
+    trainer = Unanswered(FakeTrainer(scores_for(m, [0.2] * 12)), misses=3)
+    state = SweepState.for_manifest(m, "benchmark_cer")
+    state.train_lines = 120_000
+
+    SweepDriver(m, state, trainer, sleep=lambda _s: None).run()
+
+    assert entries(state) and all(e["status"] == "completed" for e in entries(state))
+
+
+def test_a_trainer_that_never_answers_is_given_up_on():
+    """Asking forever would wait on a trainer that is gone."""
+    m = manifest()
+    trainer = Unanswered(FakeTrainer(scores_for(m, [0.2] * 12)),
+                         misses=MAX_UNANSWERED_POLLS)
+    state = SweepState.for_manifest(m, "benchmark_cer")
+    state.train_lines = 120_000
+
+    with pytest.raises(TrainerUnreachable):
+        SweepDriver(m, state, trainer, sleep=lambda _s: None).run()
 
 
 # ── terms that must not change mid-sweep ────────────────────────────────────
