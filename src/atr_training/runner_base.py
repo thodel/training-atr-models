@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 import signal
 import threading
@@ -35,7 +36,7 @@ from typing import Any, Callable, ClassVar, Protocol
 
 from loguru import logger
 
-from atr_training.artefact_cache import ArtefactCache, ArtefactCacheError
+from atr_training.artefact_cache import BUILDING_DIR, ArtefactCache, ArtefactCacheError
 from atr_training.chunking import CHUNK_PLAN_FILENAME, is_plan
 from atr_training.codeversion import current_code, current_runtime, describe_drift
 from atr_training.contracts import (
@@ -999,7 +1000,7 @@ class BasePipeline(ABC):
             only_projects(
                 self.source.stream(spec.hf_repo, files["train"], spec.revision),
                 keep_projects_for(spec)),
-            paths.data, root=paths.root, role="pool",
+            paths.data, root=paths.corpus_root, role="pool",
             max_lines=spec.max_pages,  # reused as sample cap at line granularity
             min_free_disk_gb=self.settings.min_free_disk_gb,
         )
@@ -1756,6 +1757,11 @@ class BasePipeline(ABC):
     #: files resolve against a root one level above them. None stores the files
     #: at the top of the entry, which is what kraken's arrows want.
     ARTEFACT_INNER: str | None = None
+    #: Whether a job that is going to store its corpus may build it on the
+    #: cache's disk in the first place (#309), so the store is a rename. Only a
+    #: backend whose whole ``data/`` becomes the entry can: the VLM backend.
+    #: kraken stores a list of arrows and already moves them.
+    BUILD_IN_CACHE: bool = False
 
     def _cache(self) -> ArtefactCache | None:
         """The artefact cache, or None when this box has it switched off."""
@@ -1789,6 +1795,87 @@ class BasePipeline(ABC):
             logger.warning("job {}: asked for the artefact cache, but this box has "
                            "it switched off; nothing will be stored", job.id)
         return cache
+
+    def _begin_local_build(self, job: TrainJob) -> None:
+        """Build this job's corpus on the cache's disk, if that is where it will end up (#309).
+
+        On asteraix the job directory is on the CIFS share and the cache on the
+        local NVMe, so storing a corpus built in the job directory is a copy
+        across the wire, one file at a time: 2 h 45 for the 979,596 files of the
+        #238 line corpus, and the corpus then sits on both disks. Built in
+        ``<cache>/.building/<job>/data`` instead, prepare and compile write to
+        local disk, the store is one rename, and nothing is left twice.
+
+        Never fails the job. Every condition that is not met leaves it building
+        in the job directory as before, and says which:
+
+        * the backend's entry is its whole ``data/`` (:attr:`BUILD_IN_CACHE`),
+          and the runner's store knows where builds go;
+        * this run stores at all, and the backend has a key for it;
+        * job directory and cache are on **different** filesystems. On one
+          filesystem (UBELIX ``/scratch``) the store already hard-links, and a
+          job directory without its pages is a loss there, not a saving;
+        * the job directory holds no corpus yet. A job re-entering ``compiling``
+          (#72) continues where its pages are, and splitting a corpus across
+          two disks would make it two half-corpora;
+        * the cache's disk has room for one entry the size of the budget. A
+          compile that fills the system disk fails hours in; one that is sent
+          to the share is only slower.
+        """
+        build = self.store.build_dir(job.id)
+        if not self.BUILD_IN_CACHE or build is None:
+            return
+        if build.is_dir():
+            logger.info("job {}: continuing the local build in {}", job.id, build)
+            return
+        cache = self._store_cache(job)
+        if cache is None or self._cache_key(job) is None:
+            return
+        try:
+            cache.root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.info("job {}: building in the job directory — the cache root "
+                        "cannot be created ({})", job.id, exc)
+            return
+        if _filesystem_of(self.store.root) == _filesystem_of(cache.root):
+            return
+        data = self.store.paths(job.id).data
+        if data.is_dir() and any(c.name != "pages" or any(c.iterdir())
+                                 for c in data.iterdir()):
+            logger.info("job {}: building in the job directory, which already "
+                        "holds part of this corpus", job.id)
+            return
+        need_gb = max(getattr(self.settings, "artefact_cache_max_gb", 0) or 0,
+                      self.settings.min_free_disk_gb)
+        free_gb = shutil.disk_usage(cache.root).free / 1e9
+        if free_gb < need_gb:
+            logger.warning(
+                "job {}: building in the job directory — {:.0f} GB free on the "
+                "cache's disk, {:.0f} GB wanted for a local build; the store "
+                "will be a copy", job.id, free_gb, need_gb)
+            return
+        try:
+            (build / "data" / "pages").mkdir(parents=True)
+        except OSError as exc:
+            logger.info("job {}: building in the job directory — {} cannot be "
+                        "created ({})", job.id, build, exc)
+            shutil.rmtree(build, ignore_errors=True)
+            return
+        logger.info("job {}: building the corpus in {} ({:.0f} GB free), to be "
+                    "stored by a rename", job.id, build, free_gb)
+
+    def _drop_local_build(self, job: TrainJob) -> None:
+        """Remove this job's local build. Never fails the job.
+
+        Only on a terminal state: a corpus a preempted job will come back for
+        must stay. After a successful store there is nothing left to remove.
+        """
+        build = self.store.build_dir(job.id)
+        if build is None or not build.is_dir():
+            return
+        logger.info("job {} ended {}: removing its local build {}", job.id,
+                    job.status, build)
+        shutil.rmtree(build, ignore_errors=True)
 
     def _resume_artifacts(self, job: TrainJob) -> tuple[Any, Any] | None:
         """The artefacts a requeued job should carry on training against.
@@ -1890,6 +1977,10 @@ class BasePipeline(ABC):
         ``--stop-after compile``, or requeued after a preemption, is exactly the
         one whose claim has to hold.
         """
+        try:
+            self._drop_local_build(job)
+        except OSError as exc:      # pragma: no cover - rmtree ignores errors
+            logger.warning("job {}: local build not removed ({})", job.id, exc)
         cache = self._cache()
         key = self._cache_key(job) if cache else None
         if cache is None or key is None:
@@ -1919,15 +2010,25 @@ class BasePipeline(ABC):
             source = self._cacheable(job, train_artifact, val_artifact)
             if source is None:
                 return train_artifact, val_artifact
+            # A corpus built on the cache's disk (#309) is moved: one rename, and
+            # the job then reads it from the entry like any job that adopted it.
+            build = self.store.build_dir(job.id)
+            local = (build is not None and isinstance(source, (str, Path))
+                     and Path(source).parent == build)
+            if local:
+                adopted = self._adopt_existing_instead(job, cache, key, build)
+                if adopted is not None:
+                    return adopted
             # Move, not copy, when the source is a flat file list (kraken arrows)
             # and source + cache are on the same filesystem — a rename is one
             # syscall instead of one copy per file (41 GB over SMB otherwise).
-            # The directory form (VLM pages) stays as copy: the job keeps its
-            # pages directory and a move would rob it of the path a later
-            # resume looks up.  A failed move on the list form would leave the
-            # job holding manifests for arrows that are gone, so we only move
-            # when we know both sides of the rename are on the same device.
-            do_move = (
+            # The directory form (VLM pages) built in the job directory stays as
+            # copy: the job keeps its pages directory and a move would rob it of
+            # the path a later resume looks up.  A failed move on the list form
+            # would leave the job holding manifests for arrows that are gone, so
+            # we only move when we know both sides of the rename are on the same
+            # device.
+            do_move = local or (
                 isinstance(source, (list, tuple))
                 and _filesystem_of(Path(source[0]).parent) == _filesystem_of(cache.root)
             )
@@ -1948,6 +2049,8 @@ class BasePipeline(ABC):
                                    for c in job.progress.dataset_counts],
                 "job_id": job.id,
             })
+            if local:
+                self._leave_manifests(job, build, Path(source), entry)
             rebound = self._adopt_cached(job, entry)
             # "Which corpus did this run actually train on" has to stay answerable
             # from the job record: after this the arrows live in the cache, not in
@@ -1973,6 +2076,70 @@ class BasePipeline(ABC):
         except (OSError, ValueError, NotImplementedError, ArtefactCacheError) as exc:
             logger.warning("artefact cache: not stored ({})", exc)
             return train_artifact, val_artifact
+
+    def _adopt_existing_instead(self, job: TrainJob, cache: ArtefactCache, key,
+                                build: Path) -> tuple[Any, Any] | None:
+        """Another job stored this key while this one was building it (#309).
+
+        :meth:`ArtefactCache.put` would replace that entry, and the job that
+        stored it may be training from it right now. Same key, same corpus: this
+        job trains from the entry that is there and drops its own build. None
+        when there is no such entry, or it is not usable, and the store goes on.
+        """
+        existing = cache.entry(key)
+        if existing is None:
+            return None
+        try:
+            rebound = self._adopt_cached(job, existing)
+        except (OSError, StageFailed) as exc:
+            logger.warning("artefact cache: {} exists but cannot be adopted ({}); "
+                           "replacing it with this job's build", existing.key[:12], exc)
+            return None
+        builder = existing.payload.get("job_id") or existing.job_id
+        job.progress.artefact = f"{existing.key[:12]} reused, built by {builder}"
+        self.store.save(job)
+        cache.claim(key, job.id)
+        logger.info("artefact cache: {} was stored by {} while this job built it; "
+                    "training from that entry and removing {}",
+                    existing.key[:12], builder, build)
+        shutil.rmtree(build, ignore_errors=True)
+        return rebound
+
+    def _leave_manifests(self, job: TrainJob, build: Path, built_data: Path,
+                         entry) -> None:
+        """After the rename: repoint the manifests, and leave a copy with the job (#309).
+
+        The page manifests name pages by absolute path, and the paths they were
+        written with are in a build directory that no longer exists — so in the
+        entry they are rewritten to where the pages now are.
+
+        The job directory gets the small top-level files back: ``heldout_boundary``
+        finds the train side of every run that adopted this corpus through the
+        builder's ``data/`` (``_find_builder``), and the benchmark overlap check
+        reads ``pages_train.lst`` from there. **Not** ``train.jsonl`` and
+        ``val.jsonl``: a resume takes those first, and their samples resolve
+        against the job directory, where there are no images. Without them it
+        falls back to the entry, as for any job that adopted one.
+
+        Never fails the job — the corpus is already safe in the entry.
+        """
+        shutil.rmtree(build, ignore_errors=True)        # empty now, but for the dir
+        stored = entry.path / (self.ARTEFACT_INNER or "")
+        old, new = str(built_data), str(stored)
+        target = self.store.paths(job.id).data
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            for item in sorted(stored.iterdir()):
+                if not item.is_file() or item.name in ("train.jsonl", "val.jsonl"):
+                    continue
+                if item.suffix == ".lst":
+                    text = item.read_text(encoding="utf-8")
+                    if old in text:
+                        item.write_text(text.replace(old, new), encoding="utf-8")
+                shutil.copyfile(item, target / item.name)
+        except OSError as exc:
+            logger.warning("artefact cache: the manifests of {} were not left in the "
+                           "job directory ({}); the entry has them", entry.key[:12], exc)
 
     def _skip_stage(self, job: TrainJob, name: JobStage, why: str | None) -> None:
         """Record a stage that did not have to run, rather than one that did.
@@ -2092,6 +2259,7 @@ class BasePipeline(ABC):
                 self._skip_stage(job, "compile", job.progress.artefact)
                 train_artifact, val_artifact = reused
             else:
+                self._begin_local_build(job)
                 self.store.advance(job, "preparing")
                 with self._stage(job, "prepare"):
                     pages_train, pages_val = self._prepare(job)
@@ -2304,7 +2472,8 @@ def run_job(pipeline_cls: type[BasePipeline], description: str,
     args = parser.parse_args(argv)
 
     settings = TrainerSettings()
-    store = JobStore(args.root)
+    store = JobStore(args.root,
+                     build_root=Path(settings.artefact_cache_root) / BUILDING_DIR)
     install_runner_log_sinks(store, args.job_id, settings)
 
     # Set by the batch script on a preemptable queue. Off by default, so the

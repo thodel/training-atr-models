@@ -173,7 +173,7 @@ allowlist entry therefore still reads as reachable there; only an authenticated
 | `GET /jobs/{id}/log?stage=…&lines=…` | tail a stage log (default `train`, 200 lines, at most 5000) |
 | `GET /jobs/{id}/curve` | per-epoch metrics, read live from the checkpoints while training |
 | `POST /jobs/{id}/cancel` | SIGTERM to the process group, for this host's jobs only |
-| `DELETE /jobs/{id}` | drop the artefacts of a terminal job of any host; `job.json` and the registered model stay, and only this host's checkpoints are removed |
+| `DELETE /jobs/{id}` | drop the artefacts of a terminal job of any host; `job.json` and the registered model stay, and only this host's checkpoints and local corpus builds are removed |
 | `GET /gpu` | this machine's cards, every process on them, and which job it belongs to |
 | `GET /health` | liveness, which engines have a venv, the cards, job counts over the whole store; the only route without a key |
 
@@ -455,7 +455,7 @@ they start with `~`.
 | `trained-ubelix/` | share | weights trained on UBELIX | not by this service | |
 | `~/atr-cache/checkpoints/` | local | checkpoints (`ATR_TRAIN_CHECKPOINT_ROOT`) | runners | runners, `/jobs/{id}/curve` |
 | `~/atr-cache/tmp/` | local | `TMPDIR` | everything | |
-| `~/atr-cache/artefacts/` | local | compiled corpora reused across jobs (#109); 38 GiB on 16.09.2026, 100 GB budget | kraken and vllm runners | the same |
+| `~/atr-cache/artefacts/` | local | compiled corpora reused across jobs (#109); 38 GiB on 16.09.2026, 100 GB budget; `.building/<job_id>/` holds a VLM corpus while it is built (#309) | kraken and vllm runners | the same |
 | `~/atr-cache/env-backups/` | local | `.env` backups, mode 600 | people | people |
 
 `~/.cache/huggingface/hub` is a **symlink** to `hf_hub/hub/` on the share,
@@ -502,6 +502,23 @@ shared cache already holds again.
   and a start estimate that slipped a day at a time. A claim nobody released
   stops holding after 30 days, so a job killed outright cannot pin 40 GB for
   ever.
+- **A VLM job that will store its corpus builds it on the cache's disk** (#309).
+  Prepare and compile write to `~/atr-cache/artefacts/.building/<job_id>/data`
+  instead of the job directory, and the store is one rename into the entry. The
+  copy it replaces took 2 h 45 for the 979,596 files (86.2 GB) of the #238 line
+  corpus on 06.11.2026, and left the corpus on both disks. Afterwards the job
+  trains from the entry like a job that adopted it, and its `data/` on the share
+  keeps only the small top-level files (`pages_train.lst`, `pages_val.lst`, …),
+  which `heldout_boundary` and the benchmark overlap check read there — not
+  `train.jsonl`/`val.jsonl`, so a resume falls back to the entry. The job builds
+  in its own directory as before when the store and the cache share a filesystem
+  (UBELIX, where the store hard-links), when it declines the cache, when its job
+  directory already holds part of the corpus (a re-entry while `compiling`), and
+  when the cache's disk has less free space than `artefact_cache_max_gb`. The
+  runner removes its build when the job fails or is cancelled; the service
+  removes the builds of jobs that are over, or have no record, at startup and
+  after each `DELETE`. A second job that built the same key meanwhile adopts the
+  stored entry instead of replacing it.
 - **`.env` and its backups.** They hold keys. `.env.*` is ignored by git,
   except `.env.example`.
 

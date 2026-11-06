@@ -9,6 +9,12 @@ A job lives entirely in its directory::
         model/            promoted weights + metadata.json
         logs/<stage>.log  one log per stage
 
+One exception to "entirely" (#309): while a VLM job on asteraix builds the
+corpus it will store, ``data/`` lives on local disk under the artefact cache
+(``<artefact_cache_root>/.building/<job_id>/data``), so storing it is one
+rename instead of a million copies over SMB. :meth:`JobStore.paths` resolves
+that for whoever opened the store with a ``build_root``.
+
 Nothing about a job is held only in the service's memory. The runner is a
 **detached** child (``start_new_session=True``), so restarting ``atr-train`` must
 reconcile against what is on disk and what is still running — never kill the run
@@ -114,14 +120,28 @@ _JOB_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[a-z0-9._-]+$")
 @dataclass(frozen=True)
 class JobPaths:
     root: Path
+    #: Where ``data/`` lives when it is not in the job directory: the local build
+    #: directory of a job that is compiling its corpus straight into the
+    #: artefact cache (#309). None for every other job.
+    corpus: Path | None = None
 
     @property
     def job_json(self) -> Path:
         return self.root / "job.json"
 
     @property
+    def corpus_root(self) -> Path:
+        """What a sample's ``data/pages/…`` resolves against.
+
+        The job directory, unless the corpus is being built elsewhere — and then
+        that place, because the relative paths compile writes have to resolve
+        against wherever ``data/`` actually is.
+        """
+        return self.corpus or self.root
+
+    @property
     def data(self) -> Path:
-        return self.root / "data"
+        return self.corpus_root / "data"
 
     @property
     def pages(self) -> Path:
@@ -250,8 +270,13 @@ class JobStore:
 
     def __init__(self, root: str | Path, host_id: str | None = None,
                  legacy_host: str = LEGACY_JOB_HOST,
-                 claim_orphan_after_s: float = CLAIM_ORPHAN_AFTER_S) -> None:
+                 claim_orphan_after_s: float = CLAIM_ORPHAN_AFTER_S,
+                 build_root: str | Path | None = None) -> None:
         self.root = Path(root)
+        #: Local directory holding the corpora jobs are building straight into
+        #: the artefact cache (#309). Only the runner opens the store with it:
+        #: a build directory is a statement about this host's disk.
+        self.build_root = Path(build_root) if build_root is not None else None
         self.host_id = host_id
         self.legacy_host = legacy_host
         self.claim_orphan_after_s = claim_orphan_after_s
@@ -330,7 +355,17 @@ class JobStore:
     def paths(self, job_id: str) -> JobPaths:
         if not _JOB_ID_RE.match(job_id):
             raise JobStoreError(f"malformed job id: {job_id!r}")
-        return JobPaths(self.root / job_id)
+        corpus = None
+        if self.build_root is not None and (self.build_root / job_id).is_dir():
+            corpus = self.build_root / job_id
+        return JobPaths(self.root / job_id, corpus=corpus)
+
+    def build_dir(self, job_id: str) -> Path | None:
+        """Where ``job_id`` would build its corpus locally, or None without a build root."""
+        if self.build_root is None:
+            return None
+        self.paths(job_id)      # the same id check
+        return self.build_root / job_id
 
     def new_job_id(self, model_id: str, now: str | None = None) -> str:
         """Sortable, readable, unique: ``<utc>-<model_id>``."""

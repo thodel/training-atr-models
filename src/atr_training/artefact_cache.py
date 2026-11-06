@@ -52,10 +52,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 __all__ = [
     "ArtefactCacheError",
+    "BUILDING_DIR",
+    "sweep_builds",
     "UNPINNED_MAX_AGE_DAYS",
     "KEY_VERSION",
     "ArtefactKey",
@@ -65,6 +67,38 @@ __all__ = [
     "key_for",
     "key_for_specs",
 ]
+
+
+#: Subdirectory of the cache root where a job builds the corpus it will store
+#: (#309), one directory per job id. Dot-named, so :meth:`ArtefactCache.entries`
+#: never mistakes a half-built corpus for an entry, and on the cache's own
+#: filesystem, so storing it is a rename.
+BUILDING_DIR = ".building"
+
+
+def sweep_builds(build_root: str | Path, is_live: Callable[[str], bool]) -> list[str]:
+    """Remove the build directories of jobs that will never store them (#309).
+
+    A runner removes its own build when the job fails or is cancelled. One that
+    was killed outright — SIGKILL, a reboot — cannot, and its corpus would sit
+    on the system disk, outside the budget and invisible to eviction. So the
+    service calls this at startup and after each DELETE.
+
+    ``is_live`` answers for one job id: True keeps the directory. It is the
+    caller's to decide, because only the job store knows a record; an id it
+    cannot answer for must be answered True, since a corpus deleted under a
+    running job is far worse than one left a day too long.
+    """
+    root = Path(build_root)
+    removed: list[str] = []
+    if not root.is_dir():
+        return removed
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or is_live(child.name):
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        removed.append(child.name)
+    return removed
 
 
 def _same_filesystem(a, b) -> bool:
