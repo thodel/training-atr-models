@@ -17,6 +17,10 @@ exit code). The root sits next to the job store, not in it: a measurement has no
   measurement there lands in ``/scratch/…/runs/measurements``.
 * ``ATR_MEASUREMENTS_ROOT`` overrides both.
 
+The scripts are run from a shell that has not sourced ``.env``, so the keys this
+module reads fall back to the checkout's ``.env``: the first record on asteraix
+(06.11.2026) named its host ``dhserver03`` and ``live(host="asteraix")`` missed it.
+
 A record without ``ended_at`` is a run that is still going **or** one that was
 killed too hard to say so (``kill -9``, a lost node): the reader shows it as
 running with its start time, never as finished. SIGTERM is turned into an exit,
@@ -46,6 +50,10 @@ RECORD_NAME = "measurement.json"
 #: scripts are often run without sourcing ``.env``.
 DEFAULT_JOBS_ROOT = Path("/mnt/wbkolleg_dh_1/Textrecognition_Training/training_folder/jobs")
 
+#: The checkout's ``.env``, read for :data:`ENV_KEYS` when the shell lacks them.
+DOTENV = Path(__file__).resolve().parents[2] / ".env"
+ENV_KEYS = ("ATR_MEASUREMENTS_ROOT", "ATR_TRAIN_JOBS_ROOT", "ATR_TRAIN_HOST_ID")
+
 #: The flags whose value is where a measure script writes its result.
 OUTPUT_FLAGS = ("--out", "--output", "--report")
 
@@ -54,9 +62,28 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def dotenv_values(path: Path) -> dict[str, str]:
+    """``KEY=VALUE`` lines of ``path`` for :data:`ENV_KEYS`; nothing if unreadable."""
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        key, sep, value = line.strip().removeprefix("export ").partition("=")
+        if sep and key.strip() in ENV_KEYS:
+            values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def process_env(dotenv: Path | None = None) -> dict[str, str]:
+    """The environment, with the checkout's ``.env`` under it for :data:`ENV_KEYS`."""
+    return {**dotenv_values(DOTENV if dotenv is None else dotenv), **os.environ}
+
+
 def measurements_root(env: Mapping[str, str] | None = None) -> Path | None:
     """Where records go, or None when there is no store to write to."""
-    env = os.environ if env is None else env
+    env = process_env() if env is None else env
     if env.get("ATR_MEASUREMENTS_ROOT"):
         return Path(env["ATR_MEASUREMENTS_ROOT"]).expanduser()
     jobs = Path(env["ATR_TRAIN_JOBS_ROOT"]).expanduser() if env.get("ATR_TRAIN_JOBS_ROOT") \
@@ -66,7 +93,7 @@ def measurements_root(env: Mapping[str, str] | None = None) -> Path | None:
 
 def host_id(env: Mapping[str, str] | None = None) -> str:
     """The host a record names: the trainer's own id where one is set."""
-    env = os.environ if env is None else env
+    env = process_env() if env is None else env
     return env.get("ATR_TRAIN_HOST_ID") or socket.gethostname().split(".")[0]
 
 
@@ -128,7 +155,7 @@ def measurement(name: str, argv: Sequence[str] | None = None,
     Yields the record; a script may add fields (``record["note"] = …``), which
     are written with the end stamp.
     """
-    env = os.environ if env is None else env
+    env = process_env() if env is None else env
     argv = list(sys.argv if argv is None else argv)
     root = measurements_root(env) if root is None else root
     started = now()

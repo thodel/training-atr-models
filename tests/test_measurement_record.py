@@ -74,6 +74,23 @@ def test_an_unwritable_store_does_not_stop_the_measurement(tmp_path, capsys):
     assert "measurement record not written" in capsys.readouterr().err
 
 
+def test_the_checkouts_env_fills_what_the_shell_lacks(tmp_path, monkeypatch):
+    """06.11.2026: run from a shell without .env, the first record on asteraix
+    named its host dhserver03, and live(host="asteraix") did not show it."""
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("# comment\nATR_TRAIN_HOST_ID=asteraix\n"
+                      "export ATR_TRAIN_JOBS_ROOT='/mnt/x/jobs'\nATR_API_KEY=secret\n")
+    monkeypatch.delenv("ATR_TRAIN_HOST_ID", raising=False)
+    monkeypatch.delenv("ATR_TRAIN_JOBS_ROOT", raising=False)
+    env = mr.process_env(dotenv)
+    assert mr.host_id(env) == "asteraix"
+    assert env["ATR_TRAIN_JOBS_ROOT"] == "/mnt/x/jobs"
+    assert "ATR_API_KEY" not in env or env["ATR_API_KEY"] != "secret", "only our keys"
+    monkeypatch.setenv("ATR_TRAIN_HOST_ID", "shell-wins")
+    assert mr.host_id(mr.process_env(dotenv)) == "shell-wins"
+    assert mr.process_env(tmp_path / "missing")["ATR_TRAIN_HOST_ID"] == "shell-wins"
+
+
 def test_the_output_flag_is_read_from_argv(tmp_path):
     out = tmp_path / "peak.json"
     assert mr.output_from_argv(["--seconds", "240", "--out", str(out)]) == str(out)
