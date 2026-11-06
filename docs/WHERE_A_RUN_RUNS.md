@@ -54,14 +54,17 @@ than the poll is still seen. 45,486 MiB is what an A40 makes usable.
 | vllm | Qwen3.5-4B | line | 16 × 1 | 4-bit | 34,742 | 76.4 % | H100 | full run, 221,523 lines | `20261014T194417Z-ladder-med-qwen35-4b-v2` |
 | vllm | Qwen3.5-4B | line | 16 × 1 | bf16 | 36,414–36,498 | 80.1–80.2 % | H100 | full runs, 221,523 and 473,549 lines | `20261023T194329Z-ladder-med-qwen35-4b-bf16-v2`, `20261009T150138Z-qwen3.5-4b-german-kurrent-xvi-xix-v1` |
 | vllm | Qwen3.5-9B | line | 16 × 1 | 4-bit | 44,412 | **97.6 %** | H100 | full run, 221,523 lines | `20261014T193118Z-ladder-med-qwen35-9b-v2` |
+| vllm | Qwen3.5-9B | line | 16 × 1 | 4-bit | **43,866** | **96.4 %** | A40 | **worst case by text only**: the 48 longest of 219,261 lines (up to 376 chars) and 48 from the head; a compiled crop has no box, so no pixel tail (06.11.2026, #379) | `measure_vlm_arms.py --like` that job `--worst-case` |
 | vllm | Qwen3.5-27B, Qwen3.8-27B | line | 16 × 1 | 4-bit | 62,324 | **137 %** | H100 | full runs, 221,523 lines | `20261013T043436Z-ladder-med-qwen35-27b-v2`, `20261010T111013Z-ladder-med-qwen38-27b-v2` |
 | vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 27,763 | 61.0 % | A40 | **lower bound**: head of the file, 96 of 9,441 samples (#137) | hand-run |
 | vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 28,612 | 62.9 % | A40 | **lower bound**: 100 steps, 1,600 of 2,724 pages | `20261104T200338Z-throughput-qwen3vl-8b-page-a40` |
 | vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | **28,570** | **62.8 %** | A40 | **worst case**: the 96 most expensive of the same 2,724 pages, longest transcription 4,628 chars (06.11.2026, #379) | `measure_vlm_arms.py --like` that job `--worst-case` |
 | vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 29,116 | 64.0 % | H100 | **lower bound**: the same 100 steps | `20261026T205257Z-throughput-qwen3vl-8b-page-h100` |
 | vllm | Qwen3.5-4B | page | 2 × 1 | bf16 | 49,916–50,054 | **109.7–110.0 %** | H100 | full runs, 415,545–511,909 lines | `20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1` and 2 more |
+| vllm | Qwen3.5-4B | page | 2 × 1 | bf16 | **45,166** | **99.3 %** | A40 | **worst case**: the 96 most expensive of 11,891 pages (up to 7,988 chars); ran through with 320 MiB to spare (06.11.2026, #379) | `measure_vlm_arms.py --like 20261029T133027Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v2 --worst-case` |
 | vllm | olmOCR-2-7B, `max_pixels` 1288² | page | 2 × 8 | bf16 | 42,608 | 93.7 % | H100 | full run | `20261008T103636Z-olmocr2-7b-medieval-page-px1288` |
-| vllm | olmOCR-2-7B, cap 3072 | page | 2 × 8 | bf16 | 49,542 | **109 %** | H100 | full run | `20261008T103636Z-olmocr2-7b-medieval-page-cap3072` |
+| vllm | olmOCR-2-7B, default page budget (the run's "cap3072" is `max_new_tokens`, generation only) | page | 2 × 8 | bf16 | 49,542 | **109 %** | H100 | full run | `20261008T103636Z-olmocr2-7b-medieval-page-cap3072` |
+| vllm | olmOCR-2-7B, default page budget | page | 2 × 8 | bf16 | **44,508** | **97.9 %** | A40 | **worst case**: the 96 most expensive of 8,088 pages (up to 7,988 chars) (06.11.2026, #379) | `measure_vlm_arms.py --like` that job `--worst-case` |
 | vllm | olmOCR-2-7B, px4m | page | 2 × 8 | bf16 | 63,728–65,558 | **140–144 %** | H100 | full runs | `20261013T121310Z-olmocr2-7b-medieval-page-px4m-native` and 5 more |
 | kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 256 | — | 43,536 | **95.7 %** | A40 | full epoch, `german_val.arrow`, no ceiling (hand-run, 07.10.2026) | `scripts/measure_kraken_arms.py` |
 | kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 256 | — | 8,894 | 19.6 % | A40 | full run, 197,083 lines, ceiling 60:1 (cut 4.8 %) | `20261027T072036Z-kraken-collapse-probe-131` |
@@ -91,8 +94,15 @@ How to read it:
   does not fit *as measured*: on an 80 GB card the allocator is never under
   pressure, so it may have held cache an A40 would have had to give back. Such a
   run goes to UBELIX until an A40 says otherwise.
-- **A row closer to the line than that 1.8 % does not fit.** Qwen3.5-9B lines in
-  4-bit (97.6 %, and 98.2 % for the whole card) is that row.
+- **A row closer to the line than that 1.8 % does not fit.** Since 06.11.2026
+  that row is Qwen3.5-4B pages at batch 2: on an A40 its worst case ran through
+  at 45,166 MiB, 320 MiB (0.7 %) short of the limit. Two rows sit just outside
+  the margin, olmOCR-2-7B pages (44,508 MiB, 2.2 % to spare) and Qwen3.5-9B lines
+  in 4-bit (43,866 MiB, 3.6 %): they fit an A40 with nothing else on it, and a
+  second process on the card ends them. In every pair measured on both cards the
+  H100 figure was the larger: 29,116/28,612, 44,412/43,866, ~50,000/45,166 and
+  49,542/44,508 MiB. An H100 figure above the line is therefore a question for
+  an A40, not an answer.
 - **What drives the peak is batch per device and pixels, not the corpus.**
   Qwen3.5-4B lines in 4-bit: 9,954 MiB at batch 2 against 34,742 at batch 16.
   olmOCR-2-7B pages at the same batch: 42,608, 49,542 and up to 65,558 MiB as the
@@ -267,9 +277,11 @@ pin holds across the queue but not across that resume.
   - **A40 points for the line rows.** Qwen3.5-4B (2 × 8, 4-bit) and
     Qwen3-VL-4B (16 × 1/2/4, bf16) on lines are step-bounded; a worst-case draw
     (#379) turns each into a point, as it did for the 8B pages.
-  - **An A40 figure for the H100 rows above the line.** Qwen3.5-4B pages at batch
-    2 (109.7–110.0 %) and olmOCR at cap 3072 (109 %) are near enough that an
-    allocator under pressure might fit them; nobody has tried.
+  - **The pixel tail of compiled line corpora.** `worst_case_samples` ranks
+    pixels by box area, and a compiled line crop has none (`bbox: null`), so a
+    line draw is a text draw: the Qwen3.5-9B point covers the 48 longest of
+    219,261 lines and 48 from the head of the file. Reading each crop's size
+    from its image header would close this.
   - **kraken before and after the ceiling on one corpus.** The two batch-256 rows
     differ in corpus as well as ceiling.
   - **trocr beyond `trocr-base`.** Every trocr point is the base model; a large
