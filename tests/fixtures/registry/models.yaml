@@ -1,4 +1,4 @@
-# Copy of serving-atr-inference config/models.yaml at 5ad4277 (main, 2026-10-31),
+# Copy of serving-atr-inference config/models.yaml at e07a304 (main, 2026-11-06),
 # written by scripts/refresh_gateway_fixtures.py — do not edit by hand; re-run it.
 # tests/test_gateway_drift.py compares the ids and engines with the gateway's main.
 # ATR model registry — single source of truth for /models.
@@ -16,9 +16,9 @@
 #   cache a minute into the load, too high and a launch is refused or a resident
 #   model evicted for nothing.
 #
-#   Every value below was estimated, none measured (#130). An entry that HAS been
-#   measured carries `vram_measured:` beside it, with the host and date; absence
-#   of that block means the number is somebody's guess. Measure one with
+#   Most values below are estimates (#130). An entry that HAS been measured
+#   carries `vram_measured:` beside it, with the host and date; absence of that
+#   block means the number is somebody's guess. Measure one with
 #
 #       python scripts/measure_vram.py --model <id> --write
 #
@@ -230,6 +230,63 @@ models:
       - https://huggingface.co/datasets/dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix
       - https://huggingface.co/datasets/dh-unibe/image-text_kurrent-xix
 
+  # The E4B arm of the Gemma 4 ladder (training-atr-models#83, G3): the same four
+  # XIX corpora and the same prompt as qwen3.5-4b-german-xix-v2, on
+  # google/gemma-4-E4B-it, QLoRA r=64, one epoch, trained at `granularity: line`.
+  #
+  # `level: line` is a measurement (G6, training-atr-models#86, 05.11.2026, 15 XIX
+  # validation pages on asteraix, vLLM 0.29.0): lines CER 0.143 (646 lines), whole
+  # pages 1.16 (length ratio 0.21). A line-trained Gemma reads no pages, like
+  # every line-trained Qwen measured here (#165).
+  #
+  # `max_soft_tokens: 140` is not tuning. Gemma 4 takes its visual budget in five
+  # soft-token steps and rounds a pixel request UP to one: training asked for
+  # max_pixels 262144 and got step 140, which carries 140 x 48 x 48 = 322560
+  # pixels — hence `max_pixels` below. At vLLM's default step the same adapter
+  # reads lines at CER 0.90 (G6): it does not fail, it reads nothing. The merged
+  # directory gets its processor from the BASE (merge_loras.processor_source),
+  # whose step is 280, so the step has to come from the launch flag.
+  #
+  # Served merged, not as a LoRA: resolve_model_path serves the merged directory
+  # or `hf_repo` itself, and `hf_repo` is an adapter, not a model vLLM can load.
+  # G6 served it unmerged with --enable-lora, which this launcher has no notion
+  # of. The adapter excludes the vision and audio towers, so the merge changes
+  # the language model only.
+  #
+  # Registered disabled until it has been merged on idhefix and has read one line
+  # through the gateway. vram_mb is the base's bf16 checkpoint (15,992,595,884
+  # bytes); merge_loras.py prints the measured size of the merge.
+  - id: gemma4-e4b-german-xix-v1
+    engine: vllm
+    enabled: false
+    disabled_reason: >-
+      Not merged on this box yet (scripts/merge_loras.py --only
+      gemma4-e4b-german-xix-v1 in .venvs/vllm-next); enabled once the merge has
+      read one line through the gateway (training-atr-models#83).
+    vllm_venv: vllm-next  # Gemma 4 needs transformers 5; vLLM 0.29.0 is what G6 measured
+    vllm_args:
+      - --mm-processor-kwargs
+      - '{"max_soft_tokens": 140}'
+      - --limit-mm-per-prompt
+      - '{"image": 1, "audio": 0}'
+    hf_repo: dh-unibe/gemma4-e4b-german-xix-v1   # private, the LoRA adapter
+    base_model: google/gemma-4-E4B-it
+    task: htr
+    level: line          # lines 0.143, pages 1.16 (G6); never `page`
+    max_pixels: 322560   # what soft-token step 140 carries, the budget it trained at
+    prompt: Transcribe the handwritten text in this image exactly as written.
+    languages: [de]
+    scripts: [Kurrent]
+    centuries: [19]
+    vram_mb: 15300
+    residency: lazy
+    gpu_affinity: 1
+    training_datasets:
+      - https://huggingface.co/datasets/dh-unibe/image-text_zh-regierungsratsprotokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_parlamentsdienste-protokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix
+      - https://huggingface.co/datasets/dh-unibe/image-text_kurrent-xix
+
   # The first fine-tune here trained at `granularity: page`, and that is the whole
   # point of it: every other dh-unibe VLM reads one line per call because that is
   # what it saw in training (#165). This one saw whole pages — 171 validation
@@ -243,6 +300,11 @@ models:
   # them in September covers 15–17 and was trained on four corpora.
   - id: qwen3.5-4b-german-kurrent-xvi-xix-page-v1
     engine: vllm
+    description: >-
+      Whole pages of German Kurrent and chancery hands, 16th to 19th century,
+      trained and measured at page level. Give it a page, not a line or a small
+      crop: a page model given too little does not stop, it goes on in fluent
+      German that is not in the image (#165).
     vllm_venv: vllm-next
     max_num_seqs: 64     # hybrid model: at vLLM's 256 it does not start (see ModelSpec)
     hf_repo: dh-unibe/qwen3.5-4b-german-kurrent-xvi-xix-page-v1
@@ -1171,6 +1233,13 @@ models:
   # strip keeps some context; the x2 variant also gives each letter (8-12 px)
   # one to two of the tokenizer's 16 px cells instead of less than one (#314).
   # The pair answers which of the two matters. Same weights, own vLLM instances.
+  #
+  # max_pixels 1 MP, not the page's 1.96: the fp32 vision tokenizer needs
+  # ~1.87 GiB per activation at 1.96 MP, and on 2026-11-01 four Aarau strips in
+  # a row ran card 1 out of memory inside the encoder (29.3 GiB held, 1.87 GiB
+  # more wanted, < 1 GiB free) once the engines beside it had grown by ~1.7 GB.
+  # Half the pixels is half the encoder's peak. A strip of four lines at 1 MP
+  # still has several times the pixels per letter of a page at 1.96 MP.
   - id: apertus-1.5-8b-strip4
     engine: vllm
     vllm_venv: vllm-apertus
@@ -1192,7 +1261,7 @@ models:
     languages: [de, fr, it, la]
     scripts: []
     centuries: []
-    max_pixels: 1960000
+    max_pixels: 1000000
     vram_mb: 18000
     residency: lazy
     gpu_affinity: 1
@@ -1216,7 +1285,7 @@ models:
     languages: [de, fr, it, la]
     scripts: []
     centuries: []
-    max_pixels: 1960000
+    max_pixels: 1000000
     vram_mb: 18000
     residency: lazy
     gpu_affinity: 1

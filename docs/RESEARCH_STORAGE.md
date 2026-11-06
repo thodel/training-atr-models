@@ -372,3 +372,75 @@ Die Zunahme sind die Datensätze, die der `german-kurrent-xvi-xix`-prepare
 Dateien**. `hub` bleibt die einzige lokale Kopie. Dass derselbe Name in beiden
 Formen vorkommt, heisst nichts — Grössen und Dateizahlen entscheiden, und genau
 diese Verwechslung hätte am 09.10. beinahe 992 GB echter Daten gekostet.
+
+## 10. Aufräumen als Plan: `plan_purge.py` und `apply_purge.sh` (#387)
+
+Die Löschung aus #204 (06.11.2026, 39 Jobs, rund 1 781 GB `data/`) lief als
+Befehlsblöcke zum Kopieren. Die drei Fehler dabei kamen alle aus der Handarbeit:
+Der Pool-Job von `german-medieval-v1` stand im Vorschlag, `sbatch` lehnte
+`--mem` ohne `--nodes` ab, und beim Einfügen wurden Zeilen verklebt. Seither
+wird die Liste erzeugt statt getippt, und die Ausführung ist eine Zeile.
+
+**1. Plan.** Auf `submit02`, nur lesend:
+
+    python3 ubelix/plan_purge.py --status failed,cancelled --ended-before 2026-09-20 --write
+
+Der Plan nimmt Jobs im Jobs-Root (Vorgabe `training_folder/jobs` auf dem
+Share, `--jobs-root` für `runs/jobs` auf scratch) mit einem der verlangten
+Status. Ohne `--status` sind das `failed,cancelled`. `completed` kommt nur
+hinein, wenn es ausdrücklich verlangt ist, laufende Jobs nie. Gelöscht wird
+immer nur `data/`.
+
+**Geschützt, nie im Plan,** jeweils mit Grund in der Zusammenfassung:
+
+| Regel | Woher | Warum |
+|---|---|---|
+| `source_job` eines Held-out-Sets | `config/heldout_eval_documents.json` | Split-Listen und Val-Seiten, die es nur dort gibt |
+| Erbauer eines übernommenen Artefakts | `progress.artefact` aller Jobs (`"<key> reused, built by <job>"`) | `rescore_on_shared_draw.py --heldout` sucht das Trainingsmanifest beim Erbauer. Frei wird er erst, wenn jeder Übernehmer selbst im Plan steht |
+| Job hinter einem `local_path` | `registry/trained/*.yaml` | Ein registriertes Modell muss ladbar bleiben |
+| `data/`, das unter `eval_sets/` oder `archive/` liegt oder aus dem Job hinauszeigt | aufgelöster Pfad | Eingefrorene Benchmarks und Sicherungen |
+
+Ohne lesbare Held-out-Registry oder ohne `registry/trained/` gibt es keinen
+Plan, sondern `refused` (Exit 1). Die Grösse je Eintrag stammt aus dem letzten
+Inventar: `storage_inventory.sbatch` misst seit #387 `data/` je Job
+(`jobs_data`). Für einen Jobs-Root, den das Inventar nicht misst, steht die
+Grösse auf `null`, und die Zusammenfassung sagt das.
+
+`--write` legt `~/ubelix/plans/purge-<zeit>.json` an. Der Plan enthält die
+Einträge (Job, Status, Ende, Pfad, Grösse), die geschützten Jobs mit Grund und
+`entries_sha256` über die Einträge. Ein bestehender Plan wird nie
+überschrieben. `--json` gibt den Plan auf stdout aus, statt ihn zu schreiben.
+
+**2. Prüfung.** Den Plan liest ein Mensch, auf dem Login-Knoten oder über die
+ATR-MCP. Mit `python3 ubelix/plan_purge.py --verify <plan>` lässt sich
+bestätigen, dass die Einträge noch zur Prüfsumme passen.
+
+**3. Eine Zeile:**
+
+    ubelix/apply_purge.sh ~/ubelix/plans/purge-20261106T091233Z.json
+
+Das Skript prüft den Plan, nimmt die sha256 der Datei und reicht sich selbst
+als CPU-Job ein. Die Kopfzeilen entsprechen `storage_inventory.sbatch`:
+`epyc2`, `job_gratis`, `--nodes=1`, `--mem=4G`. Der Code ist auf den
+eingereichten Commit gepinnt (`pin_code.sh`).
+
+Vor jedem Eintrag prüft der Job erneut:
+
+- Die Plan-Datei hat noch die sha256 von der Einreichung.
+- Status und Ende stimmen mit dem Plan überein. Ein inzwischen neu
+  eingereihter Job wird übersprungen.
+- Der Job ist nicht geschützt. Die Regeln oben werden gegen den heutigen Stand
+  neu ausgewertet.
+
+Nur dann fällt `data/`. `job.json`, `logs/` und die Energie-Dateien bleiben.
+Kann eine Prüfung gar nicht laufen, wird nichts gelöscht: Plan geändert,
+Registry nicht lesbar.
+
+Das Log liegt unter `~/ubelix/logs/purge-<slurm-id>.out`. Es zeigt `df` vorher
+und nachher, je Eintrag eine Zeile `removed` oder `skip` mit Grund und am Ende
+die Zählung.
+
+**Nicht Teil davon:** Löschen ausserhalb von `Textrecognition_Training`, `hub/`
+(eine Datenentscheidung, keine Aufräumregel, siehe §3) und jedes automatische
+Ausführen. Gestartet wird immer von einem Menschen. Die MCP liest Pläne,
+reicht sie aber nicht ein.
