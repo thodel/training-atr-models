@@ -168,19 +168,22 @@ def verdict(table: dict, threshold: float = 0.3) -> str:
     return "\n".join(lines)
 
 
+def _fmt(v) -> str:
+    return "—" if v is None else f"{v:.3f}"
+
+
 def render(table: dict) -> str:
     rows = ["| scorer | cell | model | n | τ | n plausible | τ plausible | mean CER | mean bits |",
             "|---|---|---|---:|---:|---:|---:|---:|---:|"]
-    f = lambda v: "—" if v is None else f"{v:.3f}"
     for name, s in table["scorers"].items():
         for m, v in s["per_model"].items():
-            rows.append(f"| {name} | `{s['cell']}` | {m} | {v['n']} | {f(v['tau'])} | "
-                        f"{v['n_plausible']} | {f(v['tau_plausible'])} | {f(v['mean_cer'])} | "
-                        f"{f(v['mean_bits'])} |")
+            rows.append(f"| {name} | `{s['cell']}` | {m} | {v['n']} | {_fmt(v['tau'])} | "
+                        f"{v['n_plausible']} | {_fmt(v['tau_plausible'])} | {_fmt(v['mean_cer'])} | "
+                        f"{_fmt(v['mean_bits'])} |")
         p = s["pairs"]
         rows.append(f"| {name} | `{s['cell']}` | *pairs across models* | {p['n']} | "
-                    f"{f(p['ordered_like_cer'])} | {p['n_plausible']} | "
-                    f"{f(p['ordered_like_cer_plausible'])} | | |")
+                    f"{_fmt(p['ordered_like_cer'])} | {p['n_plausible']} | "
+                    f"{_fmt(p['ordered_like_cer_plausible'])} | | |")
     return "\n".join(rows) + "\n\n" + verdict(table)
 
 
