@@ -1006,3 +1006,34 @@ def test_the_training_granularity_comes_from_params_not_the_dataset_spec(tmp_pat
                     weights="adapter_model.safetensors")
     assert "Trained on **line** images" in card
     assert "Trained on **page**" not in card
+
+
+def test_a_card_says_the_record_is_the_trainers_when_nothing_was_rebuilt(tmp_path: Path):
+    card = card_for(tmp_path, VLM_META, weights="adapter_model.safetensors")
+    assert "is the record the trainer wrote, verbatim" in card
+    assert "reconstructed" not in card
+
+
+def test_a_reconstructed_record_is_not_called_the_trainers(tmp_path: Path):
+    """#87: the E4B arm's trained directory was purged from scratch; its
+    metadata.json was rebuilt from job.json. The card must not call that the
+    trainer's verbatim record, and must name the other rebuilt files."""
+    metadata = {**VLM_META, "reconstructed": {
+        "on": "2026-11-06", "from": "job.json of 20260926T080902Z-x",
+        "why": "the trained directory was purged",
+        "files": ["processor_config.json"], "how": "the base's, step 140",
+    }}
+    card = card_for(tmp_path, metadata, weights="adapter_model.safetensors")
+    assert "verbatim" not in card.split("## Provenance")[1].split("\n## ")[0]
+    assert ("**not** the record the trainer wrote: it was reconstructed on 2026-11-06 "
+            "from job.json of 20260926T080902Z-x, because the trained directory was "
+            "purged.") in card
+    assert "rebuilt after it: `processor_config.json` — the base's, step 140." in card
+
+
+def test_a_hand_added_granularity_is_named_as_not_the_trainers(tmp_path: Path):
+    metadata = {**VLM_META, "granularity_measured": {
+        "levels": [{"level": "line", "n": 1, "cer": 0.1, "length_ratio": 1.0}]}}
+    card = card_for(tmp_path, metadata, weights="adapter_model.safetensors")
+    assert ("verbatim, except `granularity_measured`, which was added by hand after "
+            "training: the full request") in card
