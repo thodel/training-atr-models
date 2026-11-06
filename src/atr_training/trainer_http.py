@@ -51,7 +51,13 @@ class HttpTrainer:
         return response.json()
 
     def job(self, job_id: str) -> dict:
-        response = self._client.get(f"/jobs/{job_id}")
+        try:
+            response = self._client.get(f"/jobs/{job_id}")
+        except httpx.TransportError as exc:
+            # A timeout here is a slow answer, not a lost job (#402); the
+            # driver decides how long to keep asking.
+            from atr_training.sweep_driver import TrainerUnreachable
+            raise TrainerUnreachable(f"GET /jobs/{job_id}: {exc!r}") from exc
         response.raise_for_status()
         return response.json()
 

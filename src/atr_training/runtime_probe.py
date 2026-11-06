@@ -52,6 +52,9 @@ until it exits.
 from __future__ import annotations
 
 import os
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -136,6 +139,90 @@ def dir_mib(path: Path | str | None) -> int | None:
 
 def _raise(error: OSError) -> None:
     raise error
+
+
+#: How long a reader waits for a walk before answering with the last finished
+#: one. Long enough that a local job directory is answered fresh, short enough
+#: that a reader never waits on the share.
+DIR_WALK_WAIT_S = 2.0
+
+#: A job directory is walked at most this often, however often it is asked
+#: about. The bot polls every 60 s and a sweep driver as often; two readers must
+#: not mean two walks over the same twenty thousand files.
+DIR_WALK_EVERY_S = 60.0
+
+
+class DirWalker:
+    """Job-directory sizes, walked beside the request rather than inside it.
+
+    :func:`dir_mib` stats every file, and a job directory on the research share
+    holds one image per page during ``prepare`` — 21,062 of them for sweep 2's
+    first cell, where ``GET /jobs/<id>`` took over two minutes and the sweep
+    driver, with a 30 s timeout, died of it twice (#402). A size that costs that
+    much cannot be taken at read time.
+
+    So a reader starts a walk when the last one is older than ``every_s`` and
+    none is running, waits for it ``wait_s`` at most, and is answered with the
+    last *finished* walk — which carries its own ``at``, because a size from
+    three minutes ago is not a size from now. Before the first walk finishes
+    the answer is no reading at all, not a zero.
+    """
+
+    def __init__(self, *, wait_s: float = DIR_WALK_WAIT_S,
+                 every_s: float = DIR_WALK_EVERY_S,
+                 walk: Callable[[Path | str | None], int | None] = dir_mib,
+                 clock: Callable[[], float] = time.time) -> None:
+        self.wait_s = wait_s
+        self.every_s = every_s
+        self._walk_fn = walk
+        self._clock = clock
+        self._lock = threading.Lock()
+        #: key -> (the walk before the last, the last finished walk)
+        self._done: dict[str, tuple[Sample | None, Sample]] = {}
+        self._running: dict[str, threading.Event] = {}
+
+    def read(self, key: str, path: Path | str | None) -> tuple[Sample | None, Sample | None]:
+        """The last two finished walks of *path*, oldest first; None for each
+        that has not happened."""
+        with self._lock:
+            pair = self._done.get(key)
+            latest = pair[1] if pair else None
+            event = self._running.get(key)
+            if event is None and (latest is None
+                                  or self._clock() - latest.at >= self.every_s):
+                event = threading.Event()
+                self._running[key] = event
+                threading.Thread(target=self._walk, args=(key, path, event),
+                                 name=f"dir-walk-{key}", daemon=True).start()
+        if event is not None:
+            event.wait(self.wait_s)
+        with self._lock:
+            return self._done.get(key, (None, None))
+
+    def forget(self, key: str) -> None:
+        """Drop what is known of *key*; a walk still running is discarded when
+        it ends. A service that runs for months must not keep every job."""
+        with self._lock:
+            self._done.pop(key, None)
+            self._running.pop(key, None)
+
+    def __contains__(self, key: str) -> bool:
+        with self._lock:
+            return key in self._done or key in self._running
+
+    def _walk(self, key: str, path: Path | str | None, event: threading.Event) -> None:
+        try:
+            mib = self._walk_fn(path)
+            sample = Sample(at=self._clock(), rss_mib=None, job_dir_mib=mib)
+            with self._lock:
+                if self._running.get(key) is event:      # not forgotten meanwhile
+                    previous = self._done.get(key, (None, None))[1]
+                    self._done[key] = (previous, sample)
+        finally:
+            with self._lock:
+                if self._running.get(key) is event:
+                    del self._running[key]
+            event.set()
 
 
 def compile_chunks(data_dir: Path | str | None) -> dict | None:
