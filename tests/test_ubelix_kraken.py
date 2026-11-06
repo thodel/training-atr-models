@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -142,7 +143,7 @@ def test_stage_two_checks_the_batch_before_the_runner_and_ends_without_requeue()
     check = next(i for i, line in enumerate(lines)
                  if line.startswith('if ! run python "$REPO/ubelix/kraken_batch_fits.py"'))
     runner = next(i for i, line in enumerate(lines)
-                  if line.startswith("run python -m kraken_train_svc.runner"))
+                  if line.startswith("RUN_EXEC=exec run python -m kraken_train_svc.runner"))
     assert check < runner
     assert lines[check + 2] == "exit 3", "a refusal ends the job; it is not requeued"
     assert "#SBATCH --gres=gpu:rtx4090:1" in text
@@ -182,3 +183,39 @@ def test_the_peak_alone_is_not_enough_the_headroom_counts():
     allocator slack on top — the reason a 95 % card was already a near miss."""
     assert fits.judge(128, 20_500, measured_case=True)[0] == "refused"
     assert fits.judge(128, 20_134 + fits.HEADROOM_MIB, measured_case=True)[0] == "fits"
+
+
+# ── the trap's TERM reaches the runner (21288367, #171) ─────────────────────
+TRAINING_SCRIPTS = ["kraken_train.sbatch", "train.sbatch", "train_resumable.sbatch"]
+
+
+@pytest.mark.parametrize("name", TRAINING_SCRIPTS)
+def test_the_runner_is_the_process_the_trap_signals(name):
+    text = (UBELIX / name).read_text(encoding="utf-8")
+    assert "run() {\n  ${RUN_EXEC:-} apptainer exec --nv \\" in text
+    assert re.search(r"^RUN_EXEC=exec run python -m \w+\.runner .*&$\nPID=\$!$", text, re.M)
+    assert not re.search(r"^run python -m \w+\.runner .*&$", text, re.M)
+
+
+def _term_reaches_the_child(launch: str) -> str:
+    script = textwrap.dedent(f"""\
+        run() {{ ${{RUN_EXEC:-}} {sys.executable} -c '
+        import signal, sys, time
+        signal.signal(signal.SIGTERM, lambda *a: sys.exit(75))
+        time.sleep(5)'; }}
+        {launch}
+        PID=$!
+        sleep 0.5
+        kill -TERM "$PID"; wait "$PID"; echo "$?"
+        """)
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          timeout=20).stdout.strip()
+
+
+def test_term_to_the_launched_pid_reaches_the_runner():
+    assert _term_reaches_the_child("RUN_EXEC=exec run &") == "75"
+
+
+def test_the_old_launch_left_the_runner_unsignalled():
+    """Counter-test: `run … &` signals the subshell, which dies with 143."""
+    assert _term_reaches_the_child("run &") == "143"
