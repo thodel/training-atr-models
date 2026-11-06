@@ -56,7 +56,7 @@ export ATR_TRAIN_PREEMPTABLE=1
 mkdir -p "$ATR_TRAIN_JOBS_ROOT" "$ATR_TRAIN_CHECKPOINT_ROOT" "$ATR_TRAIN_TRAINED_ROOT" "$S/runs"
 
 run() {
-  apptainer exec --nv \
+  ${RUN_EXEC:-} apptainer exec --nv \
     --bind /storage/research:/storage/research \
     --bind /scratch:/scratch --bind /rs_scratch:/rs_scratch \
     --env HF_HOME="$HF_HOME" \
@@ -105,7 +105,11 @@ trap '
   fi
 ' TERM
 
-run python -m kraken_train_svc.runner --root "$ATR_TRAIN_JOBS_ROOT" --job-id "$JOB_ID" &
+# `run … &` alone backgrounds a subshell running the function, and $! is that
+# subshell: the trap's TERM ended there, the runner never saw it, and the trainer
+# ran on until KillWait (kraken 21288367, #171). With `exec` the subshell becomes
+# apptainer, which passes the signal on to the runner.
+RUN_EXEC=exec run python -m kraken_train_svc.runner --root "$ATR_TRAIN_JOBS_ROOT" --job-id "$JOB_ID" &
 PID=$!
 
 # `wait` returns on a trapped signal; the loop collects the runner's own exit.

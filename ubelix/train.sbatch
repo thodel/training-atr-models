@@ -96,7 +96,7 @@ export ATR_TRAIN_GPU=0
 export ATR_TRAIN_PREEMPTABLE=1
 
 run() {
-  apptainer exec --nv \
+  ${RUN_EXEC:-} apptainer exec --nv \
     --bind /storage/research:/storage/research \
     --bind /scratch:/scratch --bind /rs_scratch:/rs_scratch \
     --env HF_HOME="$HF_HOME" --env HF_DATASETS_CACHE="$HF_DATASETS_CACHE" \
@@ -146,7 +146,11 @@ trap '
   fi
 ' TERM
 
-run python -m vlm_train_svc.runner --root "$ATR_TRAIN_JOBS_ROOT" --job-id "$JOB_ID" &
+# `run … &` alone backgrounds a subshell running the function, and $! is that
+# subshell: the trap's TERM ended there, the runner never saw it, and the trainer
+# ran on until KillWait (kraken 21288367, #171). With `exec` the subshell becomes
+# apptainer, which passes the signal on to the runner.
+RUN_EXEC=exec run python -m vlm_train_svc.runner --root "$ATR_TRAIN_JOBS_ROOT" --job-id "$JOB_ID" &
 PID=$!
 # `wait` returns on a trapped signal with 128+signum without waiting for the
 # child; re-wait for the real status.
