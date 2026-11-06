@@ -62,3 +62,12 @@ def test_card_moves_the_one_card_arms_and_leaves_the_two_card_arm():
     assert mva.plan_arms(1, None) == [("fourbit_one_card", "1", True),
                                       ("bf16_one_card", "1", False),
                                       ("bf16_two_cards", "0,1", False)]
+
+
+def test_the_venv_follows_the_base_model(tmp_path):
+    """The fixed `vlm-train` default stopped a Qwen3.5 arm after 12 s: that
+    transformers does not know `qwen3_5` (06.11.2026)."""
+    assert mva.engine_python(None, tmp_path, "Qwen/Qwen3.5-4B").parts[-3] == "vlm-train-tf5"
+    assert mva.engine_python(None, tmp_path, "Qwen/Qwen3-VL-8B-Instruct").parts[-3] == "vlm-train"
+    chosen = tmp_path / "x" / "bin" / "python"
+    assert mva.engine_python(chosen, tmp_path, "Qwen/Qwen3.5-4B") == chosen
