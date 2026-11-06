@@ -210,8 +210,11 @@ def test_the_revisions_are_the_ones_already_in_the_repo():
 
 
 def test_no_noise_floor_is_claimed_yet(sweep):
-    """It is measured on a corpus and a budget and cannot exist before them."""
+    """It is measured on a corpus and a budget and cannot exist before them.
+    The fine-tune floor on this digest belongs to sweep 2 and is not borrowed:
+    no cell here is a fine-tune (#131)."""
     assert sweep.noise_floor is None
+    assert "noise-d7a116" in yaml.safe_load(MANIFEST.read_text())["notes"]
 
 
 def test_the_notes_say_which_metric_to_run_it_with(sweep):

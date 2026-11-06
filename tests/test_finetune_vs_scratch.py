@@ -177,15 +177,20 @@ def test_an_unpinned_sweep_corpus_would_expire_inside_the_ladder(sweep):
     assert UNPINNED_MAX_AGE_DAYS == 7
 
 
-def test_no_noise_floor_is_claimed(sweep):
-    """For a two-cell question that is less fatal than for a ranking, and the
-    file says why rather than assuming it."""
-    assert sweep.noise_floor is None
+def test_the_noise_floor_is_the_fine_tune_cells(sweep):
+    """Measured on this digest for the fine-tune cell, and the file says it
+    covers nothing else (#115)."""
+    assert sweep.noise_floor is not None and sweep.noise_floor < 0.002
+    floor = sweep.noise_floor_provenance
+    assert floor["input_height"] == 120
+    assert floor["augment"] is False
+    assert floor["base_model"].endswith("catmus-medieval-1.6.0.mlmodel")
     text = SCRATCH_VS_TUNE.read_text(encoding="utf-8")
-    assert "NO NOISE FLOOR YET FOR THIS DIGEST" in text
+    notes = yaml.safe_load(text)["notes"]
+    assert "FINE-TUNE CELL ONLY" in notes
     # The floor of 10.10.2026 belongs to the previous digest; the notes keep it
-    # visible without letting the leaderboard rank by it (#115).
-    assert "c8f420ec" in yaml.safe_load(text)["notes"]
+    # visible without letting the leaderboard rank by it.
+    assert "c8f420ec" in notes
 
 
 def test_resize_is_union_because_a_base_codec_will_not_cover_four_corpora(sweep):

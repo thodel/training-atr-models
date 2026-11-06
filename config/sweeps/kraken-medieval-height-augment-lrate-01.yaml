@@ -837,3 +837,11 @@ notes: |
   `ketos train` ignores --spec under --load: the runs trained at CATMuS's own
   height 120, and the block would print "height 64" on the leaderboard. And it
   is a fine-tune, which no cell of this sweep is (#131).
+
+  The same configuration was remeasured on THIS digest on 05./06.11.2026
+  (asteraix ~/atr-cache/noise-d7a116/noise_floor.json, commit 3610ec1, 197,768
+  lines, height 120, 4,638 steps): CER 0.2080 / 0.2083 / 0.2087, spread 0.0008.
+  It sits in the `noise_floor` block of kraken-medieval-finetune-vs-scratch-02,
+  whose fine-tune cell it was measured for, and stays out of this one for the
+  last reason above: a fine-tune floor says nothing about from-scratch cells at
+  heights 64 to 192, with and without augmentation.
