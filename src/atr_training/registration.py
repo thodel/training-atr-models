@@ -61,7 +61,12 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from atr_training.backends import is_hybrid_base, needs_apertus_fork, needs_transformers_5
+from atr_training.backends import (
+    is_gemma4_base,
+    is_hybrid_base,
+    needs_apertus_fork,
+    needs_transformers_5,
+)
 from atr_training.contracts import MODEL_ID_RE
 from atr_training.weights_digest import WeightsDigest
 
@@ -70,6 +75,7 @@ __all__ = [
     "Describing",
     "HYBRID_MAX_NUM_SEQS",
     "HYBRID_VLLM_VENV",
+    "MM_PROCESSOR_KWARGS",
     "describe_registrations",
     "describe_training",
     "TRAINED_DIRNAME",
@@ -83,8 +89,10 @@ __all__ = [
     "manual_registration",
     "read_registration",
     "registration_path",
+    "served_soft_tokens",
     "set_enabled",
     "size_weights",
+    "soft_token_args",
     "trained_dir",
     "vllm_launch_defaults",
     "weights_mib",
@@ -368,6 +376,42 @@ APERTUS_STARTUP_TIMEOUT_S = 900
 #: Mamba blocks idhefix had for a 4B Qwen3.5 on 02.11.2026. It moves with the
 #: card's share and the model's size, so above it is a warning, not a refusal.
 HYBRID_MAMBA_BLOCKS_SEEN = 130
+#: The ``vllm serve`` flag that sets a Gemma 4 model's soft-token step. A Gemma
+#: processor resizes every image, small ones **up**, to fill the step it is
+#: given, so the step is part of what the model learnt: a line LoRA trained at
+#: 140 and served at vLLM's 1120 read even lines at CER 0.90/1.04 (#86,
+#: 05.11.2026). The runner writes the trained step (:func:`soft_token_args`).
+MM_PROCESSOR_KWARGS = "--mm-processor-kwargs"
+
+
+def soft_token_args(step: int) -> list[str]:
+    """The ``vllm_args`` that serve a Gemma 4 model at soft-token ``step``."""
+    return [MM_PROCESSOR_KWARGS, json.dumps({"max_soft_tokens": int(step)})]
+
+
+def served_soft_tokens(vllm_args: list[str] | None) -> int | None:
+    """The ``max_soft_tokens`` that ``vllm_args`` serve at, or None if they set none.
+
+    Reads both spellings vLLM accepts, ``--mm-processor-kwargs '{...}'`` and
+    ``--mm-processor-kwargs={...}``. A value that is not a JSON object with an
+    integer ``max_soft_tokens`` counts as none.
+    """
+    args = list(vllm_args or ())
+    for i, arg in enumerate(args):
+        if arg == MM_PROCESSOR_KWARGS:
+            value = args[i + 1] if i + 1 < len(args) else ""
+        elif arg.startswith(MM_PROCESSOR_KWARGS + "="):
+            value = arg.split("=", 1)[1]
+        else:
+            continue
+        try:
+            kwargs = json.loads(value)
+        except ValueError:
+            continue
+        step = kwargs.get("max_soft_tokens") if isinstance(kwargs, dict) else None
+        if isinstance(step, int) and not isinstance(step, bool):
+            return step
+    return None
 
 
 def vllm_launch_defaults(engine: str | None, base_model: str | None) -> dict[str, Any]:
@@ -415,6 +459,16 @@ def launch_problems(spec: Registration) -> list[str]:
             f"{spec.base_model} is a hybrid (qwen3_5) base; at vLLM's default of 256 "
             "sequences it does not start (\"max_num_seqs (256) exceeds available Mamba "
             f"cache blocks\"). Set max_num_seqs: {HYBRID_MAX_NUM_SEQS}")
+    if spec.engine == "vllm" and is_gemma4_base(spec.base_model) \
+            and served_soft_tokens(spec.vllm_args) is None:
+        # Not a launch failure: vLLM starts and serves at its default of 1120,
+        # and a model trained at another step reads nothing (#86). There is no
+        # default to fill in — the step is the training's, not the base's.
+        problems.append(
+            f"{spec.base_model} is a Gemma 4 base, which must be served at the "
+            "max_soft_tokens step it was trained on (processor_config.json beside "
+            "the adapter); set vllm_args: ['--mm-processor-kwargs', "
+            "'{\"max_soft_tokens\": <step>}']")
     return problems
 
 
