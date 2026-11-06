@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -457,6 +458,10 @@ class WorstCase:
     #: Samples considered. A peak over 40 of 9,441 is a different claim than a
     #: peak over 40 of 40, and the measurement must be able to say which.
     considered: int
+    #: Compiled crops (no box, an image under ``crops/``) whose area was read
+    #: from the file (#379). 0 when no corpus root was given: the pixel tail of
+    #: such a corpus was then not drawn at all, only the text tail.
+    crops_sized: int = 0
 
     def __str__(self) -> str:
         area = f"widest crop {self.widest_pixels} px" if self.widest_pixels else "no crops"
@@ -465,7 +470,30 @@ class WorstCase:
                 f"longest {self.longest_chars} chars, {area}{pages}")
 
 
-def worst_case_samples(samples: Iterable["Sample"], count: int) -> WorstCase:
+#: Threads that read crop headers. The corpora sit on the CIFS share, where one
+#: stream is latency-bound (#238 measured 120 files/s on one thread, ~750 on 32).
+SIZE_WORKERS = 32
+
+
+def _is_compiled_crop(sample: "Sample") -> bool:
+    """A line or block cut out at compile time: no box, its own file under ``crops/``."""
+    return not sample.bbox and "crops" in Path(sample.image).parts
+
+
+def _image_area(path: Path) -> int | None:
+    """Width × height from the image header, or None when it cannot be read."""
+    from PIL import Image
+
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except (OSError, ValueError):
+        return None
+    return width * height
+
+
+def worst_case_samples(samples: Iterable["Sample"], count: int, *,
+                       root: str | Path | None = None) -> WorstCase:
     """The most expensive samples in the set — the mirror of the two filters above.
 
     :func:`drop_long_samples` removes the tail because it cannot be afforded.
@@ -492,13 +520,30 @@ def worst_case_samples(samples: Iterable["Sample"], count: int) -> WorstCase:
     has recorded were in ``logits.float()``. Asking for more samples than exist
     returns all of them, which is the honest answer rather than an error:
     ``considered`` then equals ``len(samples)`` and the peak is over the whole set.
+
+    **Compiled crops carry no box** (#379). A line corpus written by compile
+    names each crop as its own JPEG, ``data/crops/…``, and the box that cut it
+    is gone. Without ``root`` such a sample counted as a whole page and the
+    pixel half of the draw was the head of the file: the Qwen3.5-9B line row
+    was a text-only draw. With ``root`` — the directory the samples resolve
+    against — each crop's area is read from its header, so the pixel tail is
+    the widest crops. Whole pages keep their place at the top.
     """
     pool = list(samples)
     if count <= 0 or not pool:
         return WorstCase(samples=[], longest_chars=0, widest_pixels=0,
                          page_samples=0, considered=len(pool))
 
+    crop_area: dict[int, int] = {}
+    if root is not None:
+        crops = [s for s in pool if _is_compiled_crop(s)]
+        with ThreadPoolExecutor(max_workers=SIZE_WORKERS) as workers:
+            areas = workers.map(lambda s: _image_area(Path(root) / s.image), crops)
+            crop_area = {id(s): a for s, a in zip(crops, areas) if a is not None}
+
     def pixels(sample: "Sample") -> int:
+        if id(sample) in crop_area:
+            return crop_area[id(sample)]
         if not sample.bbox:
             # A whole-page sample has no box here; its cost is the page, which is
             # larger than any crop of it. Sorting it to the top is correct.
@@ -525,13 +570,14 @@ def worst_case_samples(samples: Iterable["Sample"], count: int) -> WorstCase:
         if len(chosen) == count:
             break
 
-    boxed = [pixels(s) for s in pool if s.bbox]
+    boxed = [pixels(s) for s in pool if s.bbox] + list(crop_area.values())
     return WorstCase(
         samples=chosen,
         longest_chars=len(by_text[0].text),
         widest_pixels=max(boxed) if boxed else 0,
-        page_samples=sum(1 for s in pool if not s.bbox),
+        page_samples=sum(1 for s in pool if not s.bbox and id(s) not in crop_area),
         considered=len(pool),
+        crops_sized=len(crop_area),
     )
 
 

@@ -123,3 +123,67 @@ def test_the_summary_names_what_drove_the_selection():
     assert "1 worst-case sample(s) of 1" in text
     assert "longest 1234 chars" in text
     assert "48000 px" in text
+
+
+# ── compiled crops (#379) ───────────────────────────────────────────────────
+def _crop(root, name: str, text: str, width: int, height: int = 40) -> Sample:
+    from PIL import Image
+
+    path = root / "data" / "crops" / "train" / f"{name}.jpg"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (width, height), "white").save(path, "JPEG")
+    return Sample(image=f"data/crops/train/{name}.jpg", text=text,
+                  source_type="line", page=f"{name}.xml")
+
+
+def test_a_compiled_crop_is_ranked_by_its_file_when_the_root_is_known(tmp_path):
+    """A crop written at compile time has no box; its width is in its header.
+
+    Without the root the pixel half of the draw was the head of the file, so the
+    Qwen3.5-9B line row was a text-only draw.
+    """
+    pool = [_crop(tmp_path, f"c{i}", "a" * (100 - i), 200) for i in range(10)]
+    wide = _crop(tmp_path, "wide", "ab", 3000, 120)
+    pool.insert(5, wide)
+
+    got = worst_case_samples(pool, 2, root=tmp_path)
+
+    assert wide in got.samples
+    assert got.widest_pixels == 3000 * 120
+    assert got.crops_sized == 11
+    assert got.page_samples == 0
+
+
+def test_without_the_root_a_crop_still_counts_as_a_page(tmp_path):
+    """The old answer, kept for callers that cannot say where the files are —
+    and said in the counts, so the report shows the pixel tail was not drawn."""
+    pool = [_crop(tmp_path, f"c{i}", "a" * (100 - i), 200) for i in range(4)]
+    pool.append(_crop(tmp_path, "wide", "ab", 3000, 120))
+
+    got = worst_case_samples(pool, 2)
+
+    assert got.crops_sized == 0
+    assert got.page_samples == 5
+    assert got.widest_pixels == 0
+
+
+def test_an_unreadable_crop_is_not_sized_and_does_not_fail_the_draw(tmp_path):
+    good = _crop(tmp_path, "good", "abc", 500)
+    broken = Sample(image="data/crops/train/missing.jpg", text="a" * 50,
+                    source_type="line", page="m.xml")
+
+    got = worst_case_samples([good, broken], 2, root=tmp_path)
+
+    assert len(got.samples) == 2
+    assert got.crops_sized == 1
+    assert got.page_samples == 1
+
+
+def test_whole_pages_stay_on_top_of_the_pixel_tail(tmp_path):
+    crops = [_crop(tmp_path, f"c{i}", "a" * 10, 2000 + i) for i in range(6)]
+    whole = page("short")
+
+    got = worst_case_samples([*crops, whole], 2, root=tmp_path)
+
+    assert whole in got.samples
+    assert got.page_samples == 1
