@@ -62,6 +62,7 @@ __all__ = [
     "BASE_MODEL_TERMS",
     "BaseTerms",
     "GRANULARITY_KEY",
+    "RECONSTRUCTED_KEY",
     "DatasetLink",
     "TrainedModel",
     "Scan",
@@ -1037,8 +1038,7 @@ def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) ->
         f"| trained | {_plain(model.metadata.get('created'))} |",
         *_files_rows(model),
         "",
-        "`metadata.json` in this repo is the record the trainer wrote, verbatim: the "
-        "full request, the parsed metrics and the job id.",
+        *_record_provenance(model),
         "",
         *_licence_section(model, licence),
         *_energy_section(model),
@@ -1069,6 +1069,43 @@ def _files_rows(model: TrainedModel) -> list[str]:
     if others:
         rows.append(f"| with them | {names(others)} |")
     return rows
+
+
+#: ``metadata.json`` key set when the file is **not** the one the register stage
+#: wrote but was rebuilt afterwards — from the job record, because the trained
+#: directory was lost (#87: the scratch purge emptied ``ladder-xix-gemma4-e4b``
+#: on 03.11.2026 and left the adapter only in its checkpoint directory)::
+#:
+#:     {"on": "2026-11-06",
+#:      "from": "job.json of 20260926T080902Z-ladder-xix-gemma4-e4b",
+#:      "why": "the trained directory on UBELIX scratch was purged",
+#:      "files": ["processor_config.json"]}
+#:
+#: ``files`` names anything else beside the weights that the run did not save.
+#: Without the key the card says what it always said: the trainer's record,
+#: verbatim. With it, saying so would be the template-instead-of-fact mistake
+#: :func:`_where_measured` describes.
+RECONSTRUCTED_KEY = "reconstructed"
+
+
+def _record_provenance(model: TrainedModel) -> list[str]:
+    """Whose record ``metadata.json`` is: the trainer's, or a reconstruction."""
+    rebuilt = model.metadata.get(RECONSTRUCTED_KEY)
+    if not isinstance(rebuilt, dict):
+        return ["`metadata.json` in this repo is the record the trainer wrote, verbatim: "
+                "the full request, the parsed metrics and the job id."]
+    lines = [
+        "`metadata.json` in this repo is **not** the record the trainer wrote: it was "
+        f"reconstructed on {_plain(rebuilt.get('on'))} from {_plain(rebuilt.get('from'))}"
+        + (f", because {rebuilt['why']}" if rebuilt.get("why") else "")
+        + ". The request, the metrics and the job id are the job record's; nothing in "
+        "it was measured again."
+    ]
+    files = [str(f) for f in rebuilt.get("files") or []]
+    if files:
+        lines += ["", "Not saved by the run either, and rebuilt the same way: "
+                  + ", ".join(f"`{f}`" for f in files) + "."]
+    return lines
 
 
 #: ``metadata.json`` key for the granularities a model was *measured* at — not
