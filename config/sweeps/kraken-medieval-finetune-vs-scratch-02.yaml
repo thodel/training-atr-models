@@ -747,8 +747,8 @@ base:
     Lbx256 Do0.5 Lbx256 Do0.5 Cr255,1,85,1,1]'
   augment: false
   lrate: 0.0001
-  batch_size: 256
-  accumulate_grad_batches: 1
+  batch_size: 32
+  accumulate_grad_batches: 8
   schedule: cosine
   quit: fixed
   normalization: NFD
@@ -806,6 +806,14 @@ notes: |
   27.10.2026 (#301), and 111 of the 130 newly reserved documents sit in the
   shard it was trained on. It also says nothing about the from-scratch cell —
   the from-scratch seeds of 01.10. collapsed (CER 0.985 at 10,186 steps).
+
+  BATCH. 32 x 8, not 256 x 1: the same effective batch of 256 and so the same
+  step budget, in micro-batches the fine-tune cell fits. That cell trains at
+  CATMuS's own height 120 (`ketos train` ignores --spec under --load), and the
+  fine-tunes on the uncut corpus at that height died of OOM (noise-ft, -ft2,
+  -ft3); the floor on this digest ran at 32 x 8 without trouble. Both cells
+  get it, because the manifest has no per-cell parameters and because the
+  question is base or no base, with nothing else differing between the cells.
 
   RESIZE. `union` rather than `fail`, because the base's codec will not contain
   every character of four German chancery corpora and `fail` would stop the run
