@@ -131,4 +131,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from atr_training.measurement_record import measurement  # noqa: E402
+
+    # A record next to the job store, so live() and results() see this run (#385).
+    with measurement(Path(__file__).stem):
+        raise SystemExit(main())

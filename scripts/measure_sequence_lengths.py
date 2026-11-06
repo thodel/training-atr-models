@@ -160,4 +160,8 @@ def _pct(values: list[int], q: int) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from atr_training.measurement_record import measurement  # noqa: E402
+
+    # A record next to the job store, so live() and results() see this run (#385).
+    with measurement(Path(__file__).stem):
+        raise SystemExit(main())

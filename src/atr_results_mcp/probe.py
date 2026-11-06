@@ -59,6 +59,9 @@ LEGACY_HOST = "idhefix"
 #: still a Slurm job.
 SCRATCH_HOST = "ubelix"
 
+#: Where hand-run measurements leave their records, beside each job store (#385).
+MEASUREMENTS_DIRNAME = "measurements"
+
 #: A record in one of these statuses has a runner, or waits for one.
 LIVE_STATUSES = ("queued", "preparing", "compiling", "training", "testing", "registering")
 
@@ -108,6 +111,15 @@ class Paths:
     def job_roots(self) -> List[Tuple[str, Path]]:
         """``(store, root)`` for every job store this probe reads, scratch first."""
         return [("scratch", self.jobs_root), ("share", self.shared_jobs_root)]
+
+    @property
+    def measurement_roots(self) -> List[Tuple[str, Path]]:
+        """``(store, root)`` of the measurement records next to each job store (#385).
+
+        ``atr_training.measurement_record`` writes them beside ``ATR_TRAIN_JOBS_ROOT``;
+        the name is repeated here because the probe imports nothing from the package.
+        """
+        return [(store, root.parent / MEASUREMENTS_DIRNAME) for store, root in self.job_roots]
 
     @property
     def artefacts_root(self) -> Path:
@@ -533,6 +545,33 @@ def find_job(paths: Paths, job_id: str) -> Tuple[Optional[Path], Optional[Dict[s
             record["_store"] = store
             return root / job_id, record
     return None, None
+
+
+def iter_measurements(paths: Paths) -> Iterator[Dict[str, Any]]:
+    """Every readable measurement record, as a row for ``live`` and ``results``.
+
+    A record without ``ended_at`` is running or was killed too hard to say so;
+    it is never a finished measurement, whatever else it carries.
+    """
+    for store, root in paths.measurement_roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*/measurement.json")):
+            record = _load_job(path)
+            if not isinstance(record, dict) or record.get("kind") != "measurement":
+                continue
+            ended = record.get("ended_at")
+            yield {
+                "id": record.get("id") or path.parent.name, "kind": "measurement",
+                "name": record.get("name"), "store": store,
+                "host": _host_of(record, store),
+                "status": record.get("status") if ended else "running",
+                "pid": record.get("pid"), "gpus": record.get("gpus"),
+                "started_cest": utc_to_cest(record.get("started_at")),
+                "ended_cest": utc_to_cest(ended),
+                "exit_code": record.get("exit_code"), "error": record.get("error"),
+                "command": record.get("command"), "output": record.get("output"),
+            }
 
 
 def store_states(paths: Paths) -> Dict[str, Dict[str, Any]]:
@@ -1374,7 +1413,11 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
             "energy_measured": summary["energy"]["measured"],
         })
     rows.sort(key=lambda r: (r["finished_cest"] or "", r["id"]))
+    measurements = [m for m in iter_measurements(paths)
+                    if m["ended_cest"] and (not status or m["status"] == status)]
+    measurements.sort(key=lambda m: (m["ended_cest"] or "", m["id"]))
     return {"jobs_root": str(paths.jobs_root), "stores": store_states(paths), "rows": rows,
+            "measurements": measurements,
             "note": "two CER values compare only when draw_md5 AND reserved_pages "
                     "match: the draw says they were scored on the same lines (#108), "
                     "reserved_pages that they were trained on the same corpus (#98). "
@@ -1388,7 +1431,9 @@ def results(paths: Paths, status: Optional[str] = None, granularity: Optional[st
                     "container' (#206). energy_wh is what the sampler measured "
                     "over every stage and attempt (#184); energy_measured False "
                     "with a finished row is a record from before the sampler, not "
-                    "a run that drew nothing"}
+                    "a run that drew nothing. measurements are hand runs of "
+                    "scripts/measure_*.py that have ended (#385): no CER of a model, "
+                    "the result is the file under output"}
 
 
 def energy(paths: Paths) -> Dict[str, Any]:
@@ -1661,10 +1706,17 @@ def live(paths: Paths, host: Optional[str] = None) -> Dict[str, Any]:
             "slurm_jobs": summary["slurm_jobs"], "artefact": summary["artefact"],
         })
     rows.sort(key=lambda r: (r["host"] or "", r["started_cest"] or "", r["id"]))
-    return {"host": host, "rows": rows, "stores": store_states(paths),
+    measurements = [m for m in iter_measurements(paths)
+                    if m["status"] == "running" and (not host or m["host"] == host)]
+    measurements.sort(key=lambda m: (m["host"] or "", m["started_cest"] or "", m["id"]))
+    return {"host": host, "rows": rows, "measurements": measurements,
+            "stores": store_states(paths),
             "note": "live means the record says so; a runner that died leaves the record "
                     "live until the service (asteraix) or close_job (UBELIX) closes it, so "
-                    "read updated_cest and log_modified_cest before believing a row"}
+                    "read updated_cest and log_modified_cest before believing a row. "
+                    "measurements are hand runs of scripts/measure_*.py without an end "
+                    "stamp (#385): running, or killed too hard to write one; started_cest "
+                    "and pid on host are how to tell"}
 
 
 def deadlines(run: Runner, paths: Paths) -> Dict[str, Any]:
