@@ -1094,8 +1094,10 @@ def _record_provenance(model: TrainedModel) -> list[str]:
     """Whose record ``metadata.json`` is: the trainer's, or a reconstruction."""
     rebuilt = model.metadata.get(RECONSTRUCTED_KEY)
     if not isinstance(rebuilt, dict):
-        return ["`metadata.json` in this repo is the record the trainer wrote, verbatim: "
-                "the full request, the parsed metrics and the job id."]
+        added = (f", except `{GRANULARITY_KEY}`, which was added by hand after training"
+                 if GRANULARITY_KEY in model.metadata else "")
+        return ["`metadata.json` in this repo is the record the trainer wrote, verbatim"
+                f"{added}: the full request, the parsed metrics and the job id."]
     lines = [
         "`metadata.json` in this repo is **not** the record the trainer wrote: it was "
         f"reconstructed on {_plain(rebuilt.get('on'))} from {_plain(rebuilt.get('from'))}"

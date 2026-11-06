@@ -1029,3 +1029,11 @@ def test_a_reconstructed_record_is_not_called_the_trainers(tmp_path: Path):
             "from job.json of 20260926T080902Z-x, because the trained directory was "
             "purged.") in card
     assert "rebuilt after it: `processor_config.json` — the base's, step 140." in card
+
+
+def test_a_hand_added_granularity_is_named_as_not_the_trainers(tmp_path: Path):
+    metadata = {**VLM_META, "granularity_measured": {
+        "levels": [{"level": "line", "n": 1, "cer": 0.1, "length_ratio": 1.0}]}}
+    card = card_for(tmp_path, metadata, weights="adapter_model.safetensors")
+    assert ("verbatim, except `granularity_measured`, which was added by hand after "
+            "training: the full request") in card
