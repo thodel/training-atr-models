@@ -64,6 +64,7 @@ than the poll is still seen. 45,486 MiB is what an A40 makes usable.
 | vllm | olmOCR-2-7B, px4m | page | 2 × 8 | bf16 | 63,728–65,558 | **140–144 %** | H100 | full runs | `20261013T121310Z-olmocr2-7b-medieval-page-px4m-native` and 5 more |
 | kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 256 | — | 43,536 | **95.7 %** | A40 | full epoch, `german_val.arrow`, no ceiling (hand-run, 07.10.2026) | `scripts/measure_kraken_arms.py` |
 | kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 256 | — | 8,894 | 19.6 % | A40 | full run, 197,083 lines, ceiling 60:1 (cut 4.8 %) | `20261027T072036Z-kraken-collapse-probe-131` |
+| kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 128 | — | 3,970–4,046 | 8.9 % | RTX 4090 (UBELIX) | full runs, 1,786 lines, widest 22:1 | `20261105T193111Z-kraken-bern-hertwig-scratch-ubelix-v2`, `20261106T064743Z-…-v3` |
 | kraken | fine-tune of `kraken-german-xix-v1` | line | 32 | — | 18,400 | 40.5 % | A40 | full run, 38,360 lines, ceiling as dry run only | `20261026T193646Z-kraken-german-xix-blb-v1` |
 | kraken | fine-tune of `cursive_inzigkofen` and its offspring | line | 16 | — | 3,952–6,930 | 8.7–15.2 % | A40 | full runs, 1,786–4,897 lines | `20261022T110104Z-kraken-bern-hertwig-v1` and 3 more |
 | trocr | `trocr-base-handwritten`, and `trocr-kurrent-XVI-XVII` built on it | line | 4 or 8 | bf16 | 6,830–6,832 | 15.0 % | A40 | full runs, 4,005 to 473,549 lines | `20261024T213142Z-trocr-german-kurrent-xvi-xix-v1` and 5 more |
@@ -279,7 +280,11 @@ pin holds across the queue but not across that resume.
   (`ubelix/kraken_batch_fits.py`, for `KRAKEN_PLUS_SPEC` from scratch; another
   network is "not checked"). The path there is `ubelix/kraken-train.def`
   (ketos 7.0.2, as on asteraix) and the two stages in `ubelix/README.md`.
-  Still missing for this sweep: a peak measured on UBELIX itself. What the
+  The first peak on UBELIX itself (5./6.11.2026, Hertwig, batch 128) is
+  3,970–4,046 MiB: a fifth of the 20,134 the sweep gives for 128, because its
+  widest line is 22:1 where the sweep's arrow reached 135:1. So the sweep is a
+  safe upper bound, not a forecast. Still missing: a UBELIX peak on the sweep's
+  own arrow, the like-for-like comparison. What the
   image ceiling of #145 does at batch 256 is the collapse-probe row in §1.
 - **Whether a run on asteraix can be reported.** It writes no job record, so it
   appears in no report and no comparison (#156). A rule that sends work there and
