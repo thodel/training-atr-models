@@ -886,9 +886,10 @@ SOURCES: tuple[Source, ...] = (
             template="https://opendigi.ub.uni-tuebingen.de/opendigi/image/"
                      "{base}/{stem}.jp2/full/full/0/default.jpg"),),
         licence="CC0-1.0",
-        licence_at="**nur README** §2 ('released by UB, Uni-Tuebingen as Open Data "
-                   "under the CC0 public license'); es gibt keine LICENSE-Datei, und "
-                   "die GitHub-API meldet `license: null`",
+        licence_at="README §2 ('released by UB, Uni-Tuebingen as Open Data under "
+                   "the CC0 public license'); keine LICENSE-Datei, die GitHub-API "
+                   "meldet `license: null`. Die Nachnutzung ist mit der UB Tübingen "
+                   "abgesprochen (regelmässiger Kontakt, Stand 06.11.2026)",
         attribution="Universitätsbibliothek Tübingen (ubtue) — theologische "
                     "Zeitschriften aus dem OpenDigi-Bestand",
         image_source="UB Tübingen, opendigi.ub.uni-tuebingen.de",
@@ -902,10 +903,10 @@ SOURCES: tuple[Source, ...] = (
             "fällt heraus.",
             "Dieselben 208 Seiten liegen zusätzlich als ALTO. Hier ist die "
             "PAGE-Fassung eingelesen.",
-            "**Die Lizenz steht nur im README.** Inhaltlich genügt uns das, aber "
-            "GitHubs Lizenzerkennung sieht nichts. Eine Bitte an die UB Tübingen, "
-            "eine `LICENSE`-Datei nachzulegen, kostet nichts und macht die Quelle "
-            "maschinell prüfbar.",
+            "**Die Lizenz steht im README, nicht in einer `LICENSE`-Datei**, darum "
+            "erkennt GitHub keine. Die Nachnutzung ist mit der UB Tübingen "
+            "abgesprochen: Mit ihr besteht regelmässiger Kontakt, und sie hat sie "
+            "erlaubt (Stand 06.11.2026, training-atr-models#188).",
             "Das Bezugsskript holt JPEG und speichert sie mit `.tif`-Endung, weil "
             "die PAGE-Dokumente das erwarten. Wir behalten die echte Endung.",
         ),
