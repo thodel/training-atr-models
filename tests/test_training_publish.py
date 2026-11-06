@@ -1021,11 +1021,11 @@ def test_a_reconstructed_record_is_not_called_the_trainers(tmp_path: Path):
     metadata = {**VLM_META, "reconstructed": {
         "on": "2026-11-06", "from": "job.json of 20260926T080902Z-x",
         "why": "the trained directory was purged",
-        "files": ["processor_config.json"],
+        "files": ["processor_config.json"], "how": "the base's, step 140",
     }}
     card = card_for(tmp_path, metadata, weights="adapter_model.safetensors")
     assert "verbatim" not in card.split("## Provenance")[1].split("\n## ")[0]
     assert ("**not** the record the trainer wrote: it was reconstructed on 2026-11-06 "
             "from job.json of 20260926T080902Z-x, because the trained directory was "
             "purged.") in card
-    assert "rebuilt the same way: `processor_config.json`." in card
+    assert "rebuilt after it: `processor_config.json` — the base's, step 140." in card

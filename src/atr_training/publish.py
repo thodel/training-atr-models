@@ -1079,9 +1079,11 @@ def _files_rows(model: TrainedModel) -> list[str]:
 #:     {"on": "2026-11-06",
 #:      "from": "job.json of 20260926T080902Z-ladder-xix-gemma4-e4b",
 #:      "why": "the trained directory on UBELIX scratch was purged",
-#:      "files": ["processor_config.json"]}
+#:      "files": ["processor_config.json"],
+#:      "how": "the base's, with max_soft_tokens set to the trained step"}
 #:
-#: ``files`` names anything else beside the weights that the run did not save.
+#: ``files`` names anything else beside the weights that the run did not save,
+#: ``how`` says where each came from.
 #: Without the key the card says what it always said: the trainer's record,
 #: verbatim. With it, saying so would be the template-instead-of-fact mistake
 #: :func:`_where_measured` describes.
@@ -1103,8 +1105,9 @@ def _record_provenance(model: TrainedModel) -> list[str]:
     ]
     files = [str(f) for f in rebuilt.get("files") or []]
     if files:
-        lines += ["", "Not saved by the run either, and rebuilt the same way: "
-                  + ", ".join(f"`{f}`" for f in files) + "."]
+        how = f" — {str(rebuilt['how']).rstrip('.')}" if rebuilt.get("how") else ""
+        lines += ["", "Not saved by the run either, and rebuilt after it: "
+                  + ", ".join(f"`{f}`" for f in files) + how + "."]
     return lines
 
 
