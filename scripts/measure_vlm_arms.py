@@ -125,12 +125,15 @@ def take_lines(src: Path, dest: Path, count: int, worst_case: bool) -> dict:
         dest.write_text("".join(lines), encoding="utf-8")
         return {"selection": "head", "written": len(lines)}
 
-    picked = worst_case_samples(read_jsonl(src), count)
+    # The samples resolve against the corpus root, the grandparent of the JSONL:
+    # that is where a compiled crop's file is, and its area is the pixel tail (#379).
+    picked = worst_case_samples(read_jsonl(src), count, root=src.parent.parent)
     dest.write_text(
         "".join(sample.to_json() + "\n" for sample in picked.samples), encoding="utf-8")
     return {"selection": "worst-case", "written": len(picked.samples),
             "considered": picked.considered, "longest_chars": picked.longest_chars,
-            "widest_pixels": picked.widest_pixels, "page_samples": picked.page_samples}
+            "widest_pixels": picked.widest_pixels, "page_samples": picked.page_samples,
+            "crops_sized": picked.crops_sized}
 
 
 def arm_params(four_bit: bool, epochs: int, like: dict | None = None) -> VlmTrainParams:
