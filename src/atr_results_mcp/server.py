@@ -109,7 +109,9 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
         This is how asteraix's state is read, since it has no Slurm; filter with
         host="asteraix", "ubelix" or "idhefix". A dead runner leaves its record
         live until the service (asteraix) or close_job (UBELIX) closes it, so
-        judge a row by updated_cest and log_modified_cest."""
+        judge a row by updated_cest and log_modified_cest. `measurements` lists
+        hand runs of scripts/measure_*.py that have no end stamp yet, apart from
+        the training rows."""
         return ask("live", host=host)
 
     @server.tool()
@@ -153,7 +155,9 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
         from an identical spec (#98). None means nobody looked, which is not 0.
 
         `stores` says whether each store was readable, so an absent share is not
-        mistaken for zero asteraix rows."""
+        mistaken for zero asteraix rows. `measurements` lists hand runs of
+        scripts/measure_*.py that have ended, with their output path; they
+        carry no model CER and are kept apart from the rows."""
         return ask("results", status=status, granularity=granularity, base_model=base_model)
 
     @server.tool()
