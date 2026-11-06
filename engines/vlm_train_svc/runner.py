@@ -40,10 +40,12 @@ from atr_training.contracts import (
     utcnow,
 )
 from atr_training.artefact_cache import key_for_specs
+from atr_training.backends import is_gemma4_base
 from atr_training.cropping import write_crops
 from atr_training.eval_subset import plan_eval_subset, source_key
 from atr_training.manifests import read_manifest
 from atr_training.promote import PromotionResult
+from atr_training.registration import soft_token_args
 from atr_training.runner_base import BasePipeline, StageFailed, run_job
 from atr_training.vlm_cmd import (
     describe_survivors,
@@ -71,6 +73,38 @@ def _sample_char_cap(params) -> int:
     drop every page.
     """
     return max(VLM_MAX_SAMPLE_CHARS[k] for k in params.kinds())
+
+
+def trained_soft_tokens(adapter_dir: Path) -> tuple[int, int] | None:
+    """The soft-token step a Gemma-style adapter trained at, and the pixels it carries.
+
+    Read from the processor config ``train_qlora`` saves beside the adapter,
+    which holds what :func:`~atr_training.vlm_dataset.apply_visual_budget` set
+    (``processor.save_pretrained``): transformers 5 writes
+    ``processor_config.json`` with the image settings under ``image_processor``,
+    transformers 4 a flat ``preprocessor_config.json``. The pixels follow from
+    the step exactly as in ``_stepped_budget``: ``step * (patch_size *
+    pooling_kernel_size) ** 2``. None when there is no such file or it has no
+    ``max_soft_tokens`` — a Qwen processor, or an adapter without its processor.
+    """
+    for name in ("processor_config.json", "preprocessor_config.json"):
+        path = adapter_dir / name
+        if not path.is_file():
+            continue
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        settings = config.get("image_processor", config) if isinstance(config, dict) else {}
+        if not isinstance(settings, dict):
+            continue
+        step = settings.get("max_soft_tokens")
+        patch = settings.get("patch_size")
+        pool = settings.get("pooling_kernel_size")
+        if isinstance(step, int) and patch and pool:
+            cell = int(patch) * int(pool)
+            return step, step * cell * cell
+    return None
 
 
 class Pipeline(BasePipeline):
@@ -610,6 +644,19 @@ class Pipeline(BasePipeline):
             encoding="utf-8",
         )
 
+        # A Gemma-style processor takes its budget in soft-token steps and
+        # rounds the request **up** to one (#83): the job asked for
+        # pixel_budget() and trained at what that step carries. Both the step
+        # and those pixels are what serving must replay — at vLLM's default
+        # step of 1120 a line model trained at 140 reads nothing (#86).
+        trained_step = trained_soft_tokens(adapter)
+        if trained_step is None and is_gemma4_base(job.request.base_model):
+            logger.warning(
+                "register: no max_soft_tokens in the processor config beside {}; the "
+                "registration of a Gemma 4 model is refused without it", adapter)
+        served = {} if trained_step is None else {
+            "max_pixels": trained_step[1], "vllm_args": soft_token_args(trained_step[0])}
+
         if self._write_registration(job, {
             "id": model_id,
             "engine": "vllm",
@@ -640,7 +687,10 @@ class Pipeline(BasePipeline):
             # level default; a job trained at its own budget and served at the
             # default reads a page as 3 to 36 characters (serving#140, #136).
             # Always written, so a later change of either default cannot move it.
+            # A stepped (Gemma) budget writes the pixels its step carries, not
+            # the ones asked for, and the step itself in vllm_args (`served`).
             "max_pixels": params.pixel_budget(),
+            **served,
             # Only when the job set it. The default here (1536 for a page) is an
             # evaluation budget; the gateway's page default is 4096 and clamped to
             # the context, and pinning ours would cut served pages short (#131).

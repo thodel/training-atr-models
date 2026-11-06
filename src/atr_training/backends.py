@@ -29,6 +29,7 @@ from pathlib import Path
 
 __all__ = ["UnknownBackend", "Backend", "BACKENDS", "backend_for", "runner_python",
            "venv_for", "TF5_VENV", "needs_transformers_5", "is_hybrid_base",
+           "is_gemma4_base",
            "APERTUS_VENV", "needs_apertus_fork"]
 
 
@@ -120,9 +121,14 @@ def is_hybrid_base(base_model: str | None) -> bool:
     return _repo_name(base_model).startswith(_HYBRID_FAMILIES)
 
 
+def is_gemma4_base(base_model: str | None) -> bool:
+    """Is ``base_model`` a Gemma 4 hub id (``google/gemma-4-12B-it``)?"""
+    return _repo_name(base_model).startswith(_GEMMA4_FAMILIES)
+
+
 def needs_transformers_5(base_model: str | None) -> bool:
     """Does ``base_model`` need transformers 5 — a ``qwen3_5`` or a Gemma 4 base?"""
-    return is_hybrid_base(base_model) or _repo_name(base_model).startswith(_GEMMA4_FAMILIES)
+    return is_hybrid_base(base_model) or is_gemma4_base(base_model)
 
 
 #: The VLM venv for Apertus 1.5 (training-atr-models#316). Its model type,

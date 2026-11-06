@@ -19,10 +19,14 @@ from atr_training.jobstore import JobStore
 from atr_training.registration import (
     HYBRID_MAX_NUM_SEQS,
     HYBRID_VLLM_VENV,
+    Registration,
     RegistrationError,
+    launch_problems,
     manual_registration,
     read_registration,
     registration_path,
+    served_soft_tokens,
+    soft_token_args,
     vllm_launch_defaults,
     write_registration,
 )
@@ -60,12 +64,52 @@ def test_a_gemma4_without_the_venv_is_refused(tmp_path):
         write_registration(tmp_path / "registry", spec)
 
 
-def test_a_gemma4_with_the_venv_is_written(tmp_path):
+def test_a_gemma4_with_the_venv_and_its_step_is_written(tmp_path):
     root = tmp_path / "registry"
     root.mkdir()
-    write_registration(root, _spec(tmp_path, "gemma4-ok", GEMMA4, vllm_venv=HYBRID_VLLM_VENV))
+    write_registration(root, _spec(tmp_path, "gemma4-ok", GEMMA4, vllm_venv=HYBRID_VLLM_VENV,
+                                   vllm_args=soft_token_args(140)))
     written = read_registration(root, "gemma4-ok")
     assert (written.vllm_venv, written.max_num_seqs) == (HYBRID_VLLM_VENV, None)
+    assert served_soft_tokens(written.vllm_args) == 140
+
+
+def test_a_gemma4_without_its_soft_token_step_is_refused(tmp_path):
+    """#86: served at vLLM's default step of 1120, a line LoRA trained at 140
+    read even lines at CER 0.90/1.04. vLLM starts fine, so nothing else would
+    catch it."""
+    root = tmp_path / "registry"
+    spec = _spec(tmp_path, "gemma4-nostep", GEMMA4, vllm_venv=HYBRID_VLLM_VENV)
+    assert any("max_soft_tokens" in p for p in launch_problems(Registration(**spec)))
+    with pytest.raises(RegistrationError, match="--mm-processor-kwargs"):
+        write_registration(root, spec)
+    assert not registration_path(root, "gemma4-nostep").exists()
+
+
+@pytest.mark.parametrize("args, step", [
+    (["--mm-processor-kwargs", '{"max_soft_tokens": 280}'], 280),
+    (['--mm-processor-kwargs={"max_soft_tokens": 560}'], 560),
+    (["--mm-processor-kwargs", '{"do_pan_and_scan": true}'], None),
+    (["--mm-processor-kwargs", "not json"], None),
+    (["--mm-processor-kwargs"], None),
+    (["--max-model-len", "8192"], None),
+    (None, None),
+])
+def test_the_served_step_is_read_from_vllm_args(args, step):
+    assert served_soft_tokens(args) == step
+
+
+def test_an_operator_step_is_kept_by_the_runner(tmp_path):
+    """setdefault semantics, as for the venv: a step someone set stays."""
+    pipeline, store, root = _pipeline(tmp_path)
+    job = store.create(TrainRequest(
+        engine="vllm", model_id="gemma4-trained", force=True, base_model=GEMMA4,
+        dataset=DatasetSpec(hf_repo="dh-unibe/x", train_projects=["p"])))
+    spec = _spec(tmp_path, "gemma4-trained", GEMMA4, vllm_args=soft_token_args(280))
+    pipeline._write_registration(job, spec, Path(spec["local_path"]), metrics=Metrics(cer=0.2))
+    written = read_registration(root, "gemma4-trained")
+    assert served_soft_tokens(written.vllm_args) == 280
+    assert written.vllm_venv == HYBRID_VLLM_VENV
 
 
 @pytest.mark.parametrize("engine, base", [

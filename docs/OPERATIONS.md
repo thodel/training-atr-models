@@ -291,6 +291,11 @@ share is the complete entry, and only `enabled` changes.
 1. **vllm only:** merge the adapter first, on idhefix, with
    `scripts/merge_loras.py` from the serving repo. vLLM 0.11 cannot serve the
    adapter before that.
+   **Gemma 4** needs `vllm_venv: vllm-next` and its trained soft-token step,
+   `vllm_args: ['--mm-processor-kwargs', '{"max_soft_tokens": 140}']` for the
+   line arms (the step is in `processor_config.json` beside the adapter); at
+   vLLM's default of 1120 even lines read at CER 0.90 (#86), and a registration
+   without the kwarg is refused (#83).
 2. **Test it** through the gateway with the gate's header, as in
    [Registering by hand](#registering-by-hand), step 3. The page comes from
    `$JOBS/<job_id>/data/pages_val.lst`. Go on only if `text` is not empty.

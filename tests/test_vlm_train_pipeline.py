@@ -106,8 +106,11 @@ class FakeRunner:
 
     def __init__(self, *, fail_on: str | None = None, exit_code: int = 1,
                  write_adapter: bool = True, write_report: bool = True,
-                 report: dict | str | None = None) -> None:
+                 report: dict | str | None = None,
+                 processor_config: dict | None = None) -> None:
         self.commands: list[list[str]] = []
+        #: What ``processor.save_pretrained`` would leave beside the adapter.
+        self.processor_config = processor_config
         self.env: dict | None = None
         self.fail_on = fail_on
         self.exit_code = exit_code
@@ -132,6 +135,9 @@ class FakeRunner:
             (out / ADAPTER_CONFIG).write_text('{"r": 64}', encoding="utf-8")
             (out / "adapter_model.safetensors").write_bytes(b"ADAPTER")
             (out / "checkpoint-10").mkdir(exist_ok=True)  # must not be copied
+            if self.processor_config is not None:
+                (out / "processor_config.json").write_text(
+                    json.dumps(self.processor_config), encoding="utf-8")
         if kind == "test" and self.write_report:
             report = Path(cmd[cmd.index("--report") + 1])
             report.parent.mkdir(parents=True, exist_ok=True)
@@ -440,6 +446,71 @@ def test_the_registration_carries_the_scale_the_model_trained_at(store, settings
     own = read_registration(settings.registry_root, "qwen3vl-own-budget-v1")
     assert default.max_pixels == VLM_PIXEL_BUDGET["line"]
     assert own.max_pixels == 512 * 32 * 32
+
+
+GEMMA4 = "google/gemma-4-E4B-it"
+#: transformers 5.17's layout of a saved Gemma 4 processor: the image settings
+#: nested under image_processor, the step apply_visual_budget set among them.
+GEMMA4_PROCESSOR = {"image_processor": {"max_soft_tokens": 140, "patch_size": 16,
+                                        "pooling_kernel_size": 3}}
+
+
+def _gemma_settings(settings) -> None:
+    tf5 = settings.venvs_root / "vlm-train-tf5" / "bin"
+    tf5.mkdir(parents=True, exist_ok=True)
+    (tf5 / "python").touch()
+
+
+def test_a_gemma_registration_carries_its_trained_step_and_its_pixels(store, settings):
+    """#83/#86: a Gemma 4 LoRA must be served at the max_soft_tokens step it
+    trained at. Asked for the line budget (262 144 px), the processor rounded up
+    to step 140, which carries 140 * 48**2 = 322 560 px — that, not the request,
+    is what the registration says, and the step goes to vLLM as a kwarg."""
+    _gemma_settings(settings)
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}),
+                       FakeRunner(processor_config=GEMMA4_PROCESSOR),
+                       request=request_with(model_id="gemma4-line-v1", base_model=GEMMA4))
+    assert job.status == "completed", job.error
+
+    spec = read_registration(settings.registry_root, "gemma4-line-v1")
+    assert spec.max_pixels == 140 * 48 * 48 != VLM_PIXEL_BUDGET["line"]
+    assert spec.vllm_args == ["--mm-processor-kwargs", '{"max_soft_tokens": 140}']
+    assert spec.vllm_venv == "vllm-next"
+
+
+def test_a_gemma_adapter_without_its_processor_config_is_not_registered(store, settings):
+    """No step to serve at means no registration, rather than one vLLM would
+    serve at its default 1120 — the CER 0.90 of #86."""
+    _gemma_settings(settings)
+    job = run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}), FakeRunner(),
+                       request=request_with(model_id="gemma4-noproc-v1", base_model=GEMMA4))
+    assert job.status == "failed"
+    assert "max_soft_tokens" in job.error
+    assert not (trained_dir(settings.registry_root) / "gemma4-noproc-v1.yaml").exists()
+
+
+def test_a_qwen_registration_keeps_the_requested_budget_and_no_kwarg(store, settings):
+    """A Qwen processor bounds pixels rather than stepping them: its saved
+    config has no max_soft_tokens, and nothing about its registration changes."""
+    run_pipeline(store, settings, FakeSource({"train": 4, "eval": 2}),
+                 FakeRunner(processor_config={"image_processor": {
+                     "patch_size": 16, "merge_size": 2, "max_pixels": 262144}}))
+    spec = read_registration(settings.registry_root, "qwen3vl-thun-v1")
+    assert spec.max_pixels == VLM_PIXEL_BUDGET["line"]
+    assert spec.vllm_args is None
+
+
+def test_the_trained_step_is_read_from_either_processor_file(tmp_path):
+    from vlm_train_svc.runner import trained_soft_tokens
+
+    assert trained_soft_tokens(tmp_path) is None
+    (tmp_path / "preprocessor_config.json").write_text(json.dumps(
+        {"max_soft_tokens": 560, "patch_size": 16, "pooling_kernel_size": 3}),
+        encoding="utf-8")
+    assert trained_soft_tokens(tmp_path) == (560, 560 * 48 * 48)
+    (tmp_path / "processor_config.json").write_text(json.dumps(GEMMA4_PROCESSOR),
+                                                    encoding="utf-8")
+    assert trained_soft_tokens(tmp_path) == (140, 322560)
 
 
 def test_the_registration_carries_a_generation_budget_only_when_the_job_set_one(
