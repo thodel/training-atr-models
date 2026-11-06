@@ -334,6 +334,44 @@ def resume_point(checkpoint_dir: str | Path) -> Path | None:
     return max(candidates, key=when)
 
 
+#: What ``ketos train --resume`` needs to read its own checkpoint. Lightning 2.6
+#: leaves ``weights_only`` unset and torch ≥ 2.6 then defaults it to True, which
+#: refuses the ``VGSLRecognitionTrainingConfig`` kraken 7.0.2 pickles into every
+#: checkpoint — so every resume failed at load (UBELIX 21288367, 5.11.2026,
+#: checkpoint_51). The override only applies where the call site left
+#: ``weights_only`` unset, and the files are the ones this job wrote itself.
+RESUME_ENV = {"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}
+
+#: Where :func:`set_aside_failed_abort` moves an abort checkpoint; outside the
+#: ``checkpoint_*.ckpt`` glob, so :func:`resume_point` no longer sees it.
+FAILED_ABORT_PREFIX = "failed-resume_"
+
+
+def set_aside_failed_abort(checkpoint_dir: str | Path, since: float) -> Path | None:
+    """Move away the abort checkpoint a failed resume wrote, or None.
+
+    A ``ketos train --resume`` that fails at load still writes
+    ``checkpoint_abort.ckpt`` — of the model it built afresh, epoch 0, step 0
+    (21288367 again). It is then the newest checkpoint, and the next attempt
+    would "resume" from it: training from scratch under a resume banner. It is
+    set aside, not deleted, and only when the attempt that started at ``since``
+    wrote no epoch checkpoint — after one, the abort is real progress.
+    """
+    directory = Path(checkpoint_dir)
+    abort = directory / ABORT_CHECKPOINT
+    try:
+        if abort.stat().st_mtime < since:
+            return None
+    except OSError:
+        return None
+    for path in directory.glob("checkpoint_*.ckpt"):
+        if _CKPT_RE.match(path.name) and path.stat().st_mtime >= since:
+            return None
+    target = directory / f"{FAILED_ABORT_PREFIX}{int(since)}.ckpt"
+    abort.rename(target)
+    return target
+
+
 # ── report parsing ──────────────────────────────────────────────────────────
 # kraken/templates/report renders "<value>\t<label>" rows. The labels below are
 # verbatim from that template.

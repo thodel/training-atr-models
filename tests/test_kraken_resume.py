@@ -37,8 +37,10 @@ from atr_training import runner_base
 from atr_training.contracts import KrakenTrainParams
 from atr_training.ketos_cmd import (
     ABORT_CHECKPOINT,
+    FAILED_ABORT_PREFIX,
     KetosCommandError,
     resume_point,
+    set_aside_failed_abort,
     train_cmd,
 )
 from atr_training.runner_base import Cancelled, Preempted, SubprocessRunner
@@ -232,3 +234,60 @@ def test_the_grace_fits_inside_slurms_warning():
     """The batch files get SIGTERM 120 s before the kill (--signal=B:TERM@120)."""
     assert runner_base.CHILD_STOP_GRACE_S < 120
     assert kraken_runner.resume_point is resume_point
+
+
+# ── what UBELIX 21288367 found (5.11.2026) ─────────────────────────────────
+def test_a_resume_lets_torch_read_the_checkpoint_kraken_wrote(store, settings):
+    """torch ≥ 2.6 refused kraken's own config class at load: every resume failed."""
+    # fail_on="train" ends the job there, so the env kept is train's.
+    resumed = FakeRunner(fail_on="train")
+    job, ckpt = _resumable_job(store, settings)
+    _touch(ckpt / "checkpoint_02-0.6000.ckpt", time.time() - 60)
+    Pipeline(store, settings, runner=resumed, source=FakeSource({})).execute(job.id)
+    assert resumed.env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] == "1"
+    assert resumed.env["CUDA_VISIBLE_DEVICES"], "the card is still chosen as before"
+
+
+def test_a_fresh_run_keeps_torchs_default(store, settings):
+    job, _ = _resumable_job(store, settings)
+    runner = FakeRunner(fail_on="train")
+    Pipeline(store, settings, runner=runner, source=FakeSource({})).execute(job.id)
+    assert "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD" not in runner.env
+
+
+def test_the_abort_of_a_failed_resume_is_set_aside(tmp_path):
+    """Epoch 0, step 0, and newest: resuming from it would start from scratch."""
+    started = time.time()
+    _touch(tmp_path / "checkpoint_51-0.0382.ckpt", started - 200)
+    _touch(tmp_path / ABORT_CHECKPOINT, started + 20)
+    aside = set_aside_failed_abort(tmp_path, started)
+    assert aside is not None and aside.name.startswith(FAILED_ABORT_PREFIX)
+    assert aside.exists(), "set aside, not deleted"
+    assert resume_point(tmp_path).name == "checkpoint_51-0.0382.ckpt"
+
+
+def test_an_abort_after_progress_or_from_before_stays(tmp_path):
+    started = time.time()
+    _touch(tmp_path / "checkpoint_52-0.0400.ckpt", started + 10)
+    _touch(tmp_path / ABORT_CHECKPOINT, started + 20)
+    assert set_aside_failed_abort(tmp_path, started) is None, "the attempt trained an epoch"
+    (tmp_path / "checkpoint_52-0.0400.ckpt").unlink()
+    _touch(tmp_path / ABORT_CHECKPOINT, started - 20)
+    assert set_aside_failed_abort(tmp_path, started) is None, "an earlier interruption's"
+    assert set_aside_failed_abort(tmp_path / "none", started) is None
+
+
+def test_a_failed_resume_leaves_the_epoch_checkpoint_as_the_resume_point(store, settings):
+    job, ckpt = _resumable_job(store, settings)
+    _touch(ckpt / "checkpoint_51-0.0382.ckpt", time.time() - 60)
+
+    class AbortingRunner(FakeRunner):
+        def run(self, cmd, log_path, env=None, on_start=None):
+            if "train" in cmd:
+                (ckpt / ABORT_CHECKPOINT).write_bytes(b"epoch 0")
+            return super().run(cmd, log_path, env=env, on_start=on_start)
+
+    done = Pipeline(store, settings, runner=AbortingRunner(fail_on="train"),
+                    source=FakeSource({})).execute(job.id)
+    assert done.status == "failed"
+    assert resume_point(ckpt).name == "checkpoint_51-0.0382.ckpt"

@@ -12,6 +12,7 @@ from atr_training.convergence import (
     FLOOR_FROM_SCRATCH,
     check_convergence,
     floor_for,
+    guaranteed_epochs,
     plan_steps,
 )
 
@@ -109,3 +110,37 @@ def test_no_line_count_means_no_judgement(lines):
     """Refusing on a missing number would block a run for a reason about us
     rather than about the configuration."""
     assert check_convergence("kraken", True, lines, 256, 50) is None
+
+
+# ── early stopping (#171) ───────────────────────────────────────────────────
+def test_quit_fixed_is_held_to_its_epochs():
+    assert guaranteed_epochs(150, "fixed", 30, 10) == 150
+    assert guaranteed_epochs(150, None, None, None) == 150   # VLM / TrOCR params
+
+
+def test_quit_early_is_guaranteed_only_min_epochs_or_lag():
+    assert guaranteed_epochs(150, "early", 30, 10) == 30
+    assert guaranteed_epochs(150, "early", None, 10) == 10   # ketos' --min-epochs is 0
+    assert guaranteed_epochs(20, "early", 30, 10) == 20      # never more than asked
+
+
+def test_the_ubelix_run_that_stopped_at_420_steps_is_refused():
+    """UBELIX 21271959, 05.11.2026: 1,786 samples, batch 128, 150 epochs,
+    quit early, min_epochs 30, lag 10. Budgeted at 2,100 steps, it stopped at
+    epoch 29 — 420 steps — with CER 0.987 and length ratio 0.015."""
+    verdict = check_convergence("kraken", from_scratch=True, train_samples=1786,
+                                effective_batch=128, epochs=150,
+                                early_stop_epochs=guaranteed_epochs(150, "early", 30, 10))
+    assert verdict.ok is False
+    assert verdict.budget.total_steps == 420
+    assert "early stopping may end it after 30 of its 150 epochs" in verdict.reason
+    assert "raise min_epochs to ~143" in verdict.reason
+    assert "quit: fixed" in verdict.reason
+
+
+def test_the_same_run_at_quit_fixed_passes():
+    verdict = check_convergence("kraken", from_scratch=True, train_samples=1786,
+                                effective_batch=128, epochs=150,
+                                early_stop_epochs=guaranteed_epochs(150, "fixed", None, 10))
+    assert verdict.ok is True
+    assert verdict.budget.total_steps == 2100
