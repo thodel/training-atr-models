@@ -64,6 +64,8 @@ than the poll is still seen. 45,486 MiB is what an A40 makes usable.
 | vllm | olmOCR-2-7B, px4m | page | 2 × 8 | bf16 | 63,728–65,558 | **140–144 %** | H100 | full runs | `20261013T121310Z-olmocr2-7b-medieval-page-px4m-native` and 5 more |
 | kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 256 | — | 43,536 | **95.7 %** | A40 | full epoch, `german_val.arrow`, no ceiling (hand-run, 07.10.2026) | `scripts/measure_kraken_arms.py` |
 | kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 256 | — | 8,894 | 19.6 % | A40 | full run, 197,083 lines, ceiling 60:1 (cut 4.8 %) | `20261027T072036Z-kraken-collapse-probe-131` |
+| kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 128 | — | 20,134 | 44.3 % | A40 | full epoch, `german_val.arrow`, no ceiling (hand-run, 07.10.2026) | `scripts/measure_kraken_arms.py` |
+| kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 128 | — | 16,228 | 35.7 % | RTX 4090 (UBELIX) | the same full epoch, same argv and arrows (06.11.2026) | `scripts/measure_kraken_arms.py`, Slurm 21332351 |
 | kraken | `KRAKEN_PLUS_SPEC`, from scratch | line | 128 | — | 3,970–4,046 | 8.9 % | RTX 4090 (UBELIX) | full runs, 1,786 lines, widest 22:1 | `20261105T193111Z-kraken-bern-hertwig-scratch-ubelix-v2`, `20261106T064743Z-…-v3` |
 | kraken | fine-tune of `kraken-german-xix-v1` | line | 32 | — | 18,400 | 40.5 % | A40 | full run, 38,360 lines, ceiling as dry run only | `20261026T193646Z-kraken-german-xix-blb-v1` |
 | kraken | fine-tune of `cursive_inzigkofen` and its offspring | line | 16 | — | 3,952–6,930 | 8.7–15.2 % | A40 | full runs, 1,786–4,897 lines | `20261022T110104Z-kraken-bern-hertwig-v1` and 3 more |
@@ -264,14 +266,25 @@ pin holds across the queue but not across that resume.
   - **trocr beyond `trocr-base`.** Every trocr point is the base model; a large
     one has none, and goes to UBELIX.
 
-  The kraken batch sweep on the uncut arrow, 07.10.2026 (#171):
+  The kraken batch sweep on the uncut arrow (#171): `german_val.arrow` as
+  training data, `german_test.arrow` as evaluation, `KRAKEN_PLUS_SPEC` from
+  scratch, one full epoch each, `scripts/measure_kraken_arms.py`. asteraix A40
+  on 07.10.2026; UBELIX RTX 4090 on 06.11.2026 with the same argv and the same
+  two arrows (sha256-checked copies), job 21332351:
 
-  | Batch | Peak own | Of an A40 (45,486) | Of an RTX 4090 (23,028) |
-  |---:|---:|---:|---:|
-  | 32 | 12,220 MiB | 26.9 % | 53.1 % |
-  | 64 | 13,766 MiB | 30.3 % | 59.8 % |
-  | 128 | **20,134 MiB** | 44.3 % | **87.4 %** |
-  | 256 | 43,536 MiB | 95.7 % | **does not fit** |
+  | Batch | Peak own, asteraix A40 | Of an A40 (45,486) | Peak own, UBELIX RTX 4090 | Of an RTX 4090 (23,028) |
+  |---:|---:|---:|---:|---:|
+  | 32 | 12,220 MiB | 26.9 % | — | 53.1 % by the A40 figure |
+  | 64 | 13,766 MiB | 30.3 % | — | 59.8 % by the A40 figure |
+  | 128 | **20,134 MiB** | 44.3 % | **16,228 MiB** | **70.5 %** |
+  | 256 | 43,536 MiB | 95.7 % | — | **does not fit** |
+
+  The same run peaks 19 % lower on the 4090 (16,228 against 20,134 MiB, 177 s
+  against 168 s for the epoch). Why is not measured. The likely reason is the
+  one §1 gives for H100 against A40: a larger card puts the caching allocator
+  under less pressure, so it keeps more. A different cuDNN algorithm choice on
+  Ada than on Ampere is the other candidate. Either way the A40 figure is the
+  safe one to plan with, and it is what `kraken_batch_fits.py` checks against.
 
   Memory grows far faster than the batch: a batch is padded to its widest
   line, and the larger it is, the likelier it holds one. So a kraken run fits
@@ -280,11 +293,9 @@ pin holds across the queue but not across that resume.
   (`ubelix/kraken_batch_fits.py`, for `KRAKEN_PLUS_SPEC` from scratch; another
   network is "not checked"). The path there is `ubelix/kraken-train.def`
   (ketos 7.0.2, as on asteraix) and the two stages in `ubelix/README.md`.
-  The first peak on UBELIX itself (5./6.11.2026, Hertwig, batch 128) is
-  3,970–4,046 MiB: a fifth of the 20,134 the sweep gives for 128, because its
-  widest line is 22:1 where the sweep's arrow reached 135:1. So the sweep is a
-  safe upper bound, not a forecast. Still missing: a UBELIX peak on the sweep's
-  own arrow, the like-for-like comparison. What the
+  A training corpus with narrower lines needs far less: Hertwig at batch 128
+  (widest line 22:1, against 135:1 in the sweep's arrow) peaked at 3,970–4,046
+  MiB on the 4090 (§1). So the sweep is a safe upper bound, not a forecast. What the
   image ceiling of #145 does at batch 256 is the collapse-probe row in §1.
 - **Whether a run on asteraix can be reported.** It writes no job record, so it
   appears in no report and no comparison (#156). A rule that sends work there and
