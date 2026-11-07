@@ -98,6 +98,18 @@ def _access_settings_never_come_from_env_files(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_repo_listing_survives_a_test():
+    """``hf_source.repo_files`` keeps one listing per process (#204); per test,
+    so a fake hub in one test is never the answer in the next."""
+    from atr_training import hf_source
+
+    # getattr: a test may have it monkeypatched to a plain function.
+    getattr(hf_source.repo_files, "cache_clear", lambda: None)()
+    yield
+    getattr(hf_source.repo_files, "cache_clear", lambda: None)()
+
+
+@pytest.fixture(autouse=True)
 def _host_identity_never_comes_from_env_files(monkeypatch):
     """Per test, like the access settings."""
     monkeypatch.setenv("ATR_TRAIN_HOST_ID", TEST_HOST_ID)
