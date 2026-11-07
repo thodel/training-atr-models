@@ -251,3 +251,34 @@ def test_main_warns_about_shared_projects_but_does_not_refuse(tmp_path, capsys):
     assert sl.main([str(own)], fetch=fetch) == 0
     out, err = capsys.readouterr()
     assert "WARNING" not in err, "kurrent-xix given its own projects only: clean"
+
+
+# ── one question per directory, however many entries name it (#204) ────────
+def _many(tmp_path, n):
+    spec = tmp_path / "many.json"
+    spec.write_text(json.dumps({"datasets": [
+        {"hf_repo": "o/nested", "revision": "a" * 40, "train_projects": ["A"]}
+        for _ in range(n)]}), encoding="utf-8")
+    return spec
+
+
+def test_576_entries_of_one_repo_ask_the_hub_twice(tmp_path, capsys):
+    fetch = _fake(NESTED)
+
+    assert sl.main([str(_many(tmp_path, 576))], fetch=fetch) == 0
+
+    assert fetch.calls == [("o/nested", "a" * 40, "data"), ("o/nested", "a" * 40, "data/train")]
+    assert capsys.readouterr().out.count("spec layout: ok") == 576
+
+
+def test_a_hub_that_refused_once_is_not_asked_again(tmp_path, capsys):
+    calls = []
+
+    def fetch(repo, revision, path):
+        calls.append(path)
+        raise sl.HubUnreachable("HTTP 429")
+
+    assert sl.main([str(_many(tmp_path, 50))], fetch=fetch) == 0, "could not look is not wrong"
+
+    assert calls == ["data"]
+    assert capsys.readouterr().out.count("spec layout: not checked  o/nested") == 50
