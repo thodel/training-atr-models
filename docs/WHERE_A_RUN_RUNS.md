@@ -50,11 +50,14 @@ than the poll is still seen. 45,486 MiB is what an A40 makes usable.
 | Engine | Base | Gran. | Batch × acc. | Quant. | Peak own | Of an A40 | Card | Source | Job |
 |---|---|---|---|---|---:|---:|---|---|---|
 | vllm | Qwen3.5-4B | line | 2 × 8 | 4-bit | 9,954 | 21.9 % | A40 | **lower bound**: 400 steps, 6,400 of 221,523 lines | `20261017T114213Z-throughput-qwen35-4b-a40` |
+| vllm | Qwen3.5-4B | line | 2 × 8 | 4-bit | **10,464** | **23.0 %** | A40 | **worst case**: the 96 most expensive of 219,261 lines, by text (up to 376 chars) and by crop area (all 219,261 crops sized, widest 4,157,010 px) (06.11.2026, #379) | `measure_vlm_arms.py --like` that job `--worst-case` |
 | vllm | Qwen3-VL-4B | line | 16 × 1/2/4 | bf16 | 21,466–22,486 | 47.2–49.4 % | A40 | **lower bound**: 750–4,500 steps of 881,902 lines | `20261012T135706Z-vlm-xix-effective-batch-01-noise-s42` and 7 more, 12.–17.10. |
+| vllm | Qwen3-VL-4B | line | 16 × 2 | bf16 | **22,876** | **50.3 %** | A40 | **worst case**: the 96 most expensive of 873,468 lines, by text (up to 172 chars) and by crop area (all crops sized, widest 11,442,980 px) (06.11.2026, #379) | `measure_vlm_arms.py --like 20261017T111646Z-vlm-xix-effective-batch-01-r0-3de4c2e3aef1 --worst-case` |
 | vllm | Qwen3.5-4B | line | 16 × 1 | 4-bit | 34,742 | 76.4 % | H100 | full run, 221,523 lines | `20261014T194417Z-ladder-med-qwen35-4b-v2` |
 | vllm | Qwen3.5-4B | line | 16 × 1 | bf16 | 36,414–36,498 | 80.1–80.2 % | H100 | full runs, 221,523 and 473,549 lines | `20261023T194329Z-ladder-med-qwen35-4b-bf16-v2`, `20261009T150138Z-qwen3.5-4b-german-kurrent-xvi-xix-v1` |
 | vllm | Qwen3.5-9B | line | 16 × 1 | 4-bit | 44,412 | **97.6 %** | H100 | full run, 221,523 lines | `20261014T193118Z-ladder-med-qwen35-9b-v2` |
-| vllm | Qwen3.5-9B | line | 16 × 1 | 4-bit | **43,866** | **96.4 %** | A40 | **worst case by text only**: the 48 longest of 219,261 lines (up to 376 chars) and 48 from the head; a compiled crop has no box, so no pixel tail (06.11.2026, #379) | `measure_vlm_arms.py --like` that job `--worst-case` |
+| vllm | Qwen3.5-9B | line | 16 × 1 | 4-bit | 43,866 | 96.4 % | A40 | **worst case by text only**: the 48 longest of 219,261 lines (up to 376 chars) and 48 from the head; drawn before crops were sized (06.11.2026, #379) | `measure_vlm_arms.py --like` that job `--worst-case` |
+| vllm | Qwen3.5-9B | line | 16 × 1 | 4-bit | **44,446** | **97.7 %** | A40 | **worst case**: the 96 most expensive of 219,261 lines, by text (up to 376 chars) and by crop area (all crops sized, widest 4,157,010 px); 1,040 MiB to spare (06.11.2026, #379) | `measure_vlm_arms.py --like` that job `--worst-case` |
 | vllm | Qwen3.5-27B, Qwen3.8-27B | line | 16 × 1 | 4-bit | 62,324 | **137 %** | H100 | full runs, 221,523 lines | `20261013T043436Z-ladder-med-qwen35-27b-v2`, `20261010T111013Z-ladder-med-qwen38-27b-v2` |
 | vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 27,763 | 61.0 % | A40 | **lower bound**: head of the file, 96 of 9,441 samples (#137) | hand-run |
 | vllm | Qwen3-VL-8B | page | 1 × 16 | bf16 | 28,612 | 62.9 % | A40 | **lower bound**: 100 steps, 1,600 of 2,724 pages | `20261104T200338Z-throughput-qwen3vl-8b-page-a40` |
@@ -98,11 +101,16 @@ How to read it:
   that row is Qwen3.5-4B pages at batch 2: on an A40 its worst case ran through
   at 45,166 MiB, 320 MiB (0.7 %) short of the limit. Two rows sit just outside
   the margin, olmOCR-2-7B pages (44,508 MiB, 2.2 % to spare) and Qwen3.5-9B lines
-  in 4-bit (43,866 MiB, 3.6 %): they fit an A40 with nothing else on it, and a
-  second process on the card ends them. In every pair measured on both cards the
-  H100 figure was the larger: 29,116/28,612, 44,412/43,866, ~50,000/45,166 and
-  49,542/44,508 MiB. An H100 figure above the line is therefore a question for
-  an A40, not an answer.
+  in 4-bit (44,446 MiB, 2.3 %): they fit an A40 with nothing else on it, and a
+  second process on the card ends them. For the 9B lines the pixel tail decided
+  it: drawn by text alone the same geometry peaked at 43,866 MiB. In three of
+  the four pairs measured on both cards the H100 figure was the larger:
+  29,116/28,612, ~50,000/45,166 and 49,542/44,508 MiB. The fourth is the 9B
+  lines, where the A40 worst case (44,446) tops the H100 full run (44,412) by
+  34 MiB: the widest crops of a corpus, put in one batch on purpose, cost more
+  than any batch the shuffle happened to draw. An H100 figure above the line is
+  therefore a question for an A40, not an answer, and one just below it is not
+  a promise either.
 - **What drives the peak is batch per device and pixels, not the corpus.**
   Qwen3.5-4B lines in 4-bit: 9,954 MiB at batch 2 against 34,742 at batch 16.
   olmOCR-2-7B pages at the same batch: 42,608, 49,542 and up to 65,558 MiB as the
@@ -274,14 +282,10 @@ pin holds across the queue but not across that resume.
   records were never affected, and they are what the table reads.
 
   Missing:
-  - **A40 points for the line rows.** Qwen3.5-4B (2 × 8, 4-bit) and
-    Qwen3-VL-4B (16 × 1/2/4, bf16) on lines are step-bounded; a worst-case draw
-    (#379) turns each into a point, as it did for the 8B pages.
-  - **The pixel tail of compiled line corpora.** `worst_case_samples` ranks
-    pixels by box area, and a compiled line crop has none (`bbox: null`), so a
-    line draw is a text draw: the Qwen3.5-9B point covers the 48 longest of
-    219,261 lines and 48 from the head of the file. Reading each crop's size
-    from its image header would close this.
+  - *(Closed by #379, 06.11.2026: the two step-bounded A40 line rows are
+    worst-case points now, and a worst-case draw sizes every compiled crop
+    from its image header, so a line draw has a pixel tail. A compiled crop
+    has no box, `bbox: null`, and was counted as a whole page before.)*
   - **kraken before and after the ceiling on one corpus.** The two batch-256 rows
     differ in corpus as well as ceiling.
   - **trocr beyond `trocr-base`.** Every trocr point is the base model; a large
@@ -318,10 +322,6 @@ pin holds across the queue but not across that resume.
   (widest line 22:1, against 135:1 in the sweep's arrow) peaked at 3,970–4,046
   MiB on the 4090 (§1). So the sweep is a safe upper bound, not a forecast. What the
   image ceiling of #145 does at batch 256 is the collapse-probe row in §1.
-- **Whether a run on asteraix can be reported.** It writes no job record, so it
-  appears in no report and no comparison (#156). A rule that sends work there and
-  loses its provenance is a bad trade; this gap bounds how much work should move
-  before it is closed.
 - **FSDP in the `vlm-train` venv.** Installed, unmeasured, and the only path that
   would make two A40s buy speed rather than only capacity.
 
