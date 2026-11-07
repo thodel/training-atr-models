@@ -18,10 +18,12 @@ import nothing from ``datasets``: the trainer service hands us plain dicts.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import shutil
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -60,6 +62,8 @@ __all__ = [
     "granularity_files",
     "hub_cache_dir",
     "list_projects",
+    "local_snapshot_files",
+    "repo_files",
     "page_stem",
     "pick_column",
     "project_glob",
@@ -123,21 +127,75 @@ def project_glob(split: str, project: str) -> str:
     return f"data/{split}/{project}/*.parquet"
 
 
-def list_projects(hf_repo: str, split: str, revision: str | None = None) -> list[str]:
-    """Enumerate project directories under ``data/<split>/`` on the hub.
+@lru_cache(maxsize=64)
+def repo_files(hf_repo: str, revision: str | None = None) -> tuple[str, ...]:
+    """Every file path of a dataset repo at ``revision``, listed once per process.
 
-    One HTTP call via the hub's ``list_repo_files`` API — no data downloaded.
-    Returns bare directory names (no ``data/<split>/`` prefix). Raises
-    :class:`ProjectListingError` on network failure. An empty list is returned
-    as-is (caller decides whether that is an error).
+    The listing is the recursive tree, paged: ~26 requests for a repo of 349
+    project directories, ~50 for medieval-scripts' 694. A request of 576
+    datasets entries from one repo asked for it 576 times — once per entry in
+    :func:`collapse_complete_selection` — and spent the quota of 1,000 requests
+    per five minutes in the first minute of prepare (07.11.2026, #204). One
+    listing per (repo, revision) serves them all; a failure is not cached.
     """
     from huggingface_hub import HfApi
 
+    return tuple(HfApi().list_repo_files(hf_repo, revision=revision, repo_type="dataset"))
+
+
+def local_snapshot_files(hf_repo: str, data_files: list[str], revision: str | None,
+                         hf_home=None, files_fn=None) -> list[str] | None:
+    """The selection as paths in the local HF cache, or None to read from the hub.
+
+    ``datasets`` resolves every ``data_files`` pattern with its own tree request,
+    so a request with one entry per project pays two requests per entry even when
+    every byte is already on disk (#204: 576 entries, one cached snapshot). When
+    the revision is pinned and its snapshot directory exists, the patterns are
+    matched against the repo's file list instead (:func:`repo_files`, one listing
+    per process) and the files are read where they lie.
+
+    Only a **complete** match is used. Every file the hub lists for a pattern must
+    exist in the snapshot; one missing — a shard that was never fetched, a download
+    that died — and this returns None, and the caller loads from the hub as
+    before. A partly cached project would otherwise become a smaller corpus
+    without a word. Equally None for an unpinned revision (a local ``main`` may be
+    older than the hub's), a pattern that matches nothing, and a listing that
+    fails.
+    """
+    if not revision or not data_files:
+        return None
+    snapshot = hub_cache_dir(hf_repo, hf_home) / "snapshots" / revision
+    if not snapshot.is_dir():
+        return None
+    try:
+        listed = (files_fn or repo_files)(hf_repo, revision)
+    except Exception as exc:  # noqa: BLE001 — any failure means "ask the hub", as before
+        logger.debug("no local read for {}@{}: listing failed ({})", hf_repo, revision, exc)
+        return None
+    local: list[str] = []
+    for pattern in data_files:
+        wanted = sorted(f for f in listed if fnmatch.fnmatchcase(f, pattern))
+        if not wanted:
+            return None
+        paths = [snapshot / f for f in wanted]
+        if not all(path.is_file() for path in paths):
+            return None
+        local.extend(str(path) for path in paths)
+    return local
+
+
+def list_projects(hf_repo: str, split: str, revision: str | None = None) -> list[str]:
+    """Enumerate project directories under ``data/<split>/`` on the hub.
+
+    From :func:`repo_files`, so the listing is paid once per process however many
+    datasets entries name this repo — no data downloaded. Returns bare directory
+    names (no ``data/<split>/`` prefix). Raises :class:`ProjectListingError` on
+    network failure. An empty list is returned as-is (caller decides whether that
+    is an error).
+    """
     try:
         prefix = f"data/{split}/"
-        files = HfApi().list_repo_files(
-            hf_repo, revision=revision, repo_type="dataset"
-        )
+        files = repo_files(hf_repo, revision)
         dirs = sorted(
             {
                 f[len(prefix):].split("/")[0]

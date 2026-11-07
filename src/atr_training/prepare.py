@@ -28,6 +28,7 @@ from loguru import logger
 
 from atr_training.hf_source import (
     hub_cache_dir,
+    local_snapshot_files,
     page_stem,
     row_to_line,
     row_to_page,
@@ -173,6 +174,18 @@ class HFPageSource:
         self, hf_repo: str, data_files: list[str], revision: str | None = None
     ) -> Iterator[dict]:
         from datasets import load_dataset  # heavy; trainer venv only
+
+        local = local_snapshot_files(hf_repo, list(data_files), revision)
+        if local is not None:
+            # Every selected file is in the pinned snapshot already: read it there,
+            # without the tree request per pattern that `load_dataset(repo, …)`
+            # makes (#204). Same rows, same casting, no hub call at all.
+            logger.info("{} {}@{}: {} file(s) from the local snapshot, no hub request "
+                        "(data_files={})", "Loading" if self.cache else "Streaming",
+                        hf_repo, revision[:12], len(local), data_files)
+            ds = load_dataset("parquet", data_files={"train": local}, split="train",
+                              streaming=not self.cache, verification_mode="no_checks")
+            return iter(self._raw_images(ds))
 
         cached = hub_cache_dir(hf_repo)
         logger.info(
