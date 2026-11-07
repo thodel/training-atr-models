@@ -462,7 +462,8 @@ they start with `~`.
 which the separate lassberg/vlm_training project uses too. That is the level
 UBELIX caches at (`HF_HOME` there is `hf_hub/`, and `huggingface_hub` puts the
 cache in `HF_HOME/hub`), so both sides read and write the same entries. From
-16.09.2026 to 11.10.2026 the link pointed one level up, at `hf_hub/` itself,
+16.09.2026 to 07.11.2026 the link pointed one level up, at `hf_hub/` itself
+(a move recorded for 11.10.2026 did not hold; #204),
 where it kept a second cache in the old layout that UBELIX never read and
 that the storage pass of 09.10.2026 deleted (#207;
 [ASTERAIX_AND_UBELIX.md](ASTERAIX_AND_UBELIX.md#the-research-share)).

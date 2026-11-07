@@ -174,6 +174,8 @@ anders als auf `/scratch/.../runs/jobs` läuft hier **keine 30-Tage-Regel**: das
 Verzeichnis wird nie von selbst leer.
 
 **3. Einzige lokale Kopie, aber auf HuggingFace — 992 GB, kein freier Gewinn**
+*(Erledigt am 07.11.2026, ohne Löschung: die Kopie liegt jetzt in `hf_hub/hub/`,
+siehe §11.)*
 
 `hub/` hält `image-text_medieval-scripts_xiv-xv-xvi` als einzige lokale Kopie. Der
 Datensatz liegt öffentlich auf HF mit genau dieser Revision (1.098 GB), ist also
@@ -444,3 +446,34 @@ die Zählung.
 (eine Datenentscheidung, keine Aufräumregel, siehe §3) und jedes automatische
 Ausführen. Gestartet wird immer von einem Menschen. Die MCP liest Pläne,
 reicht sie aber nicht ein.
+
+## 11. 07.11.2026: die alte Ebene wuchs wieder, und `hub/` liegt jetzt im Cache (#204)
+
+**Inventar** (Slurm 21387605, 07.11., 07:58–08:18 CET): 25,5 % frei. Die alte
+Cache-Form `hf_hub/models--*` war auf 113,7 GiB gewachsen (27.10.: 40 GB),
+`hf_hub/datasets--*` auf 2,5 GiB. Die Einträge gehören der uid 2100010004, dem
+CIFS-Dienstkonto von asteraix und idhefix, nicht der UBELIX-Kennung.
+
+**Ursache:** `~/.cache/huggingface/hub` auf asteraix zeigte noch auf `…/hf_hub`
+statt `…/hf_hub/hub` (Datum des Links 16.09.2026; der für den 11.10. notierte
+Umzug hatte nicht gehalten, [ASTERAIX_AND_UBELIX.md](ASTERAIX_AND_UBELIX.md)).
+Geschrieben wurde dort vom 17.10. bis 07.11. 06:48, zuletzt vom Timer
+`atr-discovery`. Der Link ist umgesetzt, `scripts/check_env.sh` ohne Fehler;
+idhefix zeigt seit dem 15.10. richtig.
+
+**Was mit der alten Ebene geschah**, jeder Posten vorher gegen `hf_hub/hub/`
+gemessen (Grösse und Dateizahl, nicht der Name):
+
+| Posten | Grösse | Schritt |
+|---|---:|---|
+| Qwen3-Embedding-4B, trocr-kurrent-XVI-XVII, trocr-base-handwritten, harrier-oss-v1-0.6b, qwen3.5-4b-german-xix-v2 | 11,8 GB | nach `hf_hub/hub/` verschoben — es gab sie nur hier |
+| Qwen3.8-27B, Apertus-v1.5-8B, Qwen3-VL-8B, Qwen3.5-4B, Qwen3-VL-4B | 110 GB | gelöscht — `hf_hub/hub/` hält jedes in gleicher Grösse (Apertus: 55 GB, Obermenge) |
+| `datasets--…bern-disputation-1528` | 2,6 GB | an die Stelle des 10-KB-Stummels in `hf_hub/hub/` gesetzt (alle Revisionen, 10 parquet) |
+
+**Und `hub/`:** die 992 GB `image-text_medieval-scripts_xiv-xv-xvi` sind per
+`mv` an die Stelle des 21-KB-Stummels in `hf_hub/hub/` gewandert — dieselbe
+Revision `729e9b2721ba`, alle 694 Projektordner, ein Umbenennen auf demselben
+GPFS. `hf_hub_download(…, revision=729e9b2…)` mit `HF_HUB_OFFLINE=1` findet die
+Dateien dort. Damit ist der Posten aus §4.3 kein Löschkandidat mehr, sondern
+der Cache, aus dem die beiden Leuven-Läufe von #204 lesen; in `hub/` bleiben
+`CACHEDIR.TAG` und `.locks`.
