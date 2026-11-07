@@ -195,6 +195,32 @@ def shared_projects(selections: Dict[str, List[str]]) -> List[Tuple[str, str, in
     return sorted(out, key=lambda r: -r[2])
 
 
+def _once(fetch):
+    """``fetch``, asked at most once per (repo, revision, path) — failures included.
+
+    A spec with one dataset entry per project names the same repo hundreds of
+    times: 576 Leuven registers of medieval-scripts asked the hub 1,152 times for
+    the same two directories and spent the quota of 1,000 requests per five
+    minutes before the job started, so its prepare met 429s for its own one
+    listing (07.11.2026, #204). A failure is remembered as well: the next entry
+    would only meet the same 429, and every one of them is reported as not
+    checked either way.
+    """
+    seen: Dict[Tuple[str, Optional[str], str], Any] = {}
+
+    def fetch_once(repo: str, revision: Optional[str], path: str):
+        key = (repo, revision, path)
+        if key not in seen:
+            try:
+                seen[key] = fetch(repo, revision, path)
+            except HubUnreachable as exc:
+                seen[key] = exc
+        if isinstance(seen[key], HubUnreachable):
+            raise seen[key]
+        return seen[key]
+    return fetch_once
+
+
 def main(argv: List[str], fetch=fetch_tree) -> int:
     if len(argv) != 1:
         print(__doc__, file=sys.stderr)
@@ -208,6 +234,7 @@ def main(argv: List[str], fetch=fetch_tree) -> int:
     refused = 0
     selections: Dict[str, List[str]] = {}
     unchecked = 0
+    fetch = _once(fetch)
     for dataset in datasets:
         repo, split = dataset.get("hf_repo", "?"), dataset.get("split", "train")
         try:
