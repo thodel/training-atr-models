@@ -160,7 +160,8 @@ hardlinks, `copyfile` not `copy2`, tmp-then-`os.replace` in the same directory,
 GPFS side symlinks work, which is why `fanout.py` works on `/scratch` and would
 not on `/mnt`.
 
-**The Hugging Face cache is one cache since 11.10.2026.** Both sides read and
+**The Hugging Face cache is one cache since 07.11.2026** (on paper since
+11.10.2026; see the correction below). Both sides read and
 write `hf_hub/hub/`: UBELIX through `HF_HOME=…/Textrecognition_Training/hf_hub`
 (`huggingface_hub` puts the cache in `HF_HOME/hub`), asteraix through the
 symlink `~/.cache/huggingface/hub -> …/hf_hub/hub`. A dataset that `prepare`
@@ -178,7 +179,18 @@ UBELIX and not on asteraix. Measured on asteraix on 10.10.2026, the link
 still ended in `hf_hub`, and nothing but `CACHEDIR.TAG` and UBELIX's
 `datasets`, `modules` and `xet` directories was left at that level
 ([#207](https://github.com/thodel/training-atr-models/issues/207)). The link
-was moved to `hf_hub/hub/` on 11.10.2026. An entry in the old form appearing
+was moved to `hf_hub/hub/` on 11.10.2026 — or so it was recorded. On
+07.11.2026 it still pointed at `hf_hub`, with the link's own date 16.09.2026,
+so a move on 11.10. did not hold. Old-form entries had been written from
+17.10. to 07.11.2026, among them `Qwen3.8-27B` (52 GB, 29.10.), `Qwen3-VL-8B`
+(17 GB) and every morning at 06:48 what the `atr-discovery` timer fetched
+([#204](https://github.com/thodel/training-atr-models/issues/204)). The link
+was set to `hf_hub/hub/` on 07.11.2026 and `scripts/check_env.sh` passes. Five
+entries that existed only in the old form were moved into `hub/` the same day
+(Qwen3-Embedding-4B, trocr-kurrent-XVI-XVII, trocr-base-handwritten,
+harrier-oss-v1-0.6b, qwen3.5-4b-german-xix-v2); the old-form copies of models
+`hub/` already holds at the same size were left for a decision. An entry in
+the old form appearing
 under `hf_hub/` again means a host whose link points at the wrong level. The
 rule in [INFRASTRUCTURE.md](INFRASTRUCTURE.md#local-disk-or-the-share), *do
 not set `HF_HOME` on asteraix*, stands: it is about bypassing the share.
@@ -192,9 +204,10 @@ moved to `hf_hub/hub/` as well, and the old form held 21 entries again: 8 were
 moved into `hub/` (two LightOnOCR repos, bytellama, yolov9, swin and the first
 page model), 13 were duplicates of what `hub/` already had or stubs of a few
 KB — eight dataset directories with no download in them, written by a host
-that linked to the old level. Which one is not settled: tei is ruled out
-(checked 20.10.2026: no symlink, no HF variable, its downloads stay in a local
-cache), so it was idhefix before 15.10. or asteraix before 11.10. There is no
+that linked to the old level. tei is ruled out (checked 20.10.2026: no
+symlink, no HF variable, its downloads stay in a local cache). On 07.11.2026
+the answer was asteraix, whose link had never stopped pointing at the old
+level, and whose `atr-discovery` timer writes there at 06:48. There is no
 fourth host; `lassberg` is the `lassberg/vlm_training` project. The
 duplicates were deleted, and with them, through a mistake in the cleanup
 command, the only full copy of the `qwen3.5-4b-german-xix-v1` adapter (325

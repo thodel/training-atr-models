@@ -66,8 +66,9 @@ STALL_SECONDS = 1800
 #: der Vorschläge: zuerst, was nachweislich doppelt liegt.
 RECONSTRUCTIBLE = (
     ("hf_hub/datasets--*", "HF-Zwischenspeicher in der ALTEN Form, eine Ebene über "
-     "`hf_hub/hub/`. Seit dem 11.10.2026 schreibt niemand mehr dorthin: asteraix' "
-     "Symlink zeigt seither auf `hf_hub/hub/` (#207). Ein Eintrag hier ist ein "
+     "`hf_hub/hub/`. Seit dem 07.11.2026 schreibt niemand mehr dorthin: asteraix' "
+     "Symlink zeigt seither auf `hf_hub/hub/` (#207, #204; der für den 11.10. "
+     "notierte Umzug hatte nicht gehalten). Ein Eintrag hier ist ein "
      "Host, dessen Link auf die falsche Ebene zeigt — `scripts/check_env.sh` "
      "dort laufen lassen. Wird beim nächsten Zugriff neu geholt."),
     ("hf_hub/models--*", "Basismodelle in der alten Cache-Form, dieselbe Ebene. "
