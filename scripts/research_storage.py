@@ -91,12 +91,12 @@ RECONSTRUCTIBLE = (
 #: sind kein Beweis für Doppelung.
 EXPENSIVE_TO_RESTORE = (
     ("hub", "Ein zweiter HF-Zwischenspeicher neben `hf_hub`, entstanden als "
-     "HF_HOME eine Ebene höher zeigte. Er hält genau einen Datensatz, "
-     "`image-text_medieval-scripts_xiv-xv-xvi`, und zwar **als einzige lokale "
-     "Kopie** — der gleichnamige Eintrag in `hf_hub/hub/` ist ein 21-KB-Stummel. "
-     "Der Datensatz liegt öffentlich auf HuggingFace mit genau dieser Revision "
-     "(`729e9b2721ba`, 1.098 GB), ist also wiederherstellbar — aber als "
-     "Terabyte-Download, nicht als freier Gewinn."),
+     "HF_HOME eine Ebene höher zeigte. Bis zum 07.11.2026 hielt er "
+     "`image-text_medieval-scripts_xiv-xv-xvi` als einzige lokale Kopie (992 GB, "
+     "Revision `729e9b2721ba`); seither liegt sie im Zwischenspeicher, den die "
+     "Läufe lesen, `hf_hub/hub/` (#204). Was hier wieder auftaucht, stammt von "
+     "einem Host mit falsch gesetztem `HF_HOME` — erst prüfen, ob es woanders "
+     "fehlt, dann verschieben statt löschen."),
 )
 
 #: Materialisierte Arbeitsverzeichnisse abgeschlossener Läufe. Auch

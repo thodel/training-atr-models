@@ -152,7 +152,7 @@ One CIFS/GPFS filesystem, `wbkolleg_dh_1`, 12 T. Paths below are relative to
 | `registry/models.yaml`, `registry/trained/*.yaml` | the gateway (curated), the asteraix register stage and gate (trained) | the gateway; asteraix for the curated-id check | one writer per file; a Slurm job never writes here |
 | `trained-ubelix/` | a person, copying from UBELIX scratch | a person, registering by hand on asteraix | 3.8 GB on 09.10.2026 |
 | `eval_sets/german-medieval-v1/` | asteraix (`ketos compile`) | both | the durable copy of the held-out sets; kept outside the jobs tree on purpose ([EVAL_SETS.md](EVAL_SETS.md)) |
-| `hub/` | an old `HF_HOME` | nobody today | 992 GB, the only local copy of one dataset; not a duplicate ([RESEARCH_STORAGE.md](RESEARCH_STORAGE.md)) |
+| `hub/` | an old `HF_HOME` | nobody today | empty since 07.11.2026: its one dataset, `image-text_medieval-scripts_xiv-xv-xvi` (992 GB, the only local copy), was moved into `hf_hub/hub/` ([RESEARCH_STORAGE.md](RESEARCH_STORAGE.md) §11) |
 
 The rules both sides follow on the CIFS side (no `chmod`, no symlinks, no
 hardlinks, `copyfile` not `copy2`, tmp-then-`os.replace` in the same directory,
@@ -188,8 +188,10 @@ so a move on 11.10. did not hold. Old-form entries had been written from
 was set to `hf_hub/hub/` on 07.11.2026 and `scripts/check_env.sh` passes. Five
 entries that existed only in the old form were moved into `hub/` the same day
 (Qwen3-Embedding-4B, trocr-kurrent-XVI-XVII, trocr-base-handwritten,
-harrier-oss-v1-0.6b, qwen3.5-4b-german-xix-v2); the old-form copies of models
-`hub/` already holds at the same size were left for a decision. An entry in
+harrier-oss-v1-0.6b, qwen3.5-4b-german-xix-v2); the old-form copies of five
+models `hub/` already held at the same size (110 GB) were deleted, and
+`bern-disputation-1528` replaced its stub in `hub/`
+([RESEARCH_STORAGE.md](RESEARCH_STORAGE.md) §11). An entry in
 the old form appearing
 under `hf_hub/` again means a host whose link points at the wrong level. The
 rule in [INFRASTRUCTURE.md](INFRASTRUCTURE.md#local-disk-or-the-share), *do
