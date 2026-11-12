@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from atr_training.publish import (
+    MIT_LICENCE_TEXT,
     CARD_FILENAME,
     METADATA_FILENAME,
     PublishError,
@@ -437,8 +438,9 @@ def test_frontmatter_is_machine_readable_and_carries_the_cer(tmp_path: Path):
                                     "name": "Character Error Rate"}
 
 
-def test_no_licence_is_invented(tmp_path: Path):
-    assert "license" not in frontmatter(card_for(tmp_path, KRAKEN_META))
+def test_the_default_licence_is_mit_and_none_declares_nothing(tmp_path: Path):
+    assert frontmatter(card_for(tmp_path, KRAKEN_META))["license"] == "mit"
+    assert "license" not in frontmatter(card_for(tmp_path, KRAKEN_META, licence="none"))
     assert frontmatter(card_for(tmp_path, KRAKEN_META, licence="apache-2.0"))["license"] == (
         "apache-2.0"
     )
@@ -919,8 +921,8 @@ def gemma_dir(tmp_path: Path, metadata: dict = GEMMA_META, licence: bool = True)
 
 def test_a_gemma_4_card_names_the_base_terms_without_declaring_a_licence(tmp_path: Path):
     gemma_dir(tmp_path)
-    card = model_card(scan_trained(tmp_path).models[0], "dh-unibe/x")
-    assert "license" not in frontmatter(card)          # still not invented
+    card = model_card(scan_trained(tmp_path).models[0], "dh-unibe/x", licence="none")
+    assert "license" not in frontmatter(card)
     assert "This repo declares no licence." in card
     assert "`apache-2.0`" in card
     assert "https://ai.google.dev/gemma/docs/gemma_4_license" in card
@@ -975,6 +977,37 @@ def test_an_apache_base_with_its_licence_copy_is_uploaded(tmp_path: Path):
     result = publish_one(plan(scan_trained(tmp_path).models)[0], uploader, licence="base")
     assert result.status == "published"
     assert uploader.created == [("dh-unibe/gemma4-e4b-medieval-german-v1", True)]
+
+
+def test_an_mit_publish_writes_the_licence_and_keeps_the_base_copy(tmp_path: Path):
+    directory = gemma_dir(tmp_path)
+    uploader = FakeUploader()
+    result = publish_one(plan(scan_trained(tmp_path).models)[0], uploader)
+    assert result.status == "published"
+    assert (directory / "LICENSE").read_text(encoding="utf-8") == MIT_LICENCE_TEXT
+    assert "Digital Humanities Center, University of Bern" in MIT_LICENCE_TEXT
+    assert (directory / "LICENSE-base-apache-2.0").read_text(encoding="utf-8").startswith(
+        "Apache License")
+    card = (directory / "README.md").read_text(encoding="utf-8")
+    assert frontmatter(card)["license"] == "mit"
+    assert "This repo: `mit` — see [`LICENSE`](LICENSE)." in card
+    # a second publish leaves both files as they are
+    publish_one(plan(scan_trained(tmp_path).models, force=True)[0], uploader)
+    assert sorted(p.name for p in directory.glob("LICENSE*")) == [
+        "LICENSE", "LICENSE-base-apache-2.0"]
+
+
+def test_an_mit_publish_of_a_kraken_model_adds_the_licence_file(tmp_path: Path):
+    trained_dir(tmp_path, KRAKEN_META)
+    publish_one(plan(scan_trained(tmp_path).models)[0], FakeUploader())
+    model = scan_trained(tmp_path).models[0]
+    assert [p.name for p in model.licence_files] == ["LICENSE"]
+
+
+def test_a_dry_run_writes_no_licence_file(tmp_path: Path):
+    directory = trained_dir(tmp_path, KRAKEN_META)
+    publish_one(plan(scan_trained(tmp_path).models)[0], FakeUploader(), dry_run=True)
+    assert not (directory / "LICENSE").exists()
 
 
 def test_a_card_with_measured_granularity_names_level_n_cer_and_ratio(tmp_path: Path):

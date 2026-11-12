@@ -17,7 +17,11 @@ Three rules, the same ones the rest of this subsystem follows:
   carry. Such a directory is reported as skipped, never silently ignored.
 * **Repos are created private by default.** Uploading is outward-facing and
   irreversible in practice (the hub keeps history); making a repo public is a
-  separate, explicit decision, and so is choosing its licence.
+  separate, explicit decision.
+* **The project's weights are MIT-licensed by default** (:data:`DEFAULT_LICENCE`):
+  the card declares ``license: mit`` and an MIT ``LICENSE`` travels with the
+  weights. A base model's own licence copy, where its terms ask for one, is kept
+  beside it as ``LICENSE-base-<id>``.
 * **One model's failure does not stop the others.** ``publish_all`` isolates
   each upload, because a rate limit or a name clash on the fourth of nine models
   must not cost the five that would have succeeded.
@@ -59,6 +63,10 @@ __all__ = [
     "IGNORE_PATTERNS",
     "LICENCE_FILE_STEMS",
     "LICENCE_FROM_BASE",
+    "DEFAULT_LICENCE",
+    "LICENCE_NONE",
+    "MIT_LICENCE_TEXT",
+    "place_licence_files",
     "BASE_MODEL_TERMS",
     "BaseTerms",
     "GRANULARITY_KEY",
@@ -117,6 +125,36 @@ LICENCE_FILE_STEMS: tuple[str, ...] = ("license", "licence", "notice")
 
 #: ``--license`` value that takes the licence id from :data:`BASE_MODEL_TERMS`.
 LICENCE_FROM_BASE = "base"
+
+#: The licence the project publishes its weights under unless told otherwise.
+DEFAULT_LICENCE = "mit"
+
+#: ``--license`` value that declares no licence at all.
+LICENCE_NONE = "none"
+
+#: The ``LICENSE`` written beside the weights when the repo is MIT-licensed.
+MIT_LICENCE_TEXT = """MIT License
+
+Copyright (c) 2026 Digital Humanities Center, University of Bern
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
 
 
 @dataclass(frozen=True)
@@ -546,6 +584,8 @@ def resolve_licence(model: TrainedModel, licence: str | None) -> str | None:
     a base :data:`BASE_MODEL_TERMS` has read can answer it — otherwise this
     raises rather than guessing. Without a value nothing is declared, as before.
     """
+    if licence == LICENCE_NONE:
+        return None
     if licence != LICENCE_FROM_BASE:
         return licence
     terms = model.base_terms
@@ -566,8 +606,11 @@ def _licence_section(model: TrainedModel, licence: str | None) -> list[str]:
     terms were not read says exactly that, with a link to where they are.
     """
     lines = ["## Licence", ""]
-    lines.append(f"This repo: `{licence}`." if licence else
-                 "This repo declares no licence.")
+    if licence == DEFAULT_LICENCE and any(p.name == "LICENSE" for p in model.licence_files):
+        lines.append(f"This repo: `{licence}` — see [`LICENSE`](LICENSE).")
+    else:
+        lines.append(f"This repo: `{licence}`." if licence else
+                     "This repo declares no licence.")
     terms, base = model.base_terms, model.base_model
     if terms is not None:
         lines += ["", f"Base model [`{base}`](https://huggingface.co/{base}): "
@@ -591,9 +634,9 @@ def _frontmatter(model: TrainedModel, licence: str | None) -> str:
     started from — but **only** where the base is a hub repo, because that is the
     only shape the field resolves (serving-atr-inference#101, #203, #206).
 
-    Fields we cannot know are left out rather than guessed. In particular there
-    is no default ``license``: an unlicensed repo is an honest one, a wrongly
-    licensed repo is a claim the project did not make.
+    Fields we cannot know are left out rather than guessed. The ``license`` is
+    the project's own decision, not a guess: :data:`DEFAULT_LICENCE` unless the
+    caller passes another id, or :data:`LICENCE_NONE` for none.
     """
     metrics = model.metrics
     datasets = [d for d in model.datasets if d.repo]
@@ -964,7 +1007,8 @@ def _energy_section(model: TrainedModel) -> list[str]:
     return lines + [""] if lines else []
 
 
-def model_card(model: TrainedModel, repo_id: str, licence: str | None = None) -> str:
+def model_card(model: TrainedModel, repo_id: str,
+               licence: str | None = DEFAULT_LICENCE) -> str:
     """The ``README.md`` uploaded with the weights.
 
     Everything in it is read off ``metadata.json`` — the request that produced
@@ -1486,6 +1530,27 @@ def plan(
     return publications
 
 
+def place_licence_files(model: TrainedModel, licence: str | None) -> None:
+    """Put the MIT ``LICENSE`` beside the weights when the repo is MIT-licensed.
+
+    A ``LICENSE`` already there that is not this text is the base model's copy
+    (Apache-2.0 §4(a), #87): it is kept, renamed ``LICENSE-base-<id>``, so both
+    sets of terms travel with the weights. Any other licence id writes nothing —
+    its text is the caller's to supply.
+    """
+    if licence != DEFAULT_LICENCE:
+        return
+    target = model.directory / "LICENSE"
+    if target.exists():
+        current = target.read_text(encoding="utf-8", errors="replace")
+        if current == MIT_LICENCE_TEXT:
+            return
+        terms = model.base_terms
+        base_id = terms.licence if terms is not None else "base"
+        target.rename(model.directory / f"LICENSE-base-{base_id}")
+    target.write_text(MIT_LICENCE_TEXT, encoding="utf-8")
+
+
 def record_publication(model: TrainedModel, repo_id: str, url: str,
                        when: datetime | None = None) -> dict[str, Any]:
     """Write the upload back into the model's ``metadata.json``.
@@ -1507,7 +1572,7 @@ def record_publication(model: TrainedModel, repo_id: str, url: str,
 def publish_one(
     publication: Publication,
     uploader: Uploader,
-    licence: str | None = None,
+    licence: str | None = DEFAULT_LICENCE,
     dry_run: bool = False,
     message: str | None = None,
 ) -> PublishResult:
@@ -1533,6 +1598,9 @@ def publish_one(
                    "the weights",
         )
     try:
+        resolved = resolve_licence(model, licence)
+        if not dry_run:
+            place_licence_files(model, resolved)
         card = model_card(model, publication.repo_id, licence=licence)
     except PublishError as exc:
         return PublishResult(model.model_id, publication.repo_id, "failed", detail=str(exc))
@@ -1559,7 +1627,7 @@ def publish_one(
 def publish_all(
     publications: Sequence[Publication],
     uploader: Uploader,
-    licence: str | None = None,
+    licence: str | None = DEFAULT_LICENCE,
     dry_run: bool = False,
 ) -> list[PublishResult]:
     """Publish each model, isolating failures.

@@ -20,14 +20,17 @@ run it with the trainer venv, and authenticate first:
     --engine kraken vllm      just these engines
     --org OWNER               target org/user (default: dh-unibe)
     --public                  create public repos (default: private)
-    --license apache-2.0      set a licence in the card's frontmatter
+    --license mit             the default: `license: mit` in the card, MIT LICENSE
+                              beside the weights
+    --license apache-2.0      set another licence id in the card's frontmatter
+    --license none            declare no licence
     --license base            the base model's own licence id, if publish.py has
                               read its terms (BASE_MODEL_TERMS); refused otherwise
     --force                   re-upload models already recorded as published
 
-Repos are **private** unless ``--public`` is passed, and no licence is invented:
-making a trained model public, and under which terms, is a decision this script
-will not take for you.
+Repos are **private** unless ``--public`` is passed: making a trained model
+public is a decision this script will not take for you. The weights are licensed
+MIT unless ``--license`` says otherwise.
 
 House rule for dh-unibe: making a repo public is done by hand in the Hugging Face
 web interface, not with ``--public``. Once a repo is public it is never set back to
@@ -46,6 +49,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from atr_training.publish import (  # noqa: E402
+    DEFAULT_LICENCE,
     DEFAULT_ORG,
     HubUploader,
     PublishError,
@@ -90,9 +94,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prefix", default="", help="prepended to the repo name, e.g. 'htr-'")
     ap.add_argument("--public", action="store_true",
                     help="create public repos (default: private)")
-    ap.add_argument("--license", dest="licence", default=None,
-                    help="licence id for the card frontmatter, e.g. apache-2.0, or "
-                         "'base' for the base model's recorded licence")
+    ap.add_argument("--license", dest="licence", default=DEFAULT_LICENCE,
+                    help=f"licence id for the card frontmatter (default: {DEFAULT_LICENCE}), "
+                         "e.g. apache-2.0, 'base' for the base model's recorded licence, "
+                         "or 'none'")
     ap.add_argument("--force", action="store_true",
                     help="upload again even if metadata.json records a previous push")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, upload nothing")
