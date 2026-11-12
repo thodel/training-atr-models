@@ -283,6 +283,9 @@ class JobStore:
         # Foreign jobs are listed on every scheduler tick; saying once per job
         # that they are left alone is information, saying it every 10 s is noise.
         self._foreign_noted: set[str] = set()
+        #: ``job.json`` as last read by :meth:`list`, keyed by job id, with the
+        #: stat it was read under (#408). See :meth:`_listed`.
+        self._listing: dict[str, tuple[tuple[int, int, int], str]] = {}
 
     # ── ownership (#15) ─────────────────────────────────────────────────────
     def host_of(self, job: TrainJob) -> str:
@@ -444,12 +447,60 @@ class JobStore:
         to remove (#38, serving-atr-inference#107).
         """
         jobs = []
-        for job_id in self.list_ids()[:limit]:
+        if not self.root.is_dir():
+            return jobs
+        names = sorted((p.name for p in self.root.iterdir() if _JOB_ID_RE.match(p.name)),
+                       reverse=True)  # newest first (ids are timestamp-prefixed)
+        seen: set[str] = set()
+        for job_id in names:
+            if limit is not None and len(jobs) >= limit:
+                break
+            text = self._listed(job_id)
+            if text is None:
+                continue  # no job.json: not a job (yet), as in list_ids()
+            seen.add(job_id)
             try:
-                jobs.append(self.load(job_id))
-            except JobStoreError:
+                jobs.append(TrainJob.model_validate_json(text))
+            except ValueError:
                 continue  # a corrupt record must not break the whole listing
+        if limit is None:
+            # Forget deleted jobs; with a limit only part of the store was seen.
+            for gone in self._listing.keys() - seen:
+                del self._listing[gone]
         return jobs
+
+    def _listed(self, job_id: str) -> str | None:
+        """The text of ``job_id``'s ``job.json``, read only if it changed (#408).
+
+        The listing reads every record in the store: the scheduler every tick and
+        ``GET /jobs`` on every poll, and the store is on the share. Cold, that
+        took 30–46 s for the gateway's poll, past its 20 s. One ``stat`` per job
+        answers "unchanged since the last listing", and only a changed file is
+        read again. :meth:`save` writes a temporary file and renames it over the
+        old one, so every save gives the file a new inode and mtime; size is in
+        the key as well.
+
+        The text is cached, not the parsed record: every caller gets its own
+        :class:`TrainJob`, and nothing a caller changes on one leaks into the next
+        listing. Single records (:meth:`load`) never go through here; a writer
+        always reads the file.
+        """
+        path = self.root / job_id / "job.json"
+        try:
+            st = path.stat()
+        except OSError:
+            self._listing.pop(job_id, None)
+            return None
+        key = (st.st_mtime_ns, st.st_size, st.st_ino)
+        hit = self._listing.get(job_id)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        self._listing[job_id] = (key, text)
+        return text
 
     def delete(self, job_id: str, keep: Iterable[str] = ()) -> None:
         """Remove a job's artifacts. ``keep`` names top-level entries to spare."""
