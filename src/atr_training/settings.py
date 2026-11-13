@@ -236,6 +236,10 @@ class TrainerSettings(BaseSettings):
     #: — which is how 221 GB of dead arrows were removed on 2026-09-08 — must not
     #: take the cache with it.
     artefact_cache_root: Path = Path.home() / "atr-cache" / "artefacts"
+    #: Import jobs of foreign ground truth started through ``POST /gt/import``
+    #: (#200): one directory per job with ``job.json``, ``import.log`` and, once it
+    #: ended, ``result.json``. Local disk: a job is a log and a status, not data.
+    gt_import_root: Path = Path.home() / "atr-cache" / "gt-import"
     #: Size budget, in GB. 0 disables eviction by size (expired unpinned entries
     #: are still dropped). Two corpus-scale artefacts is the intent: the cache
     #: sits on the box's system disk (457 GB free), not on the 12 TB share, so

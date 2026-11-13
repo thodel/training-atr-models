@@ -52,12 +52,19 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field
 
 from atr_training import gpu as gpu_probe
 from atr_training import runtime_probe
 from atr_training.preflight import free_disk_gb
 from atr_training.access import AccessGuard, key_refusal
 from atr_training.shared_registry import BaseEntry, RegistryUnavailable, load_shared_registry
+from atr_training.gt_import import GtImportError, GtImports
+from atr_training.gt_import import all_sources as gt_all_sources
+from atr_training.gt_import import describe as gt_describe
+from atr_training.gt_import import resolve as gt_resolve
+from atr_training.gt_survey import SurveyError
+from atr_training.gt_survey import survey as gt_survey
 from atr_training.base_models import BaseModelError, resolve_base_model
 from atr_training.artefact_cache import BUILDING_DIR, sweep_builds
 from atr_training.backends import BACKENDS, UnknownBackend, backend_for
@@ -1501,6 +1508,99 @@ async def delete_job(job_id: str) -> dict:
     return {"job_id": job_id, "deleted": True, "record_kept": True,
             "checkpoints_removed": ckpt is not None, "orphaned_weights_removed": orphaned,
             "local_build_removed": job_id in builds}
+
+
+# ── foreign ground truth (#200) ──────────────────────────────────────────────
+#
+# Two steps with a person between them. ``/gt/survey`` reads any GitHub
+# repository or Zenodo record and reports licence, where it is written, size,
+# image path and the commit or versioned DOI — and drafts a register entry. It
+# uploads nothing. ``/gt/import`` reads only what the register already holds;
+# the register grows by PR. A command that took a URL and uploaded it would make
+# every licence decision of #186 silently, with "yes".
+
+class GtSurveyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(..., max_length=500)
+
+
+class GtImportRequest(BaseModel):
+    """No ``public`` field, on purpose: an unknown field is a 422 (#200). A human
+    makes a dataset public in the HF interface once the image rights are clear."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(..., max_length=80)
+    dry_run: bool = True
+    parts: list[str] = Field(default_factory=list, max_length=10)
+    all_parts: bool = False
+
+
+def _gt_imports() -> GtImports:
+    return GtImports(root=_settings().gt_import_root)
+
+
+def _uploaded(targets: list[str], timeout_s: float = 15.0) -> dict[str, bool | None]:
+    """Whether each HF dataset exists: True, False, or None when HF did not say."""
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    def exists(repo_id: str) -> bool | None:
+        try:
+            from huggingface_hub import HfApi
+            return bool(HfApi().repo_exists(repo_id, repo_type="dataset"))
+        except Exception:  # noqa: BLE001 — unknown is an answer here, not an error
+            return None
+
+    pool = ThreadPoolExecutor(max_workers=8)
+    futures = {t: pool.submit(exists, t) for t in targets}
+    wait(futures.values(), timeout=timeout_s)
+    pool.shutdown(wait=False, cancel_futures=True)
+    return {t: (f.result() if f.done() else None) for t, f in futures.items()}
+
+
+@app.get("/gt/sources")
+def gt_sources(check_hf: bool = Query(True, description="ask HF whether each target exists")
+               ) -> dict:
+    """The register of foreign ground truth: what ``/gt/import`` accepts."""
+    rows = [gt_describe(s) for s in gt_all_sources()]
+    if check_hf:
+        found = _uploaded([r["target"] for r in rows])
+        for r in rows:
+            r["uploaded"] = found.get(r["target"])
+    return {"sources": rows}
+
+
+@app.post("/gt/survey")
+def gt_survey_route(body: GtSurveyRequest) -> dict:
+    """Read-only survey of a GitHub repository or Zenodo record (#200, step 1)."""
+    try:
+        return gt_survey(body.url)
+    except SurveyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/gt/import", status_code=202)
+def gt_import_start(body: GtImportRequest) -> dict:
+    """Import a **registered** source as a job (#200, step 2). ``dry_run`` by default."""
+    imports = _gt_imports()
+    try:
+        gt_resolve(body.id)
+    except GtImportError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return imports.start(body.id, dry_run=body.dry_run, parts=body.parts,
+                             all_parts=body.all_parts)
+    except GtImportError as exc:
+        busy = "already being imported" in str(exc)
+        raise HTTPException(status_code=409 if busy else 422, detail=str(exc)) from exc
+
+
+@app.get("/gt/import/{job_id}")
+def gt_import_status(job_id: str) -> dict:
+    try:
+        return _gt_imports().status(job_id)
+    except GtImportError as exc:
+        missing = str(exc).startswith("no such")
+        raise HTTPException(status_code=404 if missing else 422, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":  # pragma: no cover
