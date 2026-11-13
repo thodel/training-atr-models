@@ -63,6 +63,7 @@ was found, and how many records it holds. A share that is not mounted reads as
 | `slurm_job(slurm_job_id)` | `scontrol show job`, the state of any node named unavailable, the log's notes; falls back to accounting once Slurm forgot the job |
 | `checkout()` | HEAD against `origin/main`, ahead/behind, dirty files of the UBELIX checkout |
 | `energy()` | **both stores:** the programme's running energy counter (#335): measured watt-hours per host and in total, the records whose GPU stage ran without a measurement (the hole — the sum is a floor, not a total), the share recovered from preempted or requeued attempts (the lever #184 names), records that shared a card. Watt-hours only, GPU only, no PUE; carbon is `atr_training.footprint`'s job, with the factor beside the result. `job` and `results` carry the same fields per record (`energy_wh`, `energy_recovered_wh`, `gpu_hours`, `gpu_shared`, `energy_measured`); `energy_measured: false` on a finished row is a record from before the sampler, never a run that drew nothing (#165) |
+| `discoveries()` | what is new in seven days, for the daily report (serving-atr-inference#112): changed dh-unibe training datasets with their effect on the corpus plan, and new model candidates that could be a base for kraken, TrOCR or the VLM backend. The record is built on asteraix by the discovery timer and published to the share (`discovery/discoveries.json`, see `DATASET_DISCOVERY.md`); the probe only delivers it, with `age_hours`, and marks it `stale` past 36 hours |
 
 Names are an interface: add tools, never rename one.
 

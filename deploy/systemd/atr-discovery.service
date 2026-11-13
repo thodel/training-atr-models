@@ -20,7 +20,7 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=%h/Repo/training-atr-models
 Environment=PYTHONPATH=%h/Repo/training-atr-models/src
-ExecStart=%h/Repo/training-atr-models/.venvs/kraken-train/bin/python scripts/discover_datasets.py --state-dir %h/atr-cache/discovery
+ExecStart=%h/Repo/training-atr-models/.venvs/kraken-train/bin/python scripts/discover_datasets.py --state-dir %h/atr-cache/discovery --publish /mnt/wbkolleg_dh_1/Textrecognition_Training/discovery
 Nice=10
 # 29 s on 22.10.2026 for 49 datasets; the margin is for a slow Hub, not for work.
 TimeoutStartSec=30min

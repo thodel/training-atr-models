@@ -1,4 +1,4 @@
-"""The MCP server: thirteen reading tools over the probe (#156, #174).
+"""The MCP server: fifteen reading tools over the probe (#156, #174).
 
 Tool names are an interface. An unattended session allows them once, by name
 (``mcp__atr-results__queue``), and a rename is a new permission prompt that
@@ -22,7 +22,7 @@ except ImportError:  # mcp 1.x: the same decorator API under its old name
 from .remote import SshTransport, Transport, TransportError
 
 TOOL_NAMES = ("queue", "live", "finished", "job", "results", "draw", "prepared", "deadlines",
-              "log", "report", "slurm_job", "storage", "checkout", "energy")
+              "log", "report", "slurm_job", "storage", "checkout", "energy", "discoveries")
 
 INSTRUCTIONS = (
     "Read-only view of the ATR training programme on UBELIX (Slurm) and asteraix "
@@ -32,7 +32,8 @@ INSTRUCTIONS = (
     "says what runs on asteraix. Times are Europe/Zurich; fields ending in _cest were "
     "converted from the trainer's UTC. Nothing here submits, cancels or deletes. Start "
     "with queue, live, finished and results; use draw before putting two CER values "
-    "side by side; deadlines warns about artefact expiry and the scratch purge."
+    "side by side; deadlines warns about artefact expiry and the scratch purge; "
+    "discoveries says what is new in training material and base models."
 )
 
 
@@ -250,5 +251,16 @@ def build_server(transport: Transport | None = None, public_host: str | None = N
         computed by atr_training.footprint with the factor beside the result.
         The daily report's energy line reads from here."""
         return ask("energy")
+
+    @server.tool()
+    def discoveries() -> dict:
+        """Was in den letzten 7 Tagen neu ist, für den Tagesbericht (serving#112):
+        geänderte Trainingsdatensätze von dh-unibe (Discovery-Timer auf asteraix,
+        mit der Folge für den Korpusplan) und neue Modellkandidaten, die als
+        Basis für kraken, TrOCR oder das VLM-Backend taugen (Katalog aus
+        serving-atr-inference, mit Quelle). `summary` ist die eine Zeile für den
+        Bericht, «Nichts Neues» eingeschlossen; `stale` warnt, wenn der Timer
+        einen Lauf verpasst hat. Lesend, entscheidet nichts."""
+        return ask("discoveries")
 
     return server

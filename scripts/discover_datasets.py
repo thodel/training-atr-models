@@ -50,7 +50,33 @@ def main(argv: list[str] | None = None) -> int:
                    help="read a catalogue JSON (as plan_corpus.py --cache writes, or "
                         "{listed, rows, unreadable}) instead of the Hub")
     p.add_argument("--dry-run", action="store_true", help="print the report, keep no state")
+    p.add_argument("--publish", type=Path, default=None, metavar="DIR",
+                   help="after the run, write discoveries.json (this run's datasets and "
+                        "the model catalogue's news) and a copy of the run log and "
+                        "reports to DIR, for readers on other hosts (serving#112, D3)")
     args = p.parse_args(argv)
+    code = _run(args)
+    if args.publish and not args.dry_run:
+        _publish(args)
+    return code
+
+
+def _publish(args) -> None:
+    """Never fails the run: the memory is local and was written already."""
+    from atr_training import discovery_digest  # noqa: PLC0415
+
+    try:
+        record = discovery_digest.build(args.state_dir)
+        discovery_digest.publish(args.state_dir, args.publish, record)
+    except Exception as exc:  # noqa: BLE001 — a share that is down costs the copy, not the run
+        print(f"discovery: not published to {args.publish}: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return
+    print(f"discovery: published to {args.publish / discovery_digest.FILENAME} — "
+          f"{record['summary']}")
+
+
+def _run(args) -> int:
 
     targets = ([Target(period=(a, b)) for a, b in args.period] if args.period
                else [MEDIEVAL_GERMAN])

@@ -83,5 +83,31 @@ systemctl --user list-timers atr-discovery.timer
 journalctl --user -u atr-discovery.service -n 20 --no-pager
 ```
 
-How the report reaches anyone beyond this box is serving-atr-inference#116
-(`GET /train/discoveries`), not decided yet.
+## Where it is read (serving-atr-inference#112, D3)
+
+After every run (not `--dry-run`) the service publishes to the research share,
+`/mnt/wbkolleg_dh_1/Textrecognition_Training/discovery/` (`--publish`):
+
+| file | content |
+|---|---|
+| `discoveries.json` | one record for the daily report, built by `atr_training.discovery_digest` |
+| `runs.jsonl`, `reports/*.md` | copies of the local memory, for readers on other hosts |
+
+`discoveries.json` holds both discoveries for the last seven days:
+
+- **training material**: the last run and every report of the window, each
+  dataset with its kinds of change and its effect on the plan;
+- **base models**: serving-atr-inference's catalogue
+  (`config/discovered.yaml`), read from the open catalogue PR's branch
+  `discovery/catalogue` when there is one and from `main` otherwise (`source`
+  says which). New candidates that could be a base for one of the three
+  backends are named (at most ten); the others are counted by why not, and so
+  are the machine's own rejections; a person's verdict in the window is named.
+
+`summary` is the one line for the report, "Nichts Neues in 7 Tagen: …" included.
+The results MCP serves the record as `discoveries()`, with its age; a record
+older than 36 hours carries `stale: true` and a summary that starts `VERALTET`,
+because an old "nothing new" reads like this morning's.
+
+Publishing never fails the run: the local memory was written first, and a share
+that cannot be written costs the copy and a line on stderr.
