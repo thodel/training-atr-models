@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,6 +110,9 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 _JOB_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[a-z0-9._-]+$")
+
+#: A listing slower than this is logged: half the gateway's 20 s timeout (#408).
+SLOW_LISTING_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -258,6 +262,15 @@ class JobStore:
         # Foreign jobs are listed on every scheduler tick; saying once per job
         # that they are left alone is information, saying it every 10 s is noise.
         self._foreign_noted: set[str] = set()
+        # job.json text by job id, with the (mtime_ns, size) it was read at
+        # (training-atr-models#408). The store is on the SMB share, the
+        # scheduler lists every record every ``poll_interval_s`` and the gateway
+        # every few minutes: a stat is one round trip, a read several more, and a
+        # cold listing took 30–45 s on 07.11.2026 — past the gateway's 20 s.
+        # Text, not the parsed TrainJob: callers mutate what ``load`` returns,
+        # and a shared object would carry one caller's edit into the next's read.
+        self._text_cache: dict[str, tuple[int, int, str]] = {}
+        self._text_lock = threading.Lock()
 
     # ── ownership (#15) ─────────────────────────────────────────────────────
     def host_of(self, job: TrainJob) -> str:
@@ -381,16 +394,42 @@ class JobStore:
         tmp = paths.job_json.with_suffix(".json.tmp")
         tmp.write_text(job.model_dump_json(indent=2), encoding="utf-8")
         os.replace(tmp, paths.job_json)
+        with self._text_lock:
+            self._text_cache.pop(job.id, None)
         return job
 
     def load(self, job_id: str) -> TrainJob:
-        paths = self.paths(job_id)
-        if not paths.job_json.exists():
-            raise JobStoreError(f"no such job: {job_id}")
         try:
-            return TrainJob.model_validate_json(paths.job_json.read_text(encoding="utf-8"))
+            text = self._job_text(job_id)
+        except FileNotFoundError:
+            raise JobStoreError(f"no such job: {job_id}") from None
+        try:
+            return TrainJob.model_validate_json(text)
         except (json.JSONDecodeError, ValueError) as exc:
+            with self._text_lock:
+                self._text_cache.pop(job_id, None)
             raise JobStoreError(f"job {job_id} has an unreadable job.json: {exc}") from exc
+
+    def _job_text(self, job_id: str) -> str:
+        """``job.json`` as text: read when its stamp changed, else from the cache.
+
+        The stamp is taken *before* the read. A record replaced in between is
+        then cached under the old stamp, and the next call sees a new stamp and
+        reads again — a stale entry cannot outlive one call. Any writer counts,
+        this host's ``save``, another host's, a runner's: all of them move the
+        stamp, because ``save`` replaces the file.
+        """
+        path = self.paths(job_id).job_json
+        st = path.stat()                                  # FileNotFoundError: no job
+        stamp = (st.st_mtime_ns, st.st_size)
+        with self._text_lock:
+            hit = self._text_cache.get(job_id)
+        if hit is not None and hit[:2] == stamp:
+            return hit[2]
+        text = path.read_text(encoding="utf-8")
+        with self._text_lock:
+            self._text_cache[job_id] = (*stamp, text)
+        return text
 
     def list_ids(self) -> list[str]:
         if not self.root.is_dir():
@@ -408,12 +447,22 @@ class JobStore:
         jobs to answer a "what is the queue?" question is the cost this exists
         to remove (#38, serving-atr-inference#107).
         """
+        import time
+
+        started = time.monotonic()
+        ids = self.list_ids()[:limit]
         jobs = []
-        for job_id in self.list_ids()[:limit]:
+        for job_id in ids:
             try:
                 jobs.append(self.load(job_id))
             except JobStoreError:
                 continue  # a corrupt record must not break the whole listing
+        took = time.monotonic() - started
+        if took > SLOW_LISTING_S:
+            # The gateway gives up after 20 s (#408); say it here, where the
+            # cause is, rather than only as a timeout on the other machine.
+            logger.warning("listing {} job record(s) under {} took {:.1f}s",
+                           len(ids), self.root, took)
         return jobs
 
     def delete(self, job_id: str, keep: Iterable[str] = ()) -> None:

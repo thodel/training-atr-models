@@ -295,3 +295,84 @@ def test_reconcile_fails_a_job_whose_runner_went_defunct(tmp_path):
 def test_reaping_nothing_is_not_an_error():
     """ECHILD is the normal case — the service has no children most of the time."""
     assert reap_children() >= 0
+
+
+# ── listing over the share (#408) ───────────────────────────────────────────
+
+def _count_reads(monkeypatch) -> list[str]:
+    reads: list[str] = []
+    real = Path.read_text
+
+    def counting(self, *a, **kw):
+        if self.name == "job.json":
+            reads.append(self.parent.name)
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    return reads
+
+
+def test_an_unchanged_record_is_not_read_again(store: JobStore, monkeypatch):
+    """The scheduler lists every record every 10 s, over SMB: a record nobody
+    wrote since the last look costs a stat, not a read."""
+    jobs = [store.create(make_request(f"kraken-m{i}-v1")) for i in range(3)]
+    reads = _count_reads(monkeypatch)
+    store.list()
+    assert len(reads) == 3
+    store.list()
+    store.load(jobs[0].id)
+    assert len(reads) == 3, "nothing changed, nothing read"
+
+
+def test_a_saved_or_replaced_record_is_read_again(store: JobStore, monkeypatch):
+    job = store.create(make_request())
+    store.load(job.id)
+    job.status = "preparing"
+    store.save(job)
+    assert store.load(job.id).status == "preparing", "this host's own save"
+
+    # another writer (a runner, another host) replaces the file
+    other = JobStore(store.root, host_id="asteraix")
+    rec = other.load(job.id)
+    rec.status = "compiling"
+    other.save(rec)
+    path = store.paths(job.id).job_json
+    st = path.stat()
+    import os
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    assert store.load(job.id).status == "compiling"
+
+
+def test_what_load_returns_is_the_callers_own(store: JobStore):
+    """The cache holds text, not the object: a caller's edit stays its own."""
+    job = store.create(make_request())
+    first = store.load(job.id)
+    first.status = "training"
+    assert store.load(job.id).status == "queued"
+
+
+def test_a_vanished_or_corrupt_record_is_said_as_before(store: JobStore):
+    job = store.create(make_request())
+    store.load(job.id)
+    store.paths(job.id).job_json.write_text("{not json", encoding="utf-8")
+    with pytest.raises(JobStoreError, match="unreadable"):
+        store.load(job.id)
+    store.paths(job.id).job_json.unlink()
+    with pytest.raises(JobStoreError, match="no such job"):
+        store.load(job.id)
+
+
+def test_a_slow_listing_is_logged(store: JobStore, monkeypatch):
+    from loguru import logger
+
+    import atr_training.jobstore as js
+
+    store.create(make_request())
+    monkeypatch.setattr(js, "SLOW_LISTING_S", -1.0)
+    seen: list[str] = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="WARNING")
+    try:
+        store.list()
+    finally:
+        logger.remove(sink)
+    assert any("listing 1 job record(s)" in m for m in seen)
