@@ -289,3 +289,35 @@ davon 648 Seiten und 35.150 Zeilen aus ALTO; 761 der 810 Seiten mit Bild-URL. Di
 Bilder von DE-4 stehen nicht im Dokument (es nennt die Landingpage), sondern in
 der METS der UB Marburg (`jpg/def`, gleiche Grösse wie im ALTO). gt-fraktur
 verlangt den Adapter nicht und bleibt bei 207 Seiten.
+
+## 10. Als Dienst (#200)
+
+Der Trainer-Dienst bietet den Importweg in zwei Schritten an, mit einem Menschen
+dazwischen. Der Grund: Ein Befehl, der eine URL nimmt und hochlädt, würde jede
+Lizenzentscheidung aus #186 stillschweigend mit „ja“ treffen. Die Lizenzentscheidung
+bleibt im Code-Review.
+
+| Endpunkt | tut | darf nicht |
+|---|---|---|
+| `POST /gt/survey {url}` | liest ein GitHub-Repo oder eine Zenodo-Hinterlegung: Lizenz an jeder Fundstelle, Umfang, Bildweg, Commit oder versionierte DOI; dazu ein Register-Eintrag als Entwurf | etwas hochladen oder schreiben; eine andere Domain als `github.com` und `zenodo.org` abrufen |
+| `GET /gt/sources` | das Register mit Lizenz, Fundstelle, Bildrechten, Ziel und `uploaded` (`true`/`false`, `null` wenn HF nicht antwortet) | — |
+| `POST /gt/import {id, dry_run, parts, all_parts}` | startet `scripts/foreign_gt_to_hf.py` für eine **Register-Kennung** als Job; `dry_run` ist Vorgabe | eine unbekannte Kennung annehmen (404 mit der Liste der bekannten); `public` kennen (ein solches Feld ist ein 422) |
+| `GET /gt/import/{job_id}` | Stand (`running`, `completed`, `failed`, `refused`, `gone`), Exit-Status, die Berichtszeilen mit den Verwurfszahlen, das Ende des Logs | — |
+
+**Die Erhebung urteilt nicht.**
+- Sie liest diese Fundstellen:
+  - GitHub: die Lizenzerkennung der API, `LICENSE*`/`LICENCE*`/`COPYING*`, `METADATA.yml`, `.zenodo.json`, `htr-united.yml` und `CITATION.cff`.
+  - Zenodo: `metadata.license.id` und jede `LICENSE*`-Datei der Hinterlegung.
+- `licence.state` ist `agree`, `contradiction`, `unrecognised`, `partly_unrecognised` oder `none`.
+- Nur bei `agree` setzt der Entwurf `licence` und `licence_at`.
+- `attribution` bleibt immer leer: Wer transkribiert hat, belegt erst der Mensch, der den PR schreibt.
+- `LICENSE*`-Dateien in den Archiven einer Hinterlegung liest erst der Import.
+
+**Der Import ist ein Job**, weil er Minuten bis Stunden dauert.
+- Unter `ATR_TRAIN_GT_IMPORT_ROOT` (Vorgabe `~/atr-cache/gt-import/`) liegt je Job ein Verzeichnis mit `job.json`, `import.log` und am Ende `result.json`.
+- Der Runner läuft in eigener Session und übersteht einen Neustart von `atr-train`.
+- Je Quelle läuft höchstens ein Import (sonst 409).
+- Die Verweigerungen des Skripts erscheinen als `refused` mit Grund, nicht als `failed`.
+
+Öffentlich schaltet weiterhin ein Mensch in der HF-Oberfläche, wenn die Bildrechte
+geklärt sind (#193).
