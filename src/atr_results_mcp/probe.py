@@ -1903,6 +1903,42 @@ def storage(run: Runner, paths: Paths) -> Dict[str, Any]:
     return record
 
 
+#: Where the discovery timer on asteraix publishes, under the share (serving#112).
+DISCOVERY_DIRNAME = "discovery"
+#: The timer runs daily at 06:40; a record older than this missed a run.
+DISCOVERY_STALE_HOURS = 36
+
+
+def discoveries(paths: Paths, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """What is new in training material and base models, as the timer published it.
+
+    The summary is built on asteraix by ``atr_training.discovery_digest``, which
+    has the YAML and the network this file may not use; this function only
+    delivers it, with how old it is. A missing or stale record says so: an empty
+    answer would read as "nothing new".
+    """
+    path = paths.share / DISCOVERY_DIRNAME / "discoveries.json"
+    if not path.exists():
+        return {"error": "%s fehlt — der Discovery-Timer auf asteraix veröffentlicht "
+                         "noch nicht (atr-discovery.service mit --publish)" % path,
+                "published": False}
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {"error": "%s ist kein JSON" % path, "published": True}
+    now = now or datetime.now(ZURICH)
+    written = datetime.fromtimestamp(path.stat().st_mtime, ZURICH)
+    hours = (now - written).total_seconds() / 3600
+    record["file"] = str(path)
+    record["written_cest"] = _label(written)
+    record["age_hours"] = round(hours, 1)
+    if hours > DISCOVERY_STALE_HOURS:
+        record["stale"] = True
+        record["summary"] = ("VERALTET (%.0f h alt, der Timer läuft täglich um 06:40): %s"
+                             % (hours, record.get("summary") or ""))
+    return record
+
+
 # ── entry point ─────────────────────────────────────────────────────────────
 def dispatch(cmd: str, args: Dict[str, Any], run: Runner, paths: Paths) -> Dict[str, Any]:
     if cmd == "queue":
@@ -1935,6 +1971,8 @@ def dispatch(cmd: str, args: Dict[str, Any], run: Runner, paths: Paths) -> Dict[
         return checkout(run, paths)
     if cmd == "storage":
         return storage(run, paths)
+    if cmd == "discoveries":
+        return discoveries(paths)
     raise ProbeError("unknown command %r" % cmd)
 
 

@@ -55,7 +55,7 @@ def test_the_tool_names_are_the_ones_an_allow_rule_names():
     assert names == list(TOOL_NAMES)
     assert set(names) == {"queue", "live", "finished", "job", "results", "draw", "prepared",
                           "deadlines", "log", "report", "slurm_job", "storage",
-                          "checkout", "energy"}
+                          "checkout", "energy", "discoveries"}
 
 
 def test_every_tool_has_a_description_a_reader_can_act_on():
@@ -80,6 +80,7 @@ def test_every_tool_has_a_description_a_reader_can_act_on():
     ("slurm_job", {"slurm_job_id": "1"}, {"slurm_job_id": "1"}),
     ("checkout", {}, {}),
     ("energy", {}, {}),
+    ("discoveries", {}, {}),
 ])
 def test_a_tool_sends_its_command_and_only_the_arguments_given(name, args, sent):
     link = Recording()

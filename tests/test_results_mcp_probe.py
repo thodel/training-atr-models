@@ -1755,3 +1755,43 @@ def test_energy_with_an_absent_share_says_so_and_an_empty_store_is_no_sum(tmp_pa
 
 def test_energy_is_a_dispatchable_command(cluster):
     assert probe.dispatch("energy", {}, canned({}), cluster)["total"]["records_measured"] == 0
+
+
+# ── discoveries: delivered, not computed (serving-atr-inference#112) ────────
+def _published(cluster, record, hours_old=1.0):
+    import os
+    import time
+    path = cluster.share / probe.DISCOVERY_DIRNAME / "discoveries.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    stamp = time.time() - hours_old * 3600
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_discoveries_says_when_nothing_was_published(cluster):
+    answer = probe.dispatch("discoveries", {}, None, cluster)
+
+    assert answer["published"] is False
+    assert "--publish" in answer["error"]
+
+
+def test_discoveries_delivers_the_record_with_its_age(cluster):
+    _published(cluster, {"summary": "Nichts Neues in 7 Tagen: …", "models": {}})
+
+    answer = probe.dispatch("discoveries", {}, None, cluster)
+
+    assert answer["summary"].startswith("Nichts Neues")
+    assert 0.5 < answer["age_hours"] < 1.5
+    assert "stale" not in answer
+
+
+def test_a_record_from_before_a_missed_run_says_so_in_the_summary(cluster):
+    """An old 'nothing new' would read as this morning's."""
+    _published(cluster, {"summary": "Nichts Neues in 7 Tagen: …"}, hours_old=60)
+
+    answer = probe.dispatch("discoveries", {}, None, cluster)
+
+    assert answer["stale"] is True
+    assert answer["summary"].startswith("VERALTET")
+
