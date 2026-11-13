@@ -1212,7 +1212,10 @@ async def list_jobs(
     only :data:`_SUMMARY_FIELDS` per job — the shape the gateway's
     ``atr_status`` consumer needs, not the whole record.
     """
-    jobs = _store().list(limit=limit)
+    # Off the event loop (#408): the store is on the share, and a listing read
+    # in the handler itself held every other request — ``/gpu`` included, which
+    # timed out at the gateway once on 07.11.2026 behind a slow ``/jobs``.
+    jobs = await asyncio.to_thread(_store().list, limit)
     if fields == "summary":
         full = [j.model_dump(mode="json") for j in jobs]
         return {"jobs": [{k: j[k] for k in _SUMMARY_FIELDS} for j in full]}
