@@ -11,6 +11,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import random
+
+import pytest
 from pathlib import Path
 
 from atr_training.scorer import Cell, CharNgramScorer
@@ -118,3 +120,37 @@ def test_cli_writes_the_json_and_names_the_scorer(tmp_path, capsys):
     assert set(data["scorers"]) == {"xix"} and data["n_lines"] == len(_lines())
     assert data["scorers"]["xix"]["per_model"]["clean"]["n"] == len(_lines())
     assert "xix" in capsys.readouterr().out
+
+
+def test_reports_are_labelled_by_name_model_or_job_directory_and_read_both_shapes(tmp_path):
+    # a bare job report: no JSON beside it, so the job directory is the label
+    job = tmp_path / "20261012T135709Z-vlm-xix-noise-s43" / "data"
+    job.mkdir(parents=True)
+    raw = job / "eval_report.raw.jsonl"
+    raw.write_text(json.dumps({"image": "a.jpg", "raw": "lesung"}) + "\n", encoding="utf-8")
+    label, preds = mst.load_predictions(raw)
+    assert label == "20261012T135709Z-vlm-xix-noise-s43" and preds == {"a.jpg": "lesung"}
+    assert mst.load_predictions(job / "eval_report.json") == (label, preds)     # via the .json name
+    # the TrOCR trainer writes prediction/reference
+    trocr = tmp_path / "t" / "data"
+    trocr.mkdir(parents=True)
+    (trocr / "eval_report.raw.jsonl").write_text(
+        json.dumps({"image": "a.jpg", "reference": "ref", "prediction": "pred"}) + "\n", encoding="utf-8")
+    assert mst.load_predictions(trocr / "eval_report.raw.jsonl")[1] == {"a.jpg": "pred"}
+    # a given name wins over everything
+    assert mst.load_predictions(raw, "arm1")[0] == "arm1"
+    # the model field in the JSON wins over the directory
+    (job / "eval_report.json").write_text(json.dumps({"model": "qwen-xix"}), encoding="utf-8")
+    assert mst.load_predictions(job / "eval_report.json")[0] == "qwen-xix"
+
+
+def test_cli_takes_name_equals_path_and_refuses_two_runs_under_one_label(tmp_path):
+    scorer = _scorer(tmp_path)
+    val, reports = _material(tmp_path, {"clean": 0.02, "bad": 0.4})
+    out = tmp_path / "tau.json"
+    rc = mst.main([str(val), f"one={reports[0]}", f"two={reports[1].with_suffix('.raw.jsonl')}",
+                   "--scorer", f"xix={scorer}", "--json", str(out)])
+    assert rc == 0
+    assert set(json.loads(out.read_text(encoding="utf-8"))["scorers"]["xix"]["per_model"]) == {"one", "two"}
+    with pytest.raises(SystemExit):
+        mst.main([str(val), f"same={reports[0]}", f"same={reports[1]}", "--scorer", f"xix={scorer}"])

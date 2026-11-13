@@ -80,18 +80,32 @@ def load_references(eval_set: Path) -> dict[str, str]:
     return refs
 
 
-def load_predictions(report: Path) -> tuple[str, dict[str, str]]:
-    """(model label, image -> raw reading) from ``<report>.raw.jsonl``."""
-    label = report.stem
-    try:
-        label = json.loads(report.read_text(encoding="utf-8")).get("model", label) or label
-    except (OSError, ValueError):
-        pass
+def load_predictions(report: Path, label: str | None = None) -> tuple[str, dict[str, str]]:
+    """(model label, image -> raw reading) from ``<report>.raw.jsonl``.
+
+    ``report`` is the ``eval_report.<label>.json`` or the ``.raw.jsonl`` itself.
+    The label is, in this order: the one given (``NAME=PATH`` on the command
+    line), the ``model`` in the report JSON, the job directory the file lies in
+    (``<job>/data/eval_report.raw.jsonl`` — every job's bare report has the same
+    stem, and two runs under one label would silently overwrite each other),
+    else the file stem. A reading is ``raw`` (``evaluate_qlora``) or
+    ``prediction`` (the TrOCR trainer's report).
+    """
+    raw = report if report.name.endswith(".raw.jsonl") else report.with_suffix(".raw.jsonl")
+    if label is None:
+        try:
+            label = json.loads(report.read_text(encoding="utf-8")).get("model") or None
+        except (OSError, ValueError):
+            label = None
+    if label is None:
+        job = raw.resolve().parent
+        label = job.parent.name if job.name == "data" and job.parent.name else raw.stem
     preds = {}
-    for line in report.with_suffix(".raw.jsonl").read_text(encoding="utf-8").splitlines():
+    for line in raw.read_text(encoding="utf-8").splitlines():
         if line.strip():
             row = json.loads(line)
-            preds[row["image"]] = row["raw"] if isinstance(row["raw"], str) else str(row["raw"])
+            text = row.get("raw", row.get("prediction", ""))
+            preds[row["image"]] = text if isinstance(text, str) else str(text)
     return str(label), preds
 
 
@@ -191,7 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("eval_set", type=Path, help="val.jsonl with image and text (the reference)")
-    ap.add_argument("reports", type=Path, nargs="+", help="eval_report.<label>.json files")
+    ap.add_argument("reports", nargs="+", metavar="[NAME=]REPORT",
+                    help="eval_report.<label>.json or .raw.jsonl files, optionally labelled NAME=PATH")
     ap.add_argument("--scorer", action="append", required=True, metavar="NAME=PATH",
                     help="a scorer artefact; repeat to read cells side by side")
     ap.add_argument("--plausible", type=float, default=0.3,
@@ -200,7 +215,13 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     references = load_references(args.eval_set)
-    runs = dict(load_predictions(p) for p in args.reports)
+    runs = {}
+    for spec in args.reports:
+        name, sep, path = spec.partition("=")
+        label, preds = load_predictions(Path(path if sep else spec), name if sep else None)
+        if label in runs:
+            raise SystemExit(f"two reports under the label {label!r}; name one with NAME=PATH")
+        runs[label] = preds
     scorers = {}
     for spec in args.scorer:
         name, _, path = spec.partition("=")
