@@ -65,7 +65,8 @@ __all__ = [
     "LICENCE_FROM_BASE",
     "DEFAULT_LICENCE",
     "LICENCE_NONE",
-    "MIT_LICENCE_TEXT",
+    "MIT_LICENCE_TEMPLATE",
+    "mit_licence_text",
     "place_licence_files",
     "BASE_MODEL_TERMS",
     "BaseTerms",
@@ -132,10 +133,11 @@ DEFAULT_LICENCE = "mit"
 #: ``--license`` value that declares no licence at all.
 LICENCE_NONE = "none"
 
-#: The ``LICENSE`` written beside the weights when the repo is MIT-licensed.
-MIT_LICENCE_TEXT = """MIT License
+#: The ``LICENSE`` written beside the weights when the repo is MIT-licensed;
+#: ``{year}`` is the year the model was first published (:func:`mit_licence_text`).
+MIT_LICENCE_TEMPLATE = """MIT License
 
-Copyright (c) 2026 Digital Humanities Center, University of Bern
+Copyright (c) {year} Digital Humanities Center, University of Bern
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -1530,25 +1532,52 @@ def plan(
     return publications
 
 
+def mit_licence_text(year: int) -> str:
+    """:data:`MIT_LICENCE_TEMPLATE` for the given copyright year."""
+    return MIT_LICENCE_TEMPLATE.format(year=year)
+
+
+_MIT_LICENCE_RE = re.compile(
+    re.escape(MIT_LICENCE_TEMPLATE).replace(re.escape("{year}"), r"\d{4}")
+)
+
+
+def _publication_year(model: TrainedModel) -> int:
+    """The year the model first went to the hub: its recorded upload, else now.
+
+    A re-upload keeps the year of the first one, so a ``--force`` push in a
+    later year does not move the copyright date.
+    """
+    at = (model.published or {}).get("at")
+    if isinstance(at, str):
+        try:
+            return datetime.fromisoformat(at).year
+        except ValueError:
+            pass
+    return utcnow().year
+
+
 def place_licence_files(model: TrainedModel, licence: str | None) -> None:
     """Put the MIT ``LICENSE`` beside the weights when the repo is MIT-licensed.
 
-    A ``LICENSE`` already there that is not this text is the base model's copy
-    (Apache-2.0 §4(a), #87): it is kept, renamed ``LICENSE-base-<id>``, so both
-    sets of terms travel with the weights. Any other licence id writes nothing —
-    its text is the caller's to supply.
+    The copyright year is the year of first publication (:func:`_publication_year`).
+    An MIT ``LICENSE`` of ours already there is left as it is, year included.
+    A ``LICENSE`` that is something else is the base model's copy (Apache-2.0
+    §4(a), #87): it is kept, renamed ``LICENSE-base-<id>``, so both sets of
+    terms travel with the weights. Any other licence id writes nothing — its
+    text is the caller's to supply.
     """
     if licence != DEFAULT_LICENCE:
         return
     target = model.directory / "LICENSE"
     if target.exists():
         current = target.read_text(encoding="utf-8", errors="replace")
-        if current == MIT_LICENCE_TEXT:
+        if _MIT_LICENCE_RE.fullmatch(current):
             return
         terms = model.base_terms
         base_id = terms.licence if terms is not None else "base"
         target.rename(model.directory / f"LICENSE-base-{base_id}")
-    target.write_text(MIT_LICENCE_TEXT, encoding="utf-8")
+    target.write_text(mit_licence_text(_publication_year(model)), encoding="utf-8")
 
 
 def record_publication(model: TrainedModel, repo_id: str, url: str,
