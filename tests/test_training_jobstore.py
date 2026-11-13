@@ -295,3 +295,55 @@ def test_reconcile_fails_a_job_whose_runner_went_defunct(tmp_path):
 def test_reaping_nothing_is_not_an_error():
     """ECHILD is the normal case — the service has no children most of the time."""
     assert reap_children() >= 0
+
+
+# ── the listing from two threads, and when it is slow (#408) ────────────────
+
+def test_listings_from_two_threads_share_the_cache_safely(store: JobStore):
+    """The scheduler lists in a worker thread and ``GET /jobs`` in another, on
+    one store. The forget step and an insert from the other listing must not
+    meet ("dictionary changed size during iteration")."""
+    import threading
+
+    for i in range(20):
+        store.create(make_request(f"kraken-t{i}-v1"))
+    errors: list[BaseException] = []
+
+    def lister():
+        try:
+            for _ in range(50):
+                store.list()
+        except BaseException as exc:  # noqa: BLE001 — collected, then asserted
+            errors.append(exc)
+
+    def churn():
+        try:
+            for i in range(50):
+                job = store.create(make_request(f"kraken-c{i}-v1"))
+                store.delete(job.id)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=lister) for _ in range(4)] + [threading.Thread(target=churn)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert len(store.list()) == 20
+
+
+def test_a_slow_listing_is_logged(store: JobStore, monkeypatch):
+    from loguru import logger
+
+    import atr_training.jobstore as js
+
+    store.create(make_request())
+    monkeypatch.setattr(js, "SLOW_LISTING_S", -1.0)
+    seen: list[str] = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="WARNING")
+    try:
+        store.list()
+    finally:
+        logger.remove(sink)
+    assert any("listing 1 job record(s)" in m for m in seen)
