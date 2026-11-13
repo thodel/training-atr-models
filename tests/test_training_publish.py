@@ -13,8 +13,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from atr_training.contracts import utcnow
 from atr_training.publish import (
-    MIT_LICENCE_TEXT,
+    mit_licence_text,
     CARD_FILENAME,
     METADATA_FILENAME,
     PublishError,
@@ -984,8 +985,10 @@ def test_an_mit_publish_writes_the_licence_and_keeps_the_base_copy(tmp_path: Pat
     uploader = FakeUploader()
     result = publish_one(plan(scan_trained(tmp_path).models)[0], uploader)
     assert result.status == "published"
-    assert (directory / "LICENSE").read_text(encoding="utf-8") == MIT_LICENCE_TEXT
-    assert "Digital Humanities Center, University of Bern" in MIT_LICENCE_TEXT
+    year = utcnow().year
+    assert (directory / "LICENSE").read_text(encoding="utf-8") == mit_licence_text(year)
+    assert f"Copyright (c) {year} Digital Humanities Center, University of Bern" in (
+        mit_licence_text(year))
     assert (directory / "LICENSE-base-apache-2.0").read_text(encoding="utf-8").startswith(
         "Apache License")
     card = (directory / "README.md").read_text(encoding="utf-8")
@@ -1002,6 +1005,23 @@ def test_an_mit_publish_of_a_kraken_model_adds_the_licence_file(tmp_path: Path):
     publish_one(plan(scan_trained(tmp_path).models)[0], FakeUploader())
     model = scan_trained(tmp_path).models[0]
     assert [p.name for p in model.licence_files] == ["LICENSE"]
+
+
+def test_the_licence_year_is_the_year_of_first_publication(tmp_path: Path):
+    metadata = {**KRAKEN_META, "published": {
+        "repo_id": "dh-unibe/" + KRAKEN_META["model_id"], "url": "u",
+        "at": "2024-03-01T10:00:00+00:00"}}
+    directory = trained_dir(tmp_path, metadata)
+    publish_one(plan(scan_trained(tmp_path).models, force=True)[0], FakeUploader())
+    assert (directory / "LICENSE").read_text(encoding="utf-8") == mit_licence_text(2024)
+
+
+def test_an_mit_licence_of_another_year_is_left_alone(tmp_path: Path):
+    directory = trained_dir(tmp_path, KRAKEN_META)
+    (directory / "LICENSE").write_text(mit_licence_text(2023), encoding="utf-8")
+    publish_one(plan(scan_trained(tmp_path).models)[0], FakeUploader())
+    assert (directory / "LICENSE").read_text(encoding="utf-8") == mit_licence_text(2023)
+    assert not list(directory.glob("LICENSE-base-*"))
 
 
 def test_a_dry_run_writes_no_licence_file(tmp_path: Path):
