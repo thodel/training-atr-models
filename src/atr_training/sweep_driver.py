@@ -310,11 +310,19 @@ class SweepState:
                                      (f"budget.{self.budget_unit}", self.base_steps,
                                       manifest.steps)):
             if was != now:
+                # The metric is not in the manifest: it comes from --metric,
+                # whose default is benchmark_cer. Saying "the manifest now says"
+                # sent a reader to the YAML for a value it does not hold (#417).
+                if field_name == "metric":
+                    source, fix = (f"this run asks for {now!r} (--metric)",
+                                   f"Run with --metric {was} to continue it, or start")
+                else:
+                    source, fix = f"the manifest now says {now!r}", "Start"
                 raise SweepError(
                     f"{self.path}: this sweep was run with {field_name} = {was!r} "
-                    f"and the manifest now says {now!r}. Earlier rungs were "
-                    "decided on the old terms. Start a new sweep — a new state "
-                    "file — rather than continuing this one.")
+                    f"and {source}. Earlier rungs were decided on the old terms. "
+                    f"{fix} a new sweep — a new state file — rather than "
+                    "continuing this one on other terms.")
 
     def observe_train_lines(self, lines: int | None) -> None:
         """Record the corpus size, and notice if it ever changes.

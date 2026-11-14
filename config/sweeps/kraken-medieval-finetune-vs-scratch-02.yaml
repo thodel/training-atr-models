@@ -739,7 +739,6 @@ data:
 budget:
   steps: 4000
   rungs:
-  - 2
   - 1
   max_total_steps: 30000
 base:
@@ -759,8 +758,12 @@ base:
   workers: 8
   device: cuda:0
 axes:
+  # One value since 14.11.2026: the from-scratch cell (`null`) is struck. On this
+  # corpus kraken from scratch collapsed five times out of five (#131), the last
+  # time stopped by the collapse watch at 3,910 steps; running it again would buy
+  # Prepare, Compile and four epochs for a result already measured. See STRUCK
+  # in the notes.
   base_model:
-  - null
   - kraken-catmus_medieval
 
 baseline:
@@ -843,6 +846,17 @@ notes: |
   spread 0.0016. write_into_manifest refuses it here, correctly: the digest moved
   to d7a116… on 27.10.2026 (#301), and 111 of the 130 newly reserved documents
   sit in the shard it was trained on.
+
+  STRUCK, 14.11.2026: the from-scratch cell. Five runs on this corpus, five
+  collapses (#131): CER 1.0 and 0.9998 at 2,778 steps, 0.985 and 0.987 at
+  10,186, 0.9917 at 8,470, and on 06./07.11. this sweep's own scratch cell
+  (`…-r0-82d99fccf9fa`), stopped by the collapse watch at 3,910 steps with
+  length ratios 0.0004 / 0.0007 / 0.0009. The question the sweep was built for
+  ("fine-tune or from scratch?") is answered by those five runs, not by a
+  sixth. What remains is one cell, the fine-tune, and with one cell the ladder
+  is one rung: `budget.rungs: [1]`. Its config_id is unchanged (04da08b11c69;
+  the struck cell was 30a2d4fc37ec),
+  because the id is built from the cell's own values, not from the axis.
 
   WEIGHTS. coreml, not safetensors (#417). The first run (13./14.11.2026) trained
   the fine-tune cell for four hours (epoch 5, val_accuracy 0.7934) and then

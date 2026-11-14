@@ -78,24 +78,25 @@ def minimal(**over) -> dict:
 
 
 # ── the manifest ────────────────────────────────────────────────────────────
-def test_it_loads_as_two_cells(sweep):
-    assert len(sweep.configs()) == 2
+def test_it_loads_as_the_fine_tune_cell_alone(sweep):
+    """The from-scratch cell was struck on 14.11.2026: five runs on this corpus,
+    five collapses (#131). What is left is the fine-tune, with its id unchanged
+    (#417), so the driver resumes it rather than starting it over."""
+    (cell,) = sweep.configs()
+    assert cell.base_model == BASE
+    assert cell.config_id == "04da08b11c69"
 
 
 def test_the_only_axis_is_what_it_starts_from(sweep):
     assert list(sweep.axes) == [BASE_AXIS]
-    assert sweep.axes[BASE_AXIS] == (None, BASE)
+    assert sweep.axes[BASE_AXIS] == (BASE,)
 
 
-def test_one_cell_trains_from_scratch_and_one_fine_tunes(sweep):
-    assert sorted(c.base_model or "" for c in sweep.configs()) == ["", BASE]
-
-
-def test_the_two_cells_are_two_configurations(sweep):
-    """The collision this change exists to avoid: same hyperparameters, two
-    experiments. Before `base_model` entered the id they shared one, and the
-    second result would have overwritten the first."""
-    ids = [c.config_id for c in sweep.configs()]
+def test_the_two_cells_are_two_configurations():
+    """The collision `base_model` in the id exists to avoid: same
+    hyperparameters, two experiments. Before it entered the id they shared one,
+    and the second result would have overwritten the first."""
+    ids = [c.config_id for c in parse_manifest(minimal()).configs()]
 
     assert len(set(ids)) == 2
 
@@ -113,16 +114,17 @@ def test_the_base_is_still_a_leaderboard_column(sweep):
         assert BASE_AXIS in config.axes
 
 
-def test_from_scratch_reads_as_from_scratch_not_as_none(sweep):
+def test_from_scratch_reads_as_from_scratch_not_as_none():
     """A column reading `None` invites the reader to wonder what went missing."""
-    scratch = next(c for c in sweep.configs() if c.base_model is None)
+    scratch = next(c for c in parse_manifest(minimal()).configs() if c.base_model is None)
 
     assert "from scratch" in str(scratch)
     assert "None" not in str(scratch)
 
 
-def test_the_ladder_narrows_to_one(sweep):
-    assert sweep.rungs == (2, 1)
+def test_one_cell_is_one_rung(sweep):
+    """Rung 0 screens the whole field, and the field is one cell."""
+    assert sweep.rungs == (1,)
     assert sweep.max_total_steps == 30000
 
 
@@ -292,10 +294,16 @@ def built(manifest, config):
     return driver(FakeTrainer(), m=manifest).request_for(config, rung=0)
 
 
-def test_each_cell_is_submitted_with_its_own_base(sweep):
-    bodies = {c.base_model: built(sweep, c)["base_model"] for c in sweep.configs()}
+def test_each_cell_is_submitted_with_its_own_base():
+    manifest = parse_manifest(minimal())
+    bodies = {c.base_model: built(manifest, c)["base_model"] for c in manifest.configs()}
 
     assert bodies == {None: None, BASE: BASE}
+
+
+def test_this_sweep_s_cell_is_submitted_as_a_fine_tune(sweep):
+    (cell,) = sweep.configs()
+    assert built(sweep, cell)["base_model"] == BASE
 
 
 def test_the_scratch_cell_does_not_fall_back_to_the_sweep_s_base():
@@ -308,8 +316,9 @@ def test_the_scratch_cell_does_not_fall_back_to_the_sweep_s_base():
     assert built(manifest, scratch)["base_model"] is None
 
 
-def test_both_cells_are_sent_the_same_corpus(sweep):
-    bodies = [built(sweep, c) for c in sweep.configs()]
+def test_both_cells_are_sent_the_same_corpus():
+    manifest = parse_manifest(minimal())
+    bodies = [built(manifest, c) for c in manifest.configs()]
 
     assert bodies[0]["datasets"] == bodies[1]["datasets"]
 
@@ -406,7 +415,7 @@ def test_the_listing_names_what_each_cell_starts_from(capsys):
     main([str(SCRATCH_VS_TUNE)])
 
     printed = capsys.readouterr().out
-    assert "base    an axis: from scratch, kraken-catmus_medieval" in printed
+    assert "base    an axis: kraken-catmus_medieval" in printed
 
 
 # ── the written file and the planned order must not drift ───────────────────
@@ -442,3 +451,19 @@ def test_the_plan_records_why_this_base_and_not_a_matching_one():
 
     assert BASE in plan
     assert "#101" in plan
+
+
+# ── resuming with the wrong metric (#417) ───────────────────────────────────
+def test_a_metric_mismatch_points_at_the_flag_not_the_manifest(sweep, tmp_path):
+    """The metric is not in the manifest; it is --metric, whose default is
+    benchmark_cer. The message used to say "the manifest now says", which sent
+    a reader to a YAML that does not hold the value."""
+    from atr_training.sweep_driver import SweepError, SweepState
+
+    path = tmp_path / "s.state.json"
+    SweepState.for_manifest(sweep, "cer", path).save()
+    with pytest.raises(SweepError) as exc:
+        SweepState.load(path, sweep, "benchmark_cer")
+    message = str(exc.value)
+    assert "(--metric)" in message and "--metric cer" in message
+    assert "manifest now says" not in message
