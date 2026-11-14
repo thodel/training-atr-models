@@ -446,11 +446,19 @@ at 1.97 frames per character, just under its own warn threshold of 2.0. The
 baseline sits at the bottom of the one direction that held over both seeds of the
 first search. h64 is in the sweep as the **control**, not as a candidate.
 
-### Sweep 2 — fine-tuning against from-scratch (written, not yet run)
+### Sweep 2 — fine-tuning against from-scratch
 
-`config/sweeps/kraken-medieval-finetune-vs-scratch-02.yaml`. Two cells: from
-scratch against a fine-tune of `kraken-catmus_medieval`, same four corpora, same
-digest, same budget, ladder 2→1.
+`config/sweeps/kraken-medieval-finetune-vs-scratch-02.yaml`. Written as two cells:
+from scratch against a fine-tune of `kraken-catmus_medieval`, same four corpora,
+same digest, same budget, ladder 2→1.
+
+**Since 14.11.2026 one cell, the fine-tune** (ladder `[1]`, config_id
+`04da08b11c69`). The from-scratch arm is struck: on this corpus kraken from
+scratch collapsed five times out of five (#131), the last time as this sweep's
+own cell, stopped by the collapse watch at 3,910 steps. The question below is
+answered by those runs; running the arm again would cost Prepare, Compile and
+four epochs for a result already measured. Its weights are CoreML, because a
+fine-tune saved as safetensors cannot be loaded back (#417).
 
 This was sweep 3 and was pulled forward, which the previous version of this
 section recommended in a sentence and this file now acts on: `GET /bases` has
