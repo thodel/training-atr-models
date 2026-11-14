@@ -1220,6 +1220,22 @@ def test_chunk_size_with_several_datasets_is_refused_at_submit(client, app):
     assert "chunk_size with 2 datasets" in error and "dh-unibe/first (chunk_size=5000)" in error
 
 
+def test_a_kraken_fine_tune_in_safetensors_is_refused_before_it_trains(client, app):
+    """ketos saves a fine-tune of a CoreML base as safetensors it cannot load
+    again; sweep 2's first cell trained four hours and died in test (#417)."""
+    app.state.verify_spec = lambda spec, settings, **kw: []
+    fine_tune = {**BODY, "base_model": "kraken-catmus_medieval"}
+
+    refused = client.post("/jobs/verify", json={
+        **fine_tune, "params": {"weights_format": "safetensors"}}).json()
+    assert refused["valid"] is False
+    assert "weights_format 'coreml' (#417)" in refused["errors"][0]
+
+    for body in ({**fine_tune, "params": {"weights_format": "coreml"}},
+                 {**BODY, "params": {"weights_format": "safetensors"}}):
+        assert client.post("/jobs/verify", json=body).json()["valid"] is True
+
+
 def test_the_size_guard_credits_chunking_only_to_a_single_kraken_dataset(client, app, spawn):
     """_prepare_multi never chunks, so a multi-dataset run must be sized as the
     run that materializes every page (#28). Before, each dataset was checked
