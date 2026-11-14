@@ -165,20 +165,32 @@ def measure(references: dict[str, str], runs: dict[str, dict[str, str]],
 
 
 def verdict(table: dict, threshold: float = 0.3) -> str:
-    """The decision rule of #491 in one line per scorer."""
+    """The decision rule of #491 in one line per scorer.
+
+    Judged on the **median** τ over the models, not the best one: the first
+    run (14.11.2026, eight arms) had 0.21…0.44 with two arms under 0.3, and the
+    best arm alone would have carried the verdict. The share of cross-model
+    pairs ordered like CER is printed beside it, because that — not the
+    within-model τ — is the question L4 asks, and 0.57 there reads as a near
+    coin flip whatever the τ says.
+    """
     lines = []
     for name, s in table["scorers"].items():
-        taus = [v["tau_plausible"] for v in s["per_model"].values() if v["tau_plausible"] is not None]
+        taus = sorted(v["tau_plausible"] for v in s["per_model"].values() if v["tau_plausible"] is not None)
         if not taus:
             lines.append(f"{name} ({s['cell']}): no plausible band to measure on")
             continue
-        worst, best = min(taus), max(taus)
-        if best < threshold:
-            lines.append(f"{name} ({s['cell']}): τ on the plausible band {worst:.2f}…{best:.2f} < "
-                         f"{threshold} — veto only; L4 and the matrix fall")
+        worst, best = taus[0], taus[-1]
+        median = taus[len(taus) // 2] if len(taus) % 2 else (taus[len(taus) // 2 - 1] + taus[len(taus) // 2]) / 2
+        pairs = (s.get("pairs") or {}).get("ordered_like_cer_plausible")
+        pairs_txt = f"; cross-model pairs ordered like CER {pairs:.2f}" if pairs is not None else ""
+        span = f"{worst:.2f}…{best:.2f} (median {median:.2f})"
+        if median < threshold:
+            lines.append(f"{name} ({s['cell']}): τ on the plausible band {span} < {threshold} — "
+                         f"veto only; L4 and the matrix fall{pairs_txt}")
         else:
-            lines.append(f"{name} ({s['cell']}): τ on the plausible band {worst:.2f}…{best:.2f} — "
-                         f"orders plausible candidates; L4 may be built, measured against this")
+            lines.append(f"{name} ({s['cell']}): τ on the plausible band {span} — orders plausible "
+                         f"candidates within a model; L4 only if the cross-model pairs do too{pairs_txt}")
     return "\n".join(lines)
 
 

@@ -101,13 +101,19 @@ def test_noisier_readings_cost_more_bits_and_the_verdict_says_so(tmp_path):
 
 def test_the_verdict_follows_the_threshold_in_both_directions():
     table = {"scorers": {"a": {"cell": "de|*|*|*", "per_model": {
-        "m1": {"tau_plausible": 0.12}, "m2": {"tau_plausible": 0.21}}},
-        "b": {"cell": "de|Swiss|*|*", "per_model": {"m1": {"tau_plausible": 0.44}}},
-        "c": {"cell": "la|*|*|*", "per_model": {"m1": {"tau_plausible": None}}}}}
+        "m1": {"tau_plausible": 0.12}, "m2": {"tau_plausible": 0.22}}},
+        "b": {"cell": "de|Swiss|*|*", "per_model": {"m1": {"tau_plausible": 0.44}},
+              "pairs": {"ordered_like_cer_plausible": 0.567}},
+        "c": {"cell": "la|*|*|*", "per_model": {"m1": {"tau_plausible": None}}},
+        # the 14.11. shape: the best arm clears 0.3, the median does not
+        "d": {"cell": "de|*|*|*", "per_model": {"m1": {"tau_plausible": 0.21}, "m2": {"tau_plausible": 0.25},
+                                                 "m3": {"tau_plausible": 0.44}}}}}
     v = mst.verdict(table, threshold=0.3)
-    assert "a (de|*|*|*): τ on the plausible band 0.12…0.21 < 0.3 — veto only" in v
-    assert "b (de|Swiss|*|*): τ on the plausible band 0.44…0.44 — orders plausible" in v
+    assert "a (de|*|*|*): τ on the plausible band 0.12…0.22 (median 0.17) < 0.3 — veto only" in v
+    assert "b (de|Swiss|*|*): τ on the plausible band 0.44…0.44 (median 0.44) — orders plausible" in v
+    assert "cross-model pairs ordered like CER 0.57" in v
     assert "c (la|*|*|*): no plausible band" in v
+    assert "d (de|*|*|*): τ on the plausible band 0.21…0.44 (median 0.25) < 0.3 — veto only" in v
 
 
 def test_cli_writes_the_json_and_names_the_scorer(tmp_path, capsys):
