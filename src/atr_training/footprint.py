@@ -121,7 +121,7 @@ MIX_SOURCE = "https://klima.unibe.ch/betrieb/energie/index_ger.html"
 MIX_DESCRIPTION = ("100 % renewable sources (hydro, biomass, solar), "
                    "predominantly Swiss")
 #: The sentence every model trained on the cluster must carry, verbatim.
-UBELIX_CREDIT = ("Model training was performed on UBELIX "
+UBELIX_CREDIT = ("Calculations were performed on UBELIX "
                  "(https://www.id.unibe.ch/hpc), the HPC cluster at the "
                  "University of Bern.")
 

@@ -282,5 +282,5 @@ def test_the_credit_is_the_exact_sentence():
     """Verbatim, because it is a condition of using the cluster and not a
     paraphrase we are free to improve."""
     assert UBELIX_CREDIT == (
-        "Model training was performed on UBELIX (https://www.id.unibe.ch/hpc), "
+        "Calculations were performed on UBELIX (https://www.id.unibe.ch/hpc), "
         "the HPC cluster at the University of Bern.")
