@@ -201,6 +201,13 @@ def test_resize_is_union_because_a_base_codec_will_not_cover_four_corpora(sweep)
         assert config.params["resize"] == "union"
 
 
+def test_both_cells_write_coreml(sweep):
+    """A fine-tune of the CoreML base saved as safetensors cannot be loaded for
+    its own test (#417); from scratch either format loads."""
+    for config in sweep.configs():
+        assert config.params["weights_format"] == "coreml"
+
+
 def test_both_cells_step_at_256_in_micro_batches_of_32(sweep):
     """The fine-tune cell trains at the base's height 120, where 256 x 1 ran out
     of memory; 32 x 8 is what the floor on this digest ran at, and both cells

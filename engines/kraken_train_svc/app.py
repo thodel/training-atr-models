@@ -1150,6 +1150,10 @@ def request_problems(request: TrainRequest) -> list[str]:
     * Several datasets and a ``chunk_size`` (#25): ``_prepare_multi`` never
       asks ``_chunked``, so the value would be taken and ignored, and every page
       materialized at once — the silence the field's issue is about.
+    * A kraken fine-tune with ``weights_format: safetensors`` (#417): ketos
+      writes the file, then cannot load it back — a fine-tune of a CoreML base
+      keeps an LSTM weight safetensors refuses as shared. Sweep 2's first cell
+      found out in ``test``, after four hours of training.
 
     These are **errors**: the list becomes an HTTP 400. Nothing here is a
     warning, because the caller has no warning channel to read one in.
@@ -1172,6 +1176,13 @@ def request_problems(request: TrainRequest) -> list[str]:
                 "a multi-dataset prepare does not chunk — the value would be taken and "
                 "ignored, and every page materialized at once. Submit one dataset, or "
                 "drop chunk_size (#25).")
+    if (request.engine == "kraken" and request.base_model
+            and getattr(request.params, "weights_format", None) == "safetensors"):
+        problems.append(
+            f"weights_format 'safetensors' with base_model {request.base_model!r}: "
+            "ketos saves a fine-tune of a CoreML base in a form it cannot load "
+            "again, so the run would train and then fail in test. Use "
+            "weights_format 'coreml' (#417).")
     return problems
 
 

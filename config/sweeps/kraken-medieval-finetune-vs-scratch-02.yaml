@@ -754,7 +754,7 @@ base:
   normalization: NFD
   normalize_whitespace: true
   seed: 42
-  weights_format: safetensors
+  weights_format: coreml
   resize: union
   workers: 8
   device: cuda:0
@@ -843,6 +843,16 @@ notes: |
   spread 0.0016. write_into_manifest refuses it here, correctly: the digest moved
   to d7a116… on 27.10.2026 (#301), and 111 of the 130 newly reserved documents
   sit in the shard it was trained on.
+
+  WEIGHTS. coreml, not safetensors (#417). The first run (13./14.11.2026) trained
+  the fine-tune cell for four hours (epoch 5, val_accuracy 0.7934) and then
+  could not load its own weights in `test`: a fine-tune of the CoreML base
+  saved as safetensors carries a shared LSTM weight in L_12 that safetensors
+  refuses. The same checkpoint as CoreML scores CER 0.2066 on the validation
+  split and 0.2083 on german_test. Every kraken fine-tune that ever completed
+  here wrote CoreML; the trainer now refuses the other combination at submit.
+  Both cells take it, as with the batch, and from-scratch weights load either
+  way.
 
   BATCH. 32 x 8, not 256 x 1: the same effective batch of 256 and so the same
   step budget, in micro-batches the fine-tune cell fits. That cell trains at
