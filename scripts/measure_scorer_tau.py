@@ -27,6 +27,22 @@ generic cell. **The decision rule from the epic:** τ < 0.3 on the plausible ban
         --scorer generic=jobs/<id>/data/de.scorer.json \\
         <job>/data/eval_report.<label>.json ... --json tau.json
 
+**Across engines** (agentic_historian#875, the L4 rule): with readings of the
+same lines by different engines — the VLM's ``evaluate_qlora``, TrOCR's
+``evaluate_trocr``, kraken's ``read_lines_kraken.py`` — the cross-model pairs are
+also counted **per engine pair** (``pairs_by_engine``: ``kraken|vlm`` apart from
+``trocr|vlm``) and over every pair of two different engines
+(``pairs_across_engines``). A report's engine is its JSON's ``engine`` field,
+else read off its shape (``adapter`` → vlm, ``checkpoint``/``beam_size`` →
+trocr); ``--engine NAME=ENGINE`` sets it. **The rule:** pairs across different
+engines ordered like CER less than 0.7 of the time → L4 stays unbuilt.
+
+    scripts/measure_scorer_tau.py $E/data/val.jsonl \
+        vlm-qwen=$E/readings/qwen35-4b-xix.json trocr-xix=$E/readings/trocr-xix.json \
+        kraken-xix=$E/readings/kraken-xix.json \
+        --scorer generic=<scorers>/de.scorer.json --scorer xix=<scorers>/de-Swiss-protocol-19-20.scorer.json \
+        --json tau-engines.json
+
 Pure Python and the repo's own ``textmetrics.cer``; no scipy. τ-b is O(n²)
 per model, which is seconds for a few thousand lines.
 """
@@ -109,10 +125,50 @@ def load_predictions(report: Path, label: str | None = None) -> tuple[str, dict[
     return str(label), preds
 
 
+def load_engine(report: Path) -> str | None:
+    """The engine that wrote ``report`` (``.json`` or ``.raw.jsonl``), or None.
+
+    The report JSON's ``engine`` when it names one (``read_lines_kraken.py``),
+    else its shape: ``evaluate_qlora`` records the ``adapter``, ``evaluate_trocr``
+    the ``checkpoint`` and its ``beam_size``. A bare ``.raw.jsonl`` says nothing
+    about who wrote it; ``--engine`` names it then.
+    """
+    path = report.with_name(report.name[:-len(".raw.jsonl")] + ".json") \
+        if report.name.endswith(".raw.jsonl") else report
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("engine"), str) and data["engine"]:
+        return data["engine"]
+    if "adapter" in data:
+        return "vlm"
+    if "checkpoint" in data or "beam_size" in data:
+        return "trocr"
+    return None
+
+
+def _engine_pair(a: str | None, b: str | None) -> str:
+    return "|".join(sorted((a or "?", b or "?")))
+
+
+def _share(agree: int, total: int) -> float | None:
+    return agree / total if total else None
+
+
 def measure(references: dict[str, str], runs: dict[str, dict[str, str]],
-            scorers: dict[str, CharNgramScorer], *, plausible: float = 0.3) -> dict:
+            scorers: dict[str, CharNgramScorer], *, plausible: float = 0.3,
+            engines: dict[str, str | None] | None = None) -> dict:
     """The table: per scorer, per model τ (all / plausible) and the share of
-    correctly ordered cross-model pairs per line (all / plausible)."""
+    correctly ordered cross-model pairs per line (all / plausible).
+
+    With ``engines`` (model label → engine), each scorer also gets
+    ``pairs_by_engine`` (the same counts per sorted engine pair, ``kraken|vlm``;
+    an unknown engine is ``?``) and ``pairs_across_engines`` (every pair of two
+    different known engines), and the table names the engines it was given.
+    """
     out: dict = {"n_lines": len(references), "plausible_cer_below": plausible, "scorers": {}}
     # CER once per model and line; bits once per scorer, model and line
     cers: dict[str, dict[str, float]] = {
@@ -136,7 +192,8 @@ def measure(references: dict[str, str], runs: dict[str, dict[str, str]],
                 "mean_cer": sum(ys) / len(ys) if ys else None,
                 "mean_bits": (sum(x for x in xs if x != float("inf")) / len(xs)) if xs else None,
             }
-        # cross-model pairs, per line
+        # cross-model pairs, per line; [agree, total, agree plausible, total plausible]
+        counts: dict[str, list[int]] = {}
         agree = total = agree_pl = total_pl = 0
         models = sorted(runs)
         for img in references:
@@ -150,9 +207,16 @@ def measure(references: dict[str, str], runs: dict[str, dict[str, str]],
                 total += 1
                 ok = (dc > 0) == (db > 0)
                 agree += ok
-                if cers[a][img] < plausible and cers[b][img] < plausible:
+                both_plausible = cers[a][img] < plausible and cers[b][img] < plausible
+                if both_plausible:
                     total_pl += 1
                     agree_pl += ok
+                if engines is not None:
+                    c = counts.setdefault(_engine_pair(engines.get(a), engines.get(b)), [0, 0, 0, 0])
+                    c[0] += ok
+                    c[1] += 1
+                    c[2] += ok and both_plausible
+                    c[3] += both_plausible
         out["scorers"][name] = {
             "cell": scorer.cell.key(),
             "train_chars": scorer.train_chars,
@@ -161,6 +225,19 @@ def measure(references: dict[str, str], runs: dict[str, dict[str, str]],
                       "n_plausible": total_pl,
                       "ordered_like_cer_plausible": agree_pl / total_pl if total_pl else None},
         }
+        if engines is not None:
+            def block(c: list[int]) -> dict:
+                return {"n": c[1], "ordered_like_cer": _share(c[0], c[1]),
+                        "n_plausible": c[3], "ordered_like_cer_plausible": _share(c[2], c[3])}
+            across = [0, 0, 0, 0]
+            for key, c in counts.items():
+                first, second = key.split("|")
+                if first != second and "?" not in (first, second):
+                    across = [x + y for x, y in zip(across, c)]
+            out["scorers"][name]["pairs_by_engine"] = {k: block(c) for k, c in sorted(counts.items())}
+            out["scorers"][name]["pairs_across_engines"] = block(across)
+    if engines is not None:
+        out["engines"] = {m: engines.get(m) for m in sorted(runs)}
     return out
 
 
@@ -194,6 +271,40 @@ def verdict(table: dict, threshold: float = 0.3) -> str:
     return "\n".join(lines)
 
 
+def engine_verdict(table: dict, threshold: float = 0.7) -> str:
+    """The L4 rule of #875, one line per scorer and engine pair: pairs across
+    *different* engines on the same lines ordered like CER less than
+    ``threshold`` of the time → L4 stays unbuilt.
+
+    Judged on the **plausible** band (both readings below ``--plausible``), as
+    the τ verdict is: a garbage reading is the veto's business, and what L4 has
+    to do is tell two usable engines apart. The share over all pairs is printed
+    beside it, so a scorer that only separates garbage shows as such.
+    """
+    lines = []
+    for name, s in table["scorers"].items():
+        if "pairs_by_engine" not in s or not s["pairs_across_engines"]["n"]:
+            continue        # one engine only: the τ verdict above is all there is
+        blocks = [("across engines", s["pairs_across_engines"])] + [
+            (k, v) for k, v in s["pairs_by_engine"].items()
+            if len(set(k.split("|"))) == 2 and "?" not in k.split("|")]
+        for label, p in blocks:
+            pl, al = p["ordered_like_cer_plausible"], p["ordered_like_cer"]
+            head = f"{name} ({s['cell']}), {label}: "
+            if pl is None:
+                lines.append(head + f"no plausible pair to judge on (all pairs: {_fmt(al)}, "
+                             f"n={p['n']})")
+            elif pl < threshold:
+                lines.append(head + f"pairs ordered like CER {pl:.2f} on the plausible band "
+                             f"(n={p['n_plausible']}; all {_fmt(al)}, n={p['n']}) < {threshold} "
+                             "— L4 stays unbuilt")
+            else:
+                lines.append(head + f"pairs ordered like CER {pl:.2f} on the plausible band "
+                             f"(n={p['n_plausible']}; all {_fmt(al)}, n={p['n']}) ≥ {threshold} "
+                             "— L4 passes this rule")
+    return "\n".join(lines)
+
+
 def _fmt(v) -> str:
     return "—" if v is None else f"{v:.3f}"
 
@@ -210,7 +321,18 @@ def render(table: dict) -> str:
         rows.append(f"| {name} | `{s['cell']}` | *pairs across models* | {p['n']} | "
                     f"{_fmt(p['ordered_like_cer'])} | {p['n_plausible']} | "
                     f"{_fmt(p['ordered_like_cer_plausible'])} | | |")
-    return "\n".join(rows) + "\n\n" + verdict(table)
+        for key, p in (s.get("pairs_by_engine") or {}).items():
+            rows.append(f"| {name} | `{s['cell']}` | *pairs {key.replace('|', '–')}* | {p['n']} | "
+                        f"{_fmt(p['ordered_like_cer'])} | {p['n_plausible']} | "
+                        f"{_fmt(p['ordered_like_cer_plausible'])} | | |")
+        if "pairs_across_engines" in s:
+            p = s["pairs_across_engines"]
+            rows.append(f"| {name} | `{s['cell']}` | *pairs across engines* | {p['n']} | "
+                        f"{_fmt(p['ordered_like_cer'])} | {p['n_plausible']} | "
+                        f"{_fmt(p['ordered_like_cer_plausible'])} | | |")
+    text = "\n".join(rows) + "\n\n" + verdict(table)
+    l4 = engine_verdict(table)
+    return text + ("\n\n" + l4 if l4 else "")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -224,23 +346,36 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--plausible", type=float, default=0.3,
                     help="CER below which a reading counts as plausible (default 0.3)")
     ap.add_argument("--json", type=Path, help="also write the table as JSON")
+    ap.add_argument("--engine", action="append", default=[], metavar="NAME=ENGINE",
+                    help="the engine of the report labelled NAME (vlm, trocr, kraken), "
+                         "where its JSON does not say; any engine known adds the "
+                         "per-engine-pair counts")
     args = ap.parse_args(argv)
 
     references = load_references(args.eval_set)
     runs = {}
+    engines: dict[str, str | None] = {}
     for spec in args.reports:
         name, sep, path = spec.partition("=")
-        label, preds = load_predictions(Path(path if sep else spec), name if sep else None)
+        report = Path(path if sep else spec)
+        label, preds = load_predictions(report, name if sep else None)
         if label in runs:
             raise SystemExit(f"two reports under the label {label!r}; name one with NAME=PATH")
         runs[label] = preds
+        engines[label] = load_engine(report)
+    for spec in args.engine:
+        name, sep, engine = spec.partition("=")
+        if not sep or name not in runs:
+            raise SystemExit(f"--engine {spec!r}: give NAME=ENGINE for one of {sorted(runs)}")
+        engines[name] = engine
     scorers = {}
     for spec in args.scorer:
         name, _, path = spec.partition("=")
         if not path:
             name, path = Path(spec).stem, spec
         scorers[name] = CharNgramScorer.load(path)
-    table = measure(references, runs, scorers, plausible=args.plausible)
+    table = measure(references, runs, scorers, plausible=args.plausible,
+                    engines=engines if any(engines.values()) else None)
     print(render(table))
     if args.json:
         args.json.write_text(json.dumps(table, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -12,6 +12,10 @@
 #   JOB=<id> DRAW_FROM=<id> ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=04:00:00
 #   JOB=<id> DRAW_FILE=<lines.jsonl> DATA_ROOT=<corpus root> LABEL=<name> \
 #       ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch     # a draw as a file (#74)
+#   JOB=<id> DRAW_SET=federal-minutes LABEL=federal-minutes-lines \
+#       ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch     # a set under eval_sets/ (#875):
+#       DRAW_FILE=<eval_sets>/<set>/data/val.jsonl DATA_ROOT=<eval_sets>/<set>, LABEL=<set>
+#       unless given; materialize_benchmark.sbatch builds the Federal Council one.
 #   JOB=<id> DRAW_FILE=<eval_sets>/german-medieval-v1/vlm-pages-test/pages.jsonl \
 #       DATA_ROOT=<eval_sets>/german-medieval-v1/vlm-pages-test LABEL=german-medieval-v1-test \
 #       HELDOUT=1 ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=<…>
@@ -48,6 +52,12 @@ export ATR_TRAIN_JOBS_ROOT=${ATR_TRAIN_JOBS_ROOT:-/scratch/network/users/$USER/r
 # alone, which scratch purges after 30 days (#301).
 export ATR_TRAIN_ARTEFACT_CACHE_ROOT=${ATR_TRAIN_ARTEFACT_CACHE_ROOT:-/scratch/network/users/$USER/expA/artefacts}
 export HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub
+if [ -n "${DRAW_SET:-}" ]; then
+  EVAL_SETS=${EVAL_SETS:-/storage/research/wbkolleg_dh_1/Textrecognition_Training/eval_sets}
+  DRAW_FILE=${DRAW_FILE:-$EVAL_SETS/$DRAW_SET/data/val.jsonl}
+  DATA_ROOT=${DATA_ROOT:-$EVAL_SETS/$DRAW_SET}
+  LABEL=${LABEL:-$DRAW_SET}
+fi
 if [ -s "$HOME/.hf_token" ]; then HF_TOKEN=$(tr -d '[:space:]' < "$HOME/.hf_token"); export HF_TOKEN; fi
 apptainer exec --nv --bind /storage --bind /scratch --bind /rs_scratch \
   --env PYTHONPATH="$REPO/src:$REPO/engines" --env HF_HOME="$HF_HOME" \

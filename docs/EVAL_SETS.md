@@ -380,7 +380,9 @@ keeps each run's own prompt and budget, so b goes through it, with the
 Federal Council draw as a file:
 
 ```bash
-E=/scratch/network/users/$USER/runs/jobs/evalset-federal-minutes
+# was /scratch/network/users/$USER/runs/jobs/evalset-federal-minutes, purged in
+# November 2026; rebuilt on the share (see "The Federal Council lines" below)
+E=/storage/research/wbkolleg_dh_1/Textrecognition_Training/eval_sets/federal-minutes
 for JOB in 20261019T180118Z-olmocr2-7b-german-kurrent-xvi-xix-page-px4m-native \
            20261013T100501Z-qwen3.5-4b-german-kurrent-xvi-xix-page-v1; do
   JOB=$JOB DRAW_FILE=$E/data/val.jsonl DATA_ROOT=$E LABEL=federal-minutes-lines \
@@ -575,3 +577,188 @@ read from it): `cd ~/training-atr-models && git pull`.
    `uncheckable` and `gone` are all reasons not to submit the GPU stage.
    `reserved_pages` in the record should have grown past the October corpus's
    1318, by the pages of the 130 new documents.
+
+---
+
+## The Federal Council lines (`federal-minutes`, agentic_historian#875)
+
+2,751 ground-truth lines of the minutes of the Swiss Federal Council,
+1848–1903, German Kurrent (Hodel & Schoch 2021, doi:10.5281/zenodo.4746342),
+111 Transkribus documents, 114,960 characters. On the hub as
+`dh-unibe/image-text_federal-minutes-testset`, project `TEST_federal_minutes`
+under `data/train/`, one row per line crop with its one-line PageXML.
+
+### How it was built, and how it was lost
+
+Every Federal Council number before November 2026 was read from
+`/scratch/network/users/$USER/runs/jobs/evalset-federal-minutes`:
+`data/val.jsonl`, the crops it names, and the `report_<tag>.json` files the
+results MCP's `report` tool lists. The directory was built **by hand** in
+serving-atr-inference ("Lines were cut with the service's own `samples_for` +
+`write_crops`", `serving-atr-inference/docs/UBELIX_PLAN.md` §21; "a hand-built evaluation
+directory, a one-off sbatch", §F), and no script for it was ever tracked. It sat
+on scratch, and the 30-day purge took it: on 14.11.2026 it was on no host.
+
+### Where it lives now
+
+| | |
+|---|---|
+| set | `/storage/research/wbkolleg_dh_1/Textrecognition_Training/eval_sets/federal-minutes/` (`/mnt/wbkolleg_dh_1/…` on asteraix) |
+| lines | `data/val.jsonl`; images resolve under the set (`DATA_ROOT` = the set) |
+| provenance | `evalset.json`: repo, project, split, resolved revision, lines, characters, md5 of `val.jsonl`, code commit |
+| readings | `readings/<label>.json` + `<label>.raw.jsonl`, one per model (below) |
+| VLM reports | `$SCRATCH/runs/jobs/evalset-federal-minutes/report_<tag>.json`, as before — the results MCP reads them there; copy them to `readings/` |
+
+### Rebuilding it
+
+`scripts/materialize_benchmark.py` does what the trainer does for a benchmark
+beside a run (`BasePipeline._benchmark_pages`, then
+`Pipeline._benchmark_jsonl`): `materialize`, `samples_for` at line granularity,
+`write_crops` at native pixels, `write_jsonl`, no length filter. On UBELIX:
+
+```bash
+cd ~/training-atr-models && git pull
+ubelix/submit.sh ubelix/materialize_benchmark.sbatch     # CPU, epyc2, minutes
+```
+
+It refuses a set that is already there, and exits 1 unless it wrote exactly
+2,751 lines. **Acceptance:** `evalset.json` says `lines: 2751` and
+`documents: 111` (the dataset card's numbers; the hand-built set had the same
+count). A different line count means the geometry filters of `samples_for`
+dropped lines, and no number on it compares with the reports made before.
+`chars` should be the card's 114,960; it is not checked by the script, because
+the card counted the `text` column and this counts what the PageXML reader
+returns. Record the md5 of `val.jsonl` here after the
+first build: every later reading must be on that file.
+
+### The scorer measured on it (L2 on an external reference, #875 part 1)
+
+L2 (agentic_historian#491) measured the scorer on the project's own validation
+draw: 231 lines, eight arms of **one** model that differ by noise seed. On the
+plausible band τ ran 0.21–0.44 with the median under 0.3 (veto only), and of two
+arms' readings of one line the one with more bits had the higher CER 0.57 of the
+time. The Federal Council lines answer the same question on material none of
+the scorer's text comes from, read by models of three engines.
+
+1. **Score every model that still has weights**, all 2,751 lines, into
+   `readings/` (the order does not matter; each is its own job):
+
+   ```bash
+   E=/storage/research/wbkolleg_dh_1/Textrecognition_Training/eval_sets/federal-minutes
+   # VLM line arms: their scratch checkpoint and job.json …
+   ubelix/submit.sh ubelix/score_federal_minutes.sbatch -- --export=ALL,JOB_ID=<id>,TAG=<tag>[,QUANT=4bit]
+   # … or, once scratch has purged them, the published adapter
+   ubelix/submit.sh ubelix/score_federal_minutes.sbatch -- \
+       --export=ALL,ADAPTER=dh-unibe/qwen3.5-4b-german-xix-v2,BASE_MODEL=Qwen/Qwen3.5-4B,TAG=qwen35-4b-xix-v2
+   # VLM page arms: their own prompt and pixel budget, every line of the set
+   JOB=<id> DRAW_SET=federal-minutes LABEL=federal-minutes-lines \
+       ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=04:00:00
+   # kraken (CPU; `ketos test` has no per-line output, scripts/read_lines_kraken.py has)
+   MODEL=<trained>/kraken-german-xix-v1/kraken-german-xix-v1.mlmodel LABEL=kraken-german-xix-v1 \
+       ubelix/submit.sh ubelix/read_lines_kraken.sbatch
+   ```
+
+   TrOCR runs on asteraix, where its models and venv are (docs/TROCR.md). The
+   evaluator takes any `val.jsonl` and data root as it is; `--max-samples` above
+   the line count reads every line instead of a draw of 200:
+
+   ```bash
+   cd ~/Repo/training-atr-models
+   E=/mnt/wbkolleg_dh_1/Textrecognition_Training/eval_sets/federal-minutes
+   T=/mnt/wbkolleg_dh_1/Textrecognition_Training/training_folder/trained/<trocr model_id>
+   PYTHONPATH=src:engines .venvs/trocr-train/bin/python -m trocr_train_svc.evaluate_trocr \
+       --checkpoint "$T" --val-manifest "$E/data/val.jsonl" --data-root "$E" \
+       --report "$E/readings/<trocr model_id>.json" \
+       --base-model "$(python3 -c "import json;print(json.load(open('$T/metadata.json'))['base_model'])")" \
+       --beam-size 4 --length-penalty 1.0 --no-repeat-ngram-size 3 \
+       --max-samples 100000 --device cuda:0
+   ```
+
+   Two checks before a reading goes into the measurement: its `samples` is
+   2,751, and its CER is the one the model is known for on this set where
+   there is one — kraken-german-xix-v1 read 11.18 % through `ketos test`. The
+   kraken reader hands each crop to kraken as one box line, as `kraken -n`
+   does; if it lands far from 11.18 %, read again with `LINE_TYPE=baselines`
+   and keep the reading that matches. It writes NFC, because the kraken models
+   here train on NFD and the references are NFC.
+
+2. **Collect** the VLM reports next to the others (scratch purges them):
+
+   ```bash
+   R=/scratch/network/users/$USER/runs/jobs/evalset-federal-minutes
+   cp $R/report_<tag>.json $R/report_<tag>.raw.jsonl $E/readings/
+   cp /scratch/network/users/$USER/runs/jobs/<page arm>/data/eval_report.federal-minutes-lines.{json,raw.jsonl} \
+      $E/readings/   # rename to <label>.json / <label>.raw.jsonl, one pair per arm
+   ```
+
+3. **Could the scorers have read these lines?** Before τ is read as a lower
+   bound:
+
+   ```bash
+   SC=/storage/research/wbkolleg_dh_1/Textrecognition_Training/scorers
+   PY="apptainer exec --bind /storage $HOME/ubelix/vlm-train-tf5.sif /opt/vlm-train/bin/python"
+   $PY scripts/check_scorer_contamination.py $E/data/val.jsonl \
+       --scorer generic=$SC/de.scorer.json --scorer xix=$SC/de-Swiss-protocol-19-20.scorer.json \
+       [--draw <the val.jsonl files the scorers were built from, if still there>] \
+       --json $E/readings/contamination.json
+   ```
+
+   What it can and cannot see. The set's 111 `docId`s were checked against the
+   115 of `qwen3vl-german-xix-v1`'s corpus (`zh-regierungsratsprotokolle`,
+   `parlamentsdienste-protokolle`, `nr-sr-vereinigte-bundesversammlung-xix`,
+   `kurrent-xix`) when the set was published: no intersection (dataset card).
+   That covers the XIX cell, whose text is that corpus's validation draw. The
+   generic `de` cell adds the XVI–XIX draw, 20 datasets, and that check never
+   covered it. The two federal datasets among them are the parliament's
+   records, not the Council's minutes (BAR E1004.1), so the *same lines* are
+   not expected — but the same chancellery wrote both, in the same years, and
+   that is register, which a scorer is meant to know, not contamination. The
+   script answers it from the artefacts: shared documents (scorer `documents`
+   against the set's `docId`s), verbatim lines (only with `--draw`; the
+   artefact keeps counts, not text), and the mean z of the references against
+   the scorer's own held-out pages (memorised text sits far below 0). Clean on
+   all three → the τ below is a lower bound, as #491 expected for material no
+   scorer trained on.
+
+4. **τ and the pairs**, both scorers side by side, every reading at once:
+
+   ```bash
+   $PY scripts/measure_scorer_tau.py $E/data/val.jsonl \
+       qwen35-4b-xix-v2=$E/readings/report_qwen35-4b-xix-v2.json \
+       <tag>=$E/readings/report_<tag>.json … \
+       trocr-xvi-xix=$E/readings/<trocr model_id>.json \
+       kraken-xix=$E/readings/kraken-german-xix-v1.json \
+       --scorer generic=$SC/de.scorer.json --scorer xix=$SC/de-Swiss-protocol-19-20.scorer.json \
+       --json $E/readings/tau.json
+   ```
+
+   Each report's engine is read off its JSON (`adapter` → vlm,
+   `checkpoint`/`beam_size` → trocr, `engine: kraken`); `--engine NAME=ENGINE`
+   names it for a bare `.raw.jsonl`.
+
+5. **The veto margin** from the same readings, once per scorer:
+
+   ```bash
+   $PY scripts/calibrate_veto_margin.py $E/data/val.jsonl <the same NAME=PATH list> \
+       --scorer $SC/de.scorer.json --margins 0.5,1,1.5,2,2.5,3,4,5 --json $E/readings/margin-generic.json
+   ```
+
+   The fusion vetoes at 2.5 bits/char today (agentic_historian
+   `docs/SCORER_VETO.md`). Here the candidates of a line come from different
+   engines, which is what the fusion sees on a page and what L2's eight arms of
+   one model could not show.
+
+**What decides what.**
+
+| reading | against | decides |
+|---|---|---|
+| median τ on the plausible band, per scorer (verdict line) | L2: 0.21–0.44, median < 0.3 | < 0.3 again → the scorer stays a veto; L4 and the matrix fall (the #491 rule). ≥ 0.3 here and not on L2 → the own draw, not the scorer, was the limit |
+| `pairs.ordered_like_cer_plausible` over the VLM arms alone (`pairs_by_engine` `vlm\|vlm`) | L2's 0.57 | the same question as L2 on unseen material |
+| `pairs_across_engines` and each `pairs_by_engine` entry of two engines, plausible band | **0.7** | below → **L4 stays unbuilt** (#875 part 2), read per engine pair: a scorer may tell kraken from a VLM and not TrOCR from a VLM |
+| `recommended_margin` and the fatal-line share at 2.5 | the fusion's 2.5 | a margin that loses more than 5 % of plausible readings or vetoes the best reading on more than 1 % of lines at 2.5 moves the fusion's margin |
+| `check_scorer_contamination.py` | — | anything shared → the numbers above describe text the scorer has seen, not a lower bound; rebuild the cell without those documents first |
+
+The engine verdict judges the plausible band (both readings under CER 0.3) and
+prints the share over all pairs beside it: garbage is the veto's job, and a
+scorer that only separates garbage from text would pass on all pairs and
+still give L4 nothing to route by.

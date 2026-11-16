@@ -160,3 +160,102 @@ def test_cli_takes_name_equals_path_and_refuses_two_runs_under_one_label(tmp_pat
     assert set(json.loads(out.read_text(encoding="utf-8"))["scorers"]["xix"]["per_model"]) == {"one", "two"}
     with pytest.raises(SystemExit):
         mst.main([str(val), f"same={reports[0]}", f"same={reports[1]}", "--scorer", f"xix={scorer}"])
+
+
+# ── across engines: the L4 rule of agentic_historian#875 ─────────────────────
+def _engine_material(tmp_path: Path, arms: dict[str, tuple[str, float, dict]]) -> tuple[Path, list[str]]:
+    """arms: label -> (engine, noise rate, report JSON). Returns val and NAME=PATH specs."""
+    rng = random.Random(7)
+    refs = [{"image": f"l{i:03d}.jpg", "text": t} for i, t in enumerate(_lines())]
+    val = tmp_path / "val.jsonl"
+    val.write_text("".join(json.dumps(r) + "\n" for r in refs), encoding="utf-8")
+    specs = []
+    for label, (engine, rate, meta) in arms.items():
+        rep = tmp_path / f"{label}.json"
+        rep.write_text(json.dumps(meta), encoding="utf-8")
+        key = "prediction" if engine == "trocr" else "raw"
+        rep.with_suffix(".raw.jsonl").write_text("".join(
+            json.dumps({"image": r["image"], key: _noisy(r["text"], rate, rng)}) + "\n"
+            for r in refs), encoding="utf-8")
+        specs.append(f"{label}={rep}")
+    return val, specs
+
+
+def test_the_engine_is_read_off_each_evaluators_report(tmp_path):
+    cases = {"vlm.json": {"adapter": "/x/checkpoints/a", "cer": 0.1},
+             "trocr.json": {"checkpoint": "/x/trained/t", "beam_size": 4},
+             "kraken.json": {"engine": "kraken", "model": "k"},
+             "plain.json": {"model": "m"}}
+    for name, data in cases.items():
+        (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+    assert mst.load_engine(tmp_path / "vlm.json") == "vlm"
+    assert mst.load_engine(tmp_path / "trocr.raw.jsonl") == "trocr"      # via the .raw.jsonl name
+    assert mst.load_engine(tmp_path / "kraken.json") == "kraken"
+    assert mst.load_engine(tmp_path / "plain.json") is None
+    assert mst.load_engine(tmp_path / "missing.json") is None
+
+
+def test_pairs_are_counted_per_engine_pair_and_across_engines(tmp_path):
+    scorer = CharNgramScorer.load(_scorer(tmp_path))
+    val, specs = _engine_material(tmp_path, {
+        "qwen": ("vlm", 0.03, {"adapter": "/a"}), "gemma": ("vlm", 0.08, {"adapter": "/b"}),
+        "trocr": ("trocr", 0.15, {"checkpoint": "/t", "beam_size": 4}),
+        "kraken": ("kraken", 0.4, {"engine": "kraken"})})
+    refs = mst.load_references(val)
+    runs, engines = {}, {}
+    for spec in specs:
+        name, _, path = spec.partition("=")
+        runs[name] = mst.load_predictions(Path(path), name)[1]
+        engines[name] = mst.load_engine(Path(path))
+    table = mst.measure(refs, runs, {"xix": scorer}, engines=engines)
+    s = table["scorers"]["xix"]
+    assert table["engines"] == {"gemma": "vlm", "kraken": "kraken", "qwen": "vlm", "trocr": "trocr"}
+    assert set(s["pairs_by_engine"]) == {"vlm|vlm", "trocr|vlm", "kraken|vlm", "kraken|trocr"}
+    # the per-engine counts partition the pairs; the existing keys are untouched
+    assert sum(p["n"] for p in s["pairs_by_engine"].values()) == s["pairs"]["n"]
+    assert sum(p["n_plausible"] for p in s["pairs_by_engine"].values()) == s["pairs"]["n_plausible"]
+    across = s["pairs_across_engines"]
+    assert across["n"] == s["pairs"]["n"] - s["pairs_by_engine"]["vlm|vlm"]["n"]
+    # noisier engines cost more bits here, so the scorer orders them like CER
+    assert across["ordered_like_cer"] > 0.8
+    # the verdict names each engine pair against the 0.7 rule
+    text = mst.render(table)
+    assert "*pairs kraken–vlm*" in text and "*pairs across engines*" in text
+    assert "xix (de|Swiss|protocol|19-20), across engines: pairs ordered like CER" in text
+    assert "xix (de|Swiss|protocol|19-20), trocr|vlm:" in text
+    assert "vlm|vlm:" not in text.split("\n\n")[-1]            # same engine: not an L4 line
+
+
+def test_the_engine_verdict_follows_0_7_on_the_plausible_band():
+    def s(pl, al):
+        return {"n": 100, "ordered_like_cer": al, "n_plausible": 40, "ordered_like_cer_plausible": pl}
+    table = {"scorers": {"g": {"cell": "de|*|*|*", "per_model": {},
+                               "pairs_by_engine": {"kraken|vlm": s(0.62, 0.91), "trocr|vlm": s(0.74, 0.8),
+                                                   "vlm|vlm": s(0.57, 0.6)},
+                               "pairs_across_engines": s(0.66, 0.88)}}}
+    v = mst.engine_verdict(table, threshold=0.7)
+    assert "g (de|*|*|*), across engines: pairs ordered like CER 0.66 on the plausible band" in v
+    assert "kraken|vlm: pairs ordered like CER 0.62" in v and v.count("L4 stays unbuilt") == 2
+    assert "trocr|vlm: pairs ordered like CER 0.74" in v and "L4 passes this rule" in v
+    assert "vlm|vlm" not in v
+
+
+def test_the_cli_takes_an_engine_for_a_bare_raw_file_and_stays_quiet_on_one_engine(tmp_path, capsys):
+    scorer = _scorer(tmp_path)
+    val, specs = _engine_material(tmp_path, {"a": ("vlm", 0.03, {"adapter": "/a"}),
+                                             "b": ("vlm", 0.2, {"adapter": "/b"})})
+    out = tmp_path / "tau.json"
+    assert mst.main([str(val), *specs, "--scorer", f"xix={scorer}", "--json", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "L4 stays unbuilt" not in printed and "L4 passes" not in printed   # one engine
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert set(data["scorers"]["xix"]["pairs_by_engine"]) == {"vlm|vlm"}
+    # a bare .raw.jsonl names no engine; --engine does
+    raw = tmp_path / "k.raw.jsonl"
+    raw.write_text((tmp_path / "b.raw.jsonl").read_text(encoding="utf-8"), encoding="utf-8")
+    assert mst.main([str(val), specs[0], f"k={raw}", "--scorer", f"xix={scorer}",
+                     "--engine", "k=kraken", "--json", str(out)]) == 0
+    assert set(json.loads(out.read_text(encoding="utf-8"))["scorers"]["xix"]["pairs_by_engine"]) \
+        == {"kraken|vlm"}
+    with pytest.raises(SystemExit, match="NAME=ENGINE"):
+        mst.main([str(val), specs[0], "--scorer", f"xix={scorer}", "--engine", "nobody=kraken"])
