@@ -53,7 +53,8 @@ from atr_training.convergence import check_convergence, guaranteed_epochs, plan_
 from atr_training.gpu import Peak, PeakSampler, read_ledger
 from atr_training.heldout import load_heldout
 from atr_training.hf_source import (data_files_for, granularity_files,
-                                            keep_projects_for, only_projects)
+                                            keep_projects_for, only_projects,
+                                            keep_pages_for, only_pages)
 from atr_training.jobstore import SLURM_HOST, JobStore
 from atr_training.manifests import read_manifest, split_pages, write_manifest
 from atr_training.prepare import (
@@ -931,9 +932,9 @@ class BasePipeline(ABC):
         files = data_files_for(spec)
 
         train_set = materialize(
-            only_projects(
+            only_pages(only_projects(
                 self.source.stream(spec.hf_repo, files["train"], spec.revision),
-                keep_projects_for(spec)),
+                keep_projects_for(spec)), keep_pages_for(spec)),
             paths.pages, role="train", max_pages=spec.max_pages,
             min_free_disk_gb=self.settings.min_free_disk_gb,
         )
@@ -1238,9 +1239,9 @@ class BasePipeline(ABC):
             files = data_files_for(spec)
 
             train_set = materialize(
-                only_projects(
+                only_pages(only_projects(
                     self.source.stream(spec.hf_repo, files["train"], spec.revision),
-                    keep_projects_for(spec)),
+                    keep_projects_for(spec)), keep_pages_for(spec)),
                 paths.pages, role="train", max_pages=spec.max_pages,
                 start_index=total_consumed,
                 min_free_disk_gb=self.settings.min_free_disk_gb,

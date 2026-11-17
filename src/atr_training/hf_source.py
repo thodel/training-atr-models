@@ -53,7 +53,9 @@ __all__ = [
     "TEXT_COLUMNS",
     "data_files_for",
     "keep_projects_for",
+    "keep_pages_for",
     "only_projects",
+    "only_pages",
     "resolve_by_reading",
     "whole_split_glob",
     "collapse_complete_selection",
@@ -543,6 +545,39 @@ def only_projects(rows, keep: frozenset[str] | None):
         logger.info("kept {} rows, dropped {} outside the selection (#89)",
                     kept, dropped)
     return gen()
+
+
+def only_pages(rows, keep: frozenset[str] | None):
+    """Rows whose ``filename`` is in ``keep``; everything when it is None.
+
+    The page-level counterpart of :func:`only_projects`, for a request that pins
+    an excerpt (``DatasetSpec.pages``). A pinned filename that never appears is
+    logged by count: the excerpt was drawn against one revision, and a page that
+    went missing is something the record should say rather than hide.
+    """
+    if keep is None:
+        return rows
+
+    def gen():
+        seen: set[str] = set()
+        dropped = 0
+        for row in rows:
+            name = row.get("filename")
+            if name in keep:
+                seen.add(name)
+                yield row
+            else:
+                dropped += 1
+        missing = len(keep) - len(seen)
+        logger.info("kept {} pinned pages, dropped {} rows outside the excerpt{}",
+                    len(seen), dropped,
+                    f"; {missing} pinned page(s) never appeared" if missing else "")
+    return gen()
+
+
+def keep_pages_for(spec: DatasetSpec) -> frozenset[str] | None:
+    """The filenames :func:`only_pages` keeps, or None when the spec pins none."""
+    return frozenset(spec.pages) if spec.pages else None
 
 
 def data_files_for(spec: DatasetSpec, list_repo_files_fn=None) -> dict[str, list[str]]:

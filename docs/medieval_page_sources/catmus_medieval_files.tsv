@@ -1,0 +1,346 @@
+train/L-Cas.C-13.S-Sem.Paris__BnF__esp__480.H-84129.Part-0.parquet	80	HTRomance	Paris, BnF, esp. 480	Castilian	13	Documents of practice
+train/L-Cas.C-13.S-Tex.Paris__BnF__esp__256.H-f2543.Part-0.parquet	257	HTRomance	Paris, BnF, esp. 256	Castilian	13	Treatises
+train/L-Cas.C-14.S-Cur.Salamanca__Biblioteca_Historica_USAL__2011.H-84a56.Part-0.parquet	56	Towards General Castilian HTR	Salamanca, Biblioteca Histórica USAL, 2011	Castilian	14	Treatises
+train/L-Cas.C-14.S-Hyb.Madrid__BNE__MSS__12732.H-035c7.Part-0.parquet	73	CATMuS	Madrid, BNE, MSS. 12732	Castilian	14	Treatises
+train/L-Cas.C-14.S-Hyb.Madrid__BNE__MSS__6406.H-5113f.Part-0.parquet	26	CATMuS	Madrid, BNE, MSS. 6406	Castilian	14	Treatises
+train/L-Cas.C-14.S-Sem.Paris__BnF__esp__43.H-a6b5d.Part-0.parquet	284	HTRogène	Paris, BnF, esp. 43	Castilian	14	Treatises
+train/L-Cas.C-14.S-Tex.Salamanca__Biblioteca_Historica_USAL__2673.H-59681.Part-0.parquet	138	Towards General Castilian HTR	Salamanca, Biblioteca Histórica USAL, 2673	Castilian	14	Treatises
+train/L-Cas.C-14.S-Tex.San_Lorenzo_de_El_Escorial__RBME__Z_III_9.H-c839e.Part-0.parquet	133	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, Z-III-9	Castilian	14	Treatises
+train/L-Cas.C-15.S-Cur.San_Lorenzo_de_El_Escorial__RBME__K_I_5.H-4543d.Part-0.parquet	244	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, K.I.5	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.Madrid__BNE__ms__4183.H-295f9.Part-0.parquet	70	Towards General Castilian HTR	Madrid, BNE, ms. 4183	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.Madrid__Instituto_Valencia_de_don_Juan__2_6_I_5.H-7ea10.Part-0.parquet	415	Towards General Castilian HTR	Madrid, Instituto Valencia de don Juan, 2.6.I.5	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.Oxford__Bodleian_Library__MS__Span__d__1.H-5056f.Part-0.parquet	25	Towards General Castilian HTR	Oxford, Bodleian Library, MS. Span. d. 1	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.Oxford__Bodleian_Library__MS__Span__d__2_1.H-4665b.Part-0.parquet	28	Towards General Castilian HTR	Oxford, Bodleian Library, MS. Span. d. 2/1	Castilian	15	Documents of practice
+train/L-Cas.C-15.S-Hyb.Paris__BnF__esp__12.H-144b3.Part-0.parquet	165	Towards General Castilian HTR	Paris, BnF, esp. 12	Castilian	15	Narratives
+train/L-Cas.C-15.S-Hyb.Paris__BnF__esp__12.H-1ce67.Part-0.parquet	177	Towards General Castilian HTR	Paris, BnF, esp. 12	Castilian	15	Narratives
+train/L-Cas.C-15.S-Hyb.Paris__BnF__esp__218.H-8c5e6.Part-0.parquet	34	Towards General Castilian HTR	Paris, BnF, esp. 218	Castilian	15	Narratives
+train/L-Cas.C-15.S-Hyb.Paris__BnF__esp__286.H-820b4.Part-0.parquet	178	HTRogène	Paris, BnF, esp. 286	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.Paris__BnF__esp__533.H-e52e7.Part-0.parquet	226	HTRomance	Paris, BnF, esp. 533	Castilian	15	Espistolary
+train/L-Cas.C-15.S-Hyb.Salamanca__Biblioteca_Historica_USAL__2097.H-4449b.Part-0.parquet	403	Towards General Castilian HTR	Salamanca, Biblioteca Histórica USAL, 2097	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.Salamanca__Biblioteca_Historica_USAL__2654.H-4f6d5.Part-0.parquet	58	Towards General Castilian HTR	Salamanca, Biblioteca Histórica USAL, 2654	Castilian	15	Narratives
+train/L-Cas.C-15.S-Hyb.Salamanca__Biblioteca_Historica_USAL__2709.H-9e83d.Part-0.parquet	2560	Towards General Castilian HTR	Salamanca, Biblioteca Histórica USAL, 2709	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.Salamanca__Biblioteca_Historica_USAL__2709.H-9e83d.Part-1.parquet	1397	Towards General Castilian HTR	Salamanca, Biblioteca Histórica USAL, 2709	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.San_Lorenzo_de_El_Escorial__RBME__T_III_5.H-f3d0a.Part-0.parquet	48	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, T-III-5	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.San_Lorenzo_de_El_Escorial__RBME__X_III_4.H-6bb0b.Part-0.parquet	31	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, X-III-4	Castilian	15	Narratives
+train/L-Cas.C-15.S-Hyb.San_Lorenzo_de_El_Escorial__RBME__a_II_17.H-8f554.Part-0.parquet	60	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, a-II-17	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.San_Lorenzo_de_El_Escorial__RBME__b_IV_15.H-d8217.Part-0.parquet	48	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, b-IV-15	Castilian	15	Treatises
+train/L-Cas.C-15.S-Hyb.San_Lorenzo_de_El_Escorial__RBME__b_IV_21.H-b2fdf.Part-0.parquet	68	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, b-IV-21	Castilian	15	Poetry
+train/L-Cas.C-15.S-Hyb.San_Lorenzo_de_El_Escorial__RBME__h_III_9.H-eb57f.Part-0.parquet	28	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, h-III-9	Castilian	15	Narratives
+train/L-Cas.C-15.S-Hyb.Sevilla__Biblioteca_Universitaria__ms__332_131.H-f18bd.Part-0.parquet	316	Towards General Castilian HTR	Sevilla, Biblioteca Universitaria, ms. 332/131	Castilian	15	Treatises
+train/L-Cas.C-15.S-Pri.Madrid__BNE__Inc__901.H-b2ea1.Part-0.parquet	2560	Towards General Castilian HTR	Madrid, BNE, Inc. 901	Castilian	15	Treatises
+train/L-Cas.C-15.S-Pri.Madrid__BNE__Inc__901.H-b2ea1.Part-1.parquet	2560	Towards General Castilian HTR	Madrid, BNE, Inc. 901	Castilian	15	Treatises
+train/L-Cas.C-15.S-Pri.Madrid__BNE__Inc__901.H-b2ea1.Part-2.parquet	432	Towards General Castilian HTR	Madrid, BNE, Inc. 901	Castilian	15	Treatises
+train/L-Cas.C-15.S-Sem.Paris__BnF__esp__110.H-499a4.Part-0.parquet	180	HTRomance	Paris, BnF, esp. 110	Castilian	15	Narratives
+train/L-Cas.C-15.S-Sem.Paris__BnF__esp__229.H-30397.Part-0.parquet	444	HTRomance	Paris, BnF, esp. 229	Castilian	15	Poetry
+train/L-Cas.C-15.S-Sem.Paris__BnF__esp__285.H-0cb1f.Part-0.parquet	296	HTRomance	Paris, BnF, esp. 285	Castilian	15	Narratives
+train/L-Cas.C-15.S-Sem.Philadelphia__Rosenbach_Foundation__ms__482_2.H-b1680.Part-0.parquet	277	Towards General Castilian HTR	Philadelphia, Rosenbach Foundation, ms. 482/2	Castilian	15	Treatises
+train/L-Cas.C-15.S-Sem.Salamanca__Biblioteca_Historica_USAL__2086.H-9381d.Part-0.parquet	57	Towards General Castilian HTR	Salamanca, Biblioteca Histórica USAL, 2086	Castilian	15	Treatises
+train/L-Cas.C-15.S-Sem.San_Lorenzo_de_El_Escorial__RBME__b_II_11.H-429bd.Part-0.parquet	72	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, b-II-11	Castilian	15	Treatises
+train/L-Cas.C-15.S-Tex.Madrid__Fundacion_Lazaro_Galdiano__mss_289.H-2766f.Part-0.parquet	227	Towards General Castilian HTR	Madrid, Fundación Lázaro Galdiano, mss 289	Castilian	15	Treatises
+train/L-Cas.C-15.S-Tex.Madrid__Fundacion_Lazaro_Galdiano__mss_289.H-65896.Part-0.parquet	2560	Towards General Castilian HTR	Madrid, Fundación Lázaro Galdiano, mss 289	Castilian	15	Treatises
+train/L-Cas.C-15.S-Tex.Madrid__Fundacion_Lazaro_Galdiano__mss_289.H-65896.Part-1.parquet	2560	Towards General Castilian HTR	Madrid, Fundación Lázaro Galdiano, mss 289	Castilian	15	Treatises
+train/L-Cas.C-15.S-Tex.Madrid__Fundacion_Lazaro_Galdiano__mss_289.H-65896.Part-2.parquet	1649	Towards General Castilian HTR	Madrid, Fundación Lázaro Galdiano, mss 289	Castilian	15	Treatises
+train/L-Cas.C-16.S-Hum.Paris__BnF__esp__161.H-40af4.Part-0.parquet	467	HTRogène	Paris, BnF, esp. 161	Castilian	16	Espistolary
+train/L-Cas.C-16.S-Hum.Paris__BnF__esp__325.H-27d82.Part-0.parquet	279	HTRogène	Paris, BnF, esp. 325	Castilian	16	Espistolary
+train/L-Cat.C-14.S-Cur.Paris__BnF__esp__563.H-4f80d.Part-0.parquet	238	HTRomance	Paris, BnF, esp. 563	Catalan	14	Treatises
+train/L-Cat.C-15.S-Cur.Paris__BnF__esp__98.H-21341.Part-0.parquet	244	HTRomance	Paris, BnF, esp. 98	Catalan	15	Treatises
+train/L-Cat.C-16.S-Hyb.Paris__BnF__esp__225.H-54072.Part-0.parquet	196	HTRomance	Paris, BnF, esp. 225	Catalan	16	Poetry
+train/L-Cat.C-16.S-Sem.Paris__BnF__esp__548.H-6c918.Part-0.parquet	184	HTRomance	Paris, BnF, esp. 548	Catalan	16	Documents of practice
+train/L-Eng.C-11.S-Car.Cambridge__Corpus_Christi_College__MS_041.H-5ddcf.Part-0.parquet	538	CATMuS	Cambridge, Corpus Christi College, MS 041	English	11	Treatises
+train/L-Fre.C-13.S-Sem.Paris__BnF__fr__12581.H-211cf.Part-0.parquet	306	HTRomance	Paris, BnF, fr. 12581	French	13	Poetry
+train/L-Fre.C-13.S-Sem.Paris__BnF__fr__1443.H-cb61b.Part-0.parquet	416	HTRomance	Paris, BnF, fr. 1443	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Cologne__Bodmer__168.H-5fb6b.Part-0.parquet	1919	CREMMA	Cologne, Bodmer, 168	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__Arsenal__3516.H-13ffc.Part-0.parquet	2009	CREMMA	Paris, BnF, Arsenal, 3516	French	13	Treatises
+train/L-Fre.C-13.S-Tex.Paris__BnF__NAF_23686.H-67dec.Part-0.parquet	423	HTRomance	Paris, BnF, NAF 23686	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__104.H-c366d.Part-0.parquet	376	HTRomance	Paris, BnF, fr. 104	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__12558.H-ad5d5.Part-0.parquet	440	HTRomance	Paris, BnF, fr. 12558	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__12603.H-f86a2.Part-0.parquet	442	HTRomance	Paris, BnF, fr. 12603	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__12615.H-8f9e5.Part-0.parquet	65	HTRomance	Paris, BnF, fr. 12615	French	13	Poetry
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__1450.H-358f7.Part-0.parquet	711	HTRomance	Paris, BnF, fr. 1450	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__1553.H-cf4ca.Part-0.parquet	506	HTRomance	Paris, BnF, fr. 1553	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__1593.H-09727.Part-0.parquet	405	Biblissima+ Fabliaux	Paris, BnF, fr. 1593	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__1635.H-1dfaf.Part-0.parquet	217	HTRomance	Paris, BnF, fr. 1635	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__17229.H-66c60.Part-0.parquet	161	CREMMA	Paris, BnF, fr. 17229	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__17229.H-e4ca4.Part-0.parquet	479	HTRomance	Paris, BnF, fr. 17229	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__19152.H-5064c.Part-0.parquet	529	HTRomance	Paris, BnF, fr. 19152	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__20050.H-36d81.Part-0.parquet	84	HTRomance	Paris, BnF, fr. 20050	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__2173.H-851ad.Part-0.parquet	240	HTRomance	Paris, BnF, fr. 2173	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__24428.H-c8f3d.Part-0.parquet	1297	CREMMA	Paris, BnF, fr. 24428	French	13	Treatises
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__412.H-ddd8a.Part-0.parquet	2560	CREMMA	Paris, BnF, fr. 412	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__412.H-ddd8a.Part-1.parquet	2560	CREMMA	Paris, BnF, fr. 412	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__412.H-ddd8a.Part-2.parquet	1068	CREMMA	Paris, BnF, fr. 412	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__837.H-160fc.Part-0.parquet	499	Biblissima+ Fabliaux	Paris, BnF, fr. 837	French	13	Narratives
+train/L-Fre.C-13.S-Tex.Paris__BnF__fr__844.H-09d13.Part-0.parquet	1020	CREMMA	Paris, BnF, fr. 844	French	13	Poetry
+train/L-Fre.C-13.S-Tex.Paris__Mazarine__1553.H-be348.Part-0.parquet	506	Biblissima+ Fabliaux	Paris, Mazarine, 1553	French	13	Narratives
+train/L-Fre.C-14.S-Cur.Paris__BnF__fr__12554.H-4be38.Part-0.parquet	184	HTRomance	Paris, BnF, fr. 12554	French	14	Narratives
+train/L-Fre.C-14.S-Cur.Paris__BnF__fr__146.H-c1122.Part-0.parquet	413	HTRogène	Paris, BnF, fr. 146	French	14	Narratives
+train/L-Fre.C-14.S-Cur.Paris__BnF__fr__840.H-269a6.Part-0.parquet	256	HTRomance	Paris, BnF, fr. 840	French	14	Poetry
+train/L-Fre.C-14.S-Cur.Philadelphia__University_of_Pennsylvania__Codex_660.H-5eed3.Part-0.parquet	316	CREMMA	Philadelphia, University of Pennsylvania, Codex 660	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Bern__Burgerbibliothek__354.H-2e1bd.Part-0.parquet	238	Biblissima+ Fabliaux	Bern, Burgerbibliothek, 354	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__Arsenal__3525.H-97ea4.Part-0.parquet	185	HTRomance	Paris, BnF, Arsenal, 3525	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__NAF_27401.H-2d630.Part-0.parquet	1009	ANR LIBER	Paris, BnF, NAF 27401	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__fr__13568.H-b7006.Part-0.parquet	199	HTRomance	Paris, BnF, fr. 13568	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__fr__1376.H-72721.Part-0.parquet	710	Gallicorpora	Paris, BnF, fr. 1376	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__fr__1728.H-37f82.Part-0.parquet	620	CREMMA	Paris, BnF, fr. 1728	French	14	Treatises
+train/L-Fre.C-14.S-Tex.Paris__BnF__fr__22549.H-83759.Part-0.parquet	2560	CREMMA	Paris, BnF, fr. 22549	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__fr__22549.H-83759.Part-1.parquet	55	CREMMA	Paris, BnF, fr. 22549	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__fr__25545.H-8fead.Part-0.parquet	362	Biblissima+ Fabliaux	Paris, BnF, fr. 25545	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__fr__411.H-b234a.Part-0.parquet	153	CREMMA	Paris, BnF, fr. 411	French	14	Narratives
+train/L-Fre.C-14.S-Tex.Paris__BnF__fr__619.H-ad6bd.Part-0.parquet	356	HTRomance	Paris, BnF, fr. 619	French	14	Treatises
+train/L-Fre.C-14.S-Tex.Vatican__Biblioteca_Apostolica_Vaticana__Reg_lat__1616.H-d88a7.Part-0.parquet	1723	CREMMA	Vatican, Biblioteca Apostolica Vaticana, Reg.lat. 1616	French	14	Narratives
+train/L-Fre.C-15.S-Cur.Bruxelles__KBR__9232.H-b6d10.Part-0.parquet	1358	CREMMA	Bruxelles, KBR, 9232	French	15	Treatises
+train/L-Fre.C-15.S-Cur.Paris__BnF__Arsenal__5070.H-b4070.Part-0.parquet	750	PSL - Chartes Students	Paris, BnF, Arsenal, 5070	French	15	Treatises
+train/L-Fre.C-15.S-Cur.Paris__BnF__Arsenal__5103.H-e8350.Part-0.parquet	574	Gallicorpora	Paris, BnF, Arsenal, 5103	French	15	Treatises
+train/L-Fre.C-15.S-Cur.Paris__BnF__fr__11610.H-131e7.Part-0.parquet	163	HTRomance	Paris, BnF, fr. 11610	French	15	Narratives
+train/L-Fre.C-15.S-Cur.Paris__BnF__fr__12551.H-1e58b.Part-0.parquet	244	Gallicorpora	Paris, BnF, fr. 12551	French	15	Narratives
+train/L-Fre.C-15.S-Cur.Paris__BnF__fr__12779.H-4c409.Part-0.parquet	280	Gallicorpora	Paris, BnF, fr. 12779	French	15	Poetry
+train/L-Fre.C-15.S-Cur.Paris__BnF__fr__1984.H-1ab2c.Part-0.parquet	616	Gallicorpora	Paris, BnF, fr. 1984	French	15	Narratives
+train/L-Fre.C-15.S-Cur.Paris__BnF__fr__777.H-1180d.Part-0.parquet	206	Gallicorpora	Paris, BnF, fr. 777	French	15	Narratives
+train/L-Fre.C-15.S-Cur.Philadelphia__University_of_Pennsylvania__Codex_909.H-b826a.Part-0.parquet	2509	CREMMA	Philadelphia, University of Pennsylvania, Codex 909	French	15	Narratives
+train/L-Fre.C-15.S-Hyb.Paris__BnF__NAF_6213.H-9fdf8.Part-0.parquet	271	Gallicorpora	Paris, BnF, NAF 6213	French	15	Narratives
+train/L-Fre.C-15.S-Pri.Paris__BnF__Res__J_845.H-2c224.Part-0.parquet	1735	PSL - Chartes Students	Paris, BnF, Rés. J-845	French	15	Narratives
+train/L-Fre.C-15.S-Pri.Paris__BnF__Res__Y2_364.H-6eceb.Part-0.parquet	132	Gallicorpora	Paris, BnF, Rés. Y2-364	French	15	Narratives
+train/L-Fre.C-15.S-Pri.Paris__BnF__Res__Y2_82.H-eec5d.Part-0.parquet	321	Gallicorpora	Paris, BnF, Rés. Y2-82	French	15	Narratives
+train/L-Fre.C-15.S-Pri.Paris__BnF__Res__Y2_930.H-38cc1.Part-0.parquet	1375	Gallicorpora	Paris, BnF, Rés. Y2-930	French	15	Narratives
+train/L-Fre.C-15.S-Pri.Paris__BnF__Res__YE_281.H-28f1b.Part-0.parquet	241	Gallicorpora	Paris, BnF, Rés. YE-281	French	15	Poetry
+train/L-Fre.C-15.S-Pri.Paris__BnF__Velins_1159.H-9c73d.Part-0.parquet	215	Gallicorpora	Paris, BnF, Velins 1159	French	15	Narratives
+train/L-Fre.C-15.S-Pri.Paris__BnF__Velins_488.H-a4d5f.Part-0.parquet	819	Gallicorpora	Paris, BnF, Velins 488	French	15	Treatises
+train/L-Fre.C-15.S-Pri.Paris__BnF__Velins_611.H-8bf4a.Part-0.parquet	506	Gallicorpora	Paris, BnF, Velins 611	French	15	Poetry
+train/L-Fre.C-15.S-Pri.Paris__BnF__Velins_690.H-0e481.Part-0.parquet	902	Gallicorpora	Paris, BnF, Velins 690	French	15	Narratives
+train/L-Fre.C-15.S-Pri.Paris__BnF__Velins_906.H-5d323.Part-0.parquet	590	Gallicorpora	Paris, BnF, Velins 906	French	15	Treatises
+train/L-Fre.C-15.S-Sem.Paris__BnF__fr__5024.H-f7b81.Part-0.parquet	202	HTRomance	Paris, BnF, fr. 5024	French	15	Treatises
+train/L-Fre.C-15.S-Tex.Paris__BnF__fr__185.H-51131.Part-0.parquet	1422	Gallicorpora	Paris, BnF, fr. 185	French	15	Narratives
+train/L-Fre.C-15.S-Tex.Paris__BnF__fr__263.H-3919c.Part-0.parquet	1042	ANR LIBER	Paris, BnF, fr. 263	French	15	Narratives
+train/L-Fre.C-16.S-Pri.Paris__BnF__Res__Y2_674.H-f1a5e.Part-0.parquet	1554	Gallicorpora	Paris, BnF, Rés. Y2-674	French	16	Narratives
+train/L-Fre.C-16.S-Pri.Paris__BnF__Res__Y2_733.H-e6f11.Part-0.parquet	370	Gallicorpora	Paris, BnF, Rés. Y2-733	French	16	Treatises
+train/L-Fre.C-16.S-Pri.Paris__BnF__Res__YE_1395.H-dea3d.Part-0.parquet	375	Gallicorpora	Paris, BnF, Rés. YE-1395	French	16	Narratives
+train/L-Fre.C-16.S-Pri.Paris__BnF__Res__Z_2442.H-df2f3.Part-0.parquet	567	Gallicorpora	Paris, BnF, Rés. Z-2442	French	16	Treatises
+train/L-Fre.C-16.S-Pri.Paris__BnF__Velins_1103.H-f06bc.Part-0.parquet	1285	Gallicorpora	Paris, BnF, Velins 1103	French	16	Narratives
+train/L-Gal.C-16.S-Hyb.Paris__BnF__esp__37.H-6be45.Part-0.parquet	545	HTRogène	Paris, BnF, esp. 37	Gallician	16	Poetry
+train/L-Ita.C-14.S-Cur.Cologny_Geneve__Fondation_Martin_Bodmer__Cod__Bodmer_55.H-55c92.Part-0.parquet	363	DivaHisDB x CATMuS	Cologny-Geneve, Fondation Martin Bodmer, Cod. Bodmer 55	Italian	14	Narratives
+train/L-Ita.C-14.S-Cur.Milano__BT__Triv__1080.H-74062.Part-0.parquet	428	eDante	Milano, BT, Triv. 1080	Italian	14	Narratives
+train/L-Ita.C-14.S-Cur.Paris__BnF__ita__434.H-fde40.Part-0.parquet	175	HTRomance	Paris, BnF, ita. 434	Italian	14	Narratives
+train/L-Ita.C-14.S-Cur.Paris__BnF__ita__79.H-94e10.Part-0.parquet	420	HTRomance	Paris, BnF, ita. 79	Italian	14	Narratives
+train/L-Ita.C-14.S-Cur.Venise__Biblioteca_nazionale_Marciana__MS_it__Z__50.H-f568e.Part-0.parquet	181	eDante	Venise. Biblioteca nazionale Marciana, MS it. Z. 50	Italian	14	Narratives
+train/L-Ita.C-14.S-Hyb.Vatican__Biblioteca_Apostolica_Vaticana__Ott__lat__2373.H-105ae.Part-0.parquet	447	eDante	Vatican, Biblioteca Apostolica Vaticana, Ott. lat. 2373	Italian	14	Narratives
+train/L-Ita.C-15.S-Cur.Oxford__Bodleian_Library__MS__Canon__Ital__160.H-a88ae.Part-0.parquet	188	HTRogène	Oxford, Bodleian Library, MS. Canon. Ital. 160	Italian	15	Poetry
+train/L-Ita.C-15.S-Hum.Cambridge__Harvard_University_Library__MS_Typ_316.H-a9a1e.Part-0.parquet	173	HTRogène	Cambridge. Harvard University Library, MS Typ 316	Italian	15	Treatises
+train/L-Ita.C-15.S-Hum.Oxford__Bodleian_Library__MS__Canon__Ital__260.H-9f67e.Part-0.parquet	340	HTRogène	Oxford, Bodleian Library, MS. Canon. Ital. 260	Italian	15	Treatises
+train/L-Ita.C-15.S-Hum.Paris__BnF__ita__1019.H-d8188.Part-0.parquet	260	HTRogène	Paris, BnF, ita. 1019	Italian	15	Poetry
+train/L-Ita.C-15.S-Hum.Paris__BnF__ita__583.H-e91c4.Part-0.parquet	368	HTRomance	Paris, BnF, ita. 583	Italian	15	Narratives
+train/L-Ita.C-15.S-Hum.Paris__BnF__ita__70.H-bc728.Part-0.parquet	255	HTRomance	Paris, BnF, ita. 70	Italian	15	Narratives
+train/L-Ita.C-15.S-Hyb.Paris__BnF__ita__594.H-60e73.Part-0.parquet	184	HTRomance	Paris, BnF, ita. 594	Italian	15	Drama
+train/L-Ita.C-15.S-Sem.Oxford__Bodleian_Library__MS__Canon__Ital__49.H-60a49.Part-0.parquet	246	HTRogène	Oxford, Bodleian Library, MS. Canon. Ital. 49	Italian	15	Narratives
+train/L-Ita.C-16.S-Hum.Paris__BnF__ita__1534.H-9d1ac.Part-0.parquet	182	HTRomance	Paris, BnF, ita. 1534	Italian	16	Poetry
+train/L-Ita.C-16.S-Hum.Paris__BnF__ita__820.H-f31a7.Part-0.parquet	125	HTRomance	Paris, BnF, ita. 820	Italian	16	Narratives
+train/L-Lat.C-10.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_6412.H-9ea19.Part-0.parquet	23	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 6412	Latin	10	Poetry
+train/L-Lat.C-10.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_6417.H-65e13.Part-0.parquet	26	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 6417	Latin	10	Treatises
+train/L-Lat.C-10.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_6431.H-0f040.Part-0.parquet	20	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 6431	Latin	10	Treatises
+train/L-Lat.C-10.S-Car.Paris__BnF__lat__9768.H-064f0.Part-0.parquet	329	HTRomance	Paris, BnF, lat. 9768	Latin	10	Narratives
+train/L-Lat.C-10.S-Car.St__Gallen__Stiftsbibliothek__Cod__Sang__18.H-ecbd8.Part-0.parquet	445	DivaHisDB x CATMuS	St. Gallen, Stiftsbibliothek, Cod. Sang. 18	Latin	10	Narratives
+train/L-Lat.C-11.S-Car.Le_Havre__Bm_332.H-d15de.Part-0.parquet	313	HTRogène	Le Havre, Bm 332	Latin	11	Narratives
+train/L-Lat.C-11.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_12104.H-1f899.Part-0.parquet	30	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 12104	Latin	11	Narratives
+train/L-Lat.C-11.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_14370.H-843ba.Part-0.parquet	29	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 14370	Latin	11	Narratives
+train/L-Lat.C-11.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_14404.H-f33ad.Part-0.parquet	31	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 14404	Latin	11	Narratives
+train/L-Lat.C-11.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_23251.H-18564.Part-0.parquet	22	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 23251	Latin	11	Narratives
+train/L-Lat.C-11.S-Car.Paris__BnF__lat__15176.H-91be9.Part-0.parquet	542	HTRomance	Paris, BnF, lat. 15176	Latin	11	Narratives
+train/L-Lat.C-11.S-Car.Paris__BnF__lat__17901.H-024ff.Part-0.parquet	467	HTRomance	Paris, BnF, lat. 17901	Latin	11	Narratives
+train/L-Lat.C-11.S-Car.St__Gallen__Stiftsbibliothek__Cod__Sang__863.H-c5263.Part-0.parquet	460	DivaHisDB x CATMuS	St. Gallen, Stiftsbibliothek, Cod. Sang. 863	Latin	11	Narratives
+train/L-Lat.C-11.S-Got_Doc_Scr.Angers__Archives_departementales_de_Maine_et_Loire___H_045__1_n__4.H-c47d8.Part-0.parquet	52	HTRogène	Angers, Archives départementales de Maine-et-Loire - H(045) 1 n° 4	Latin	11	Documents of practice
+train/L-Lat.C-11.S-Pra.Cambridge__Corpus_Christi_College__MS_111.H-3fc47.Part-0.parquet	89	DEEDS	Cambridge, Corpus Christi College, MS 111	Latin	11	Documents of practice
+train/L-Lat.C-12.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_14515.H-0517c.Part-0.parquet	27	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 14515	Latin	12	Treatises
+train/L-Lat.C-12.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_23343.H-a0a32.Part-0.parquet	26	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 23343	Latin	12	Narratives
+train/L-Lat.C-12.S-Got_Doc_Scr.Archives_departementales_des_Yvelines__45H8_8.H-ca897.Part-0.parquet	7	HTRogène	Archives départementales des Yvelines, 45H8 8	Latin	12	Documents of practice
+train/L-Lat.C-12.S-Got_Doc_Scr.Besancon__Bibliotheque_diocesaine___Par__03.H-6c462.Part-0.parquet	23	HTRogène	Besançon, Bibliothèque diocésaine - Par. 03	Latin	12	Documents of practice
+train/L-Lat.C-12.S-Got_Doc_Scr.Liege__Archives_de_l_Etat__T51_12.H-e4404.Part-0.parquet	5	HTRogène	Liege, Archives de l'État, T51.12	Latin	12	Documents of practice
+train/L-Lat.C-12.S-Got_Doc_Scr.Liege__Archives_de_l_Etat__T51_14.H-a1852.Part-0.parquet	11	HTRogène	Liege, Archives de l'État, T51.14	Latin	12	Documents of practice
+train/L-Lat.C-12.S-Got_Doc_Scr.Oxford__Christ_Church_Library__341.H-ad574.Part-0.parquet	198	DEEDS	Oxford, Christ Church Library, 341	Latin	12	Documents of practice
+train/L-Lat.C-12.S-Pra.Avranches__Bibliotheque_municipale__0210.H-51012.Part-0.parquet	200	DEEDS	Avranches, Bibliothèque municipale, 0210	Latin	12	Documents of practice
+train/L-Lat.C-12.S-Pra.Bruges__Bibliotheque_publique__Ms__403.H-7b784.Part-0.parquet	443	HTRogène	Bruges. Bibliothèque publique, Ms. 403	Latin	12	Narratives
+train/L-Lat.C-12.S-Pra.Cambridge__Trinity_College__O_2_1.H-c980f.Part-0.parquet	30	DEEDS	Cambridge, Trinity College, O.2.1	Latin	12	Treatises
+train/L-Lat.C-12.S-Pra.Laval__Archives_de_la_Mayenne__H_154.H-04cac.Part-0.parquet	324	HTRogène	Laval, Archives de la Mayenne, H 154	Latin	12	Documents of practice
+train/L-Lat.C-12.S-Pra.Toronto__Thomas_Fisher_Rare_Book_Library__MSS_05321.H-c76df.Part-0.parquet	86	DEEDS	Toronto, Thomas Fisher Rare Book Library, MSS 05321	Latin	12	Narratives
+train/L-Lat.C-13.S-Cur.York__University_of_York__York_Registers_Abp_Reg_2.H-1d1bc.Part-0.parquet	60	DEEDS	York, University of York, York Registers Abp Reg 2	Latin	13	Documents of practice
+train/L-Lat.C-13.S-Got_Doc_Scr.Paris__BnF__lat__5657.H-10e4f.Part-0.parquet	152	HTRomance	Paris, BnF, lat. 5657	Latin	13	Documents of practice
+train/L-Lat.C-13.S-Pra.Dublin__Library_of_Trinity_College_Dublin__ms__524.H-8bf84.Part-0.parquet	156	DEEDS	Dublin, Library of Trinity College Dublin, ms. 524	Latin	13	Documents of practice
+train/L-Lat.C-13.S-Pra.Macon__Archives_de_Saone_et_Loire__G_443.H-82109.Part-0.parquet	272	DEEDS	Mâcon, Archives de Saône et Loire, G 443	Latin	13	Documents of practice
+train/L-Lat.C-13.S-Pra.Saint_Omer__BM_716__Tome_7.H-08b02.Part-0.parquet	443	HTRogène	Saint-Omer, BM 716, Tome 7	Latin	13	Narratives
+train/L-Lat.C-13.S-Pra.Toronto__Thomas_Fisher_Rare_Book_Library__MSS_01125.H-0d8ea.Part-0.parquet	82	DEEDS	Toronto, Thomas Fisher Rare Book Library, MSS 01125	Latin	13	Treatises
+train/L-Lat.C-13.S-Sem.Graz__Universitatsbibliothek__Ms__1265.H-4bb98.Part-0.parquet	863	HTRogène	Graz, Universitätsbibliothek, Ms. 1265	Latin	13	Treatises
+train/L-Lat.C-13.S-Tex.Aarau__Aargauer_Kantonsbibliothek__MsWettF_15.H-83bd7.Part-0.parquet	455	CREMMA	Aarau, Aargauer Kantonsbibliothek, MsWettF 15	Latin	13	Treatises
+train/L-Lat.C-13.S-Tex.Cambridge__Corpus_Christi_College__MS_236.H-96c98.Part-0.parquet	192	CREMMA	Cambridge, Corpus Christi College, MS 236	Latin	13	Poetry
+train/L-Lat.C-13.S-Tex.Munich__Bayerische_Staatsbibliothek__CLM_13027.H-bd779.Part-0.parquet	616	CREMMA	Munich, Bayerische Staatsbibliothek, CLM 13027	Latin	13	Treatises
+train/L-Lat.C-13.S-Tex.Paris__BnF__lat__16195.H-4da58.Part-0.parquet	434	CREMMA	Paris, BnF, lat. 16195	Latin	13	Treatises
+train/L-Lat.C-13.S-Tex.Paris__BnF__lat__16204.H-91150.Part-0.parquet	462	HTRomance	Paris, BnF, lat. 16204	Latin	13	Treatises
+train/L-Lat.C-13.S-Tex.Paris__BnF__lat__16657.H-a9b15.Part-0.parquet	197	HTRomance	Paris, BnF, lat. 16657	Latin	13	Treatises
+train/L-Lat.C-14.S-Cur.Oxford__Christ_Church_Archives__D_C_VI_1.H-2d6f3.Part-0.parquet	266	DEEDS	Oxford, Christ Church Archives, D&C VI.1	Latin	14	Documents of practice
+train/L-Lat.C-14.S-Cur.Paris__Archives_nationales__LL_106B.H-5b909.Part-0.parquet	170	HTRogène	Paris, Archives nationales, LL 106B	Latin	14	Documents of practice
+train/L-Lat.C-14.S-Cur.Philadelphia__College_of_Physicians__10a_135.H-58004.Part-0.parquet	142	CREMMA	Philadelphia, College of Physicians, 10a 135	Latin	14	Treatises
+train/L-Lat.C-14.S-Cur.Toronto__Thomas_Fisher_Rare_Book_Library__MSS_01053.H-9ce61.Part-0.parquet	282	DEEDS	Toronto, Thomas Fisher Rare Book Library, MSS 01053	Latin	14	Documents of practice
+train/L-Lat.C-14.S-Got_Doc_Scr.Edimburgh__National_Library_of_Scotland__Adv__ms__34_5_3.H-2643e.Part-0.parquet	193	DEEDS	Edimburgh, National Library of Scotland, Adv. ms. 34.5.3	Latin	14	Documents of practice
+train/L-Lat.C-14.S-Hyb.Paris__BnF__lat__15168.H-5a0f4.Part-0.parquet	886	HTRogène	Paris, BnF, lat. 15168	Latin	14	Treatises
+train/L-Lat.C-14.S-Sem.Paris__BnF__lat__6395.H-92e5c.Part-0.parquet	679	CREMMA	Paris, BnF, lat. 6395	Latin	14	Drama
+train/L-Lat.C-14.S-Tex.Arras__Mediatheque_de_l_Abbaye_Saint_Vaast___315__CGM_861_.H-dc732.Part-0.parquet	358	CREMMA	Arras, Médiathèque de l'Abbaye Saint-Vaast - 315 (CGM 861)	Latin	14	Espistolary
+train/L-Lat.C-14.S-Tex.Cambridge__University_Library__ms__Add__3020.H-82456.Part-0.parquet	120	DEEDS	Cambridge, University Library, ms. Add. 3020	Latin	14	Documents of practice
+train/L-Lat.C-14.S-Tex.Florence__Biblioteca_Medicea_Laurenziana__Laur__Plut__33_31.H-66ced.Part-0.parquet	204	CREMMA	Florence, Biblioteca Medicea Laurenziana, Laur. Plut. 33.31	Latin	14	Poetry
+train/L-Lat.C-14.S-Tex.Leipzig__Universitats_Bibliothek_Leipzig__Ms_758.H-f0ed3.Part-0.parquet	477	CREMMA	Leipzig, Universitäts Bibliothek Leipzig, Ms 758	Latin	14	Treatises
+train/L-Lat.C-14.S-Tex.Paris__BnF__NAL_775.H-572c5.Part-0.parquet	491	HTRomance	Paris, BnF, NAL 775	Latin	14	Narratives
+train/L-Lat.C-14.S-Tex.Paris__BnF__lat__14354.H-eecd4.Part-0.parquet	539	HTRomance	Paris, BnF, lat. 14354	Latin	14	Narratives
+train/L-Lat.C-14.S-Tex.Paris__BnF__lat__7720.H-d0988.Part-0.parquet	575	HTRomance	Paris, BnF, lat. 7720	Latin	14	Treatises
+train/L-Lat.C-14.S-Tex.Paris__Mazarine__ms__915.H-f482f.Part-0.parquet	441	CREMMA	Paris, Mazarine, ms. 915	Latin	14	Treatises
+train/L-Lat.C-15.S-Cur.London__British_Library__Nero_E_VI.H-9cf14.Part-0.parquet	794	DEEDS	London, British Library, Nero E VI	Latin	15	Documents of practice
+train/L-Lat.C-15.S-Cur.Paris__Archives_nationales__LL_110.H-254c1.Part-0.parquet	303	HTRogène	Paris, Archives nationales, LL 110	Latin	15	Documents of practice
+train/L-Lat.C-15.S-Hum.Florence__Biblioteca_Medicea_Laurenziana__Laur__Plut__53_09.H-ef8e1.Part-0.parquet	126	CREMMA	Florence, Biblioteca Medicea Laurenziana, Laur. Plut. 53.09	Latin	15	Treatises
+train/L-Lat.C-15.S-Hum.Paris__BnF__Arsenal__1046.H-a26e8.Part-0.parquet	396	HTRomance	Paris, BnF, Arsenal, 1046	Latin	15	Poetry
+train/L-Lat.C-15.S-Hum.Paris__BnF__NAL_632.H-c0f91.Part-0.parquet	194	HTRomance	Paris, BnF, NAL 632	Latin	15	Treatises
+train/L-Lat.C-15.S-Hum.Paris__BnF__Smith_Lesouef_11.H-886ab.Part-0.parquet	194	HTRomance	Paris, BnF, Smith-Lesouëf 11	Latin	15	Poetry
+train/L-Lat.C-15.S-Hum.Paris__BnF__lat__8236.H-ef07c.Part-0.parquet	213	CREMMA	Paris, BnF, lat. 8236	Latin	15	Poetry
+train/L-Lat.C-15.S-Hum.Toronto__Thomas_Fisher_Rare_Book_Library__MSS_01237.H-ca0e6.Part-0.parquet	130	DEEDS	Toronto, Thomas Fisher Rare Book Library, MSS 01237	Latin	15	Narratives
+train/L-Lat.C-15.S-Hyb.Berlin__Staatsbibliothek__Germ__Oct__511.H-91296.Part-0.parquet	56	CREMMA	Berlin, Staatsbibliothek, Germ. Oct. 511	Latin	15	Poetry
+train/L-Lat.C-15.S-Hyb.Lisboa__Bibi__nac___mss_illum___135.H-43823.Part-0.parquet	1128	ANR LIBER	Lisboa, Bibi. nac., mss illum., 135	Latin	15	Narratives
+train/L-Lat.C-15.S-Hyb.Vatican__Biblioteca_Apostolica_Vaticana__Pal__lat__373.H-65c42.Part-0.parquet	435	CREMMA	Vatican, Biblioteca Apostolica Vaticana, Pal. lat. 373	Latin	15	Treatises
+train/L-Lat.C-15.S-Pri.Paris__Mazarine__Inc__59.H-b3e2e.Part-0.parquet	1880	PSL - Chartes Students	Paris, Mazarine, Inc. 59	Latin	15	Narratives
+train/L-Lat.C-15.S-Sem.Lisboa__Bibi__nac___mss_illum___134.H-7520c.Part-0.parquet	605	ANR LIBER	Lisboa, Bibi. nac., mss illum., 134	Latin	15	Narratives
+train/L-Lat.C-15.S-Tex.Berlin__Staatsbibliothek__Hdschr__25.H-8de75.Part-0.parquet	236	CREMMA	Berlin, Staatsbibliothek, Hdschr. 25	Latin	15	Speeches
+train/L-Lat.C-15.S-Tex.Florence__Biblioteca_Medicea_Laurenziana__Laur__Plut__53_08.H-a4de6.Part-0.parquet	245	CREMMA	Florence, Biblioteca Medicea Laurenziana, Laur. Plut. 53.08	Latin	15	Treatises
+train/L-Lat.C-16.S-Cur.Oxford__Bodleian_Library__MS__Top__Glouc__d__2.H-a1b3d.Part-0.parquet	198	DEEDS	Oxford, Bodleian Library, MS. Top. Glouc. d. 2	Latin	16	Documents of practice
+train/L-Lat.C-16.S-Per.Cambridge__Corpus_Christi_College__MS_165.H-93ce7.Part-0.parquet	151	CREMMA	Cambridge, Corpus Christi College, MS 165	Latin	16	Treatises
+train/L-Lat.C-7.S-Unc.Paris__BnF__lat__17226.H-e32cc.Part-0.parquet	585	HTRogène	Paris, BnF, lat. 17226	Latin	7	Narratives
+train/L-Lat.C-8.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_29404.H-ad5a2.Part-0.parquet	53	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 29404	Latin	8	Treatises
+train/L-Lat.C-8.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_6434.H-e754c.Part-0.parquet	18	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 6434	Latin	8	Treatises
+train/L-Lat.C-9.S-Car.Bamberg__Staatsbibliothek__MS_Class__30.H-5cf9a.Part-0.parquet	2560	Eutyches	Bamberg, Staatsbibliothek, MS Class. 30	Latin	9	Treatises
+train/L-Lat.C-9.S-Car.Bamberg__Staatsbibliothek__MS_Class__30.H-5cf9a.Part-1.parquet	556	Eutyches	Bamberg, Staatsbibliothek, MS Class. 30	Latin	9	Treatises
+train/L-Lat.C-9.S-Car.Leiden__Bibliotheek_der_Rijksuniversiteit__Voss__Lat__O_41.H-36685.Part-0.parquet	2560	Eutyches	Leiden, Bibliotheek der Rijksuniversiteit, Voss. Lat. O 41	Latin	9	Treatises
+train/L-Lat.C-9.S-Car.Leiden__Bibliotheek_der_Rijksuniversiteit__Voss__Lat__O_41.H-36685.Part-1.parquet	172	Eutyches	Leiden, Bibliotheek der Rijksuniversiteit, Voss. Lat. O 41	Latin	9	Treatises
+train/L-Lat.C-9.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_14510.H-35e6b.Part-0.parquet	23	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 14510	Latin	9	Speeches
+train/L-Lat.C-9.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_14517.H-b7a17.Part-0.parquet	23	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 14517	Latin	9	Treatises
+train/L-Lat.C-9.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_17059.H-8ff75.Part-0.parquet	21	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 17059	Latin	9	Treatises
+train/L-Lat.C-9.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_210.H-5b4bf.Part-0.parquet	27	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 210	Latin	9	Treatises
+train/L-Lat.C-9.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_6375.H-60d1e.Part-0.parquet	27	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 6375	Latin	9	Narratives
+train/L-Lat.C-9.S-Car.Paris__BnF__lat__13388.H-c9add.Part-0.parquet	181	HTRomance	Paris, BnF, lat. 13388	Latin	9	Treatises
+train/L-Lat.C-9.S-Car.Paris__BnF__lat__14087.H-1dee0.Part-0.parquet	82	Eutyches	Paris, BnF, lat. 14087	Latin	9	Treatises
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__1805.H-66772.Part-0.parquet	1520	Carthusian Monastery of Herne	Brussels, KBR, 1805	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2485.H-95e90.Part-0.parquet	2560	Carthusian Monastery of Herne	Brussels, KBR, 2485	Middle Dutch	14	Treatises
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2485.H-95e90.Part-1.parquet	378	Carthusian Monastery of Herne	Brussels, KBR, 2485	Middle Dutch	14	Treatises
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2849_51.H-0fd05.Part-0.parquet	2560	Carthusian Monastery of Herne	Brussels, KBR, 2849-51	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2849_51.H-0fd05.Part-1.parquet	400	Carthusian Monastery of Herne	Brussels, KBR, 2849-51	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2877_78.H-46451.Part-0.parquet	2560	Carthusian Monastery of Herne	Brussels, KBR, 2877-78	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2877_78.H-46451.Part-1.parquet	2560	Carthusian Monastery of Herne	Brussels, KBR, 2877-78	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2877_78.H-46451.Part-2.parquet	1869	Carthusian Monastery of Herne	Brussels, KBR, 2877-78	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2879_80.H-464ec.Part-0.parquet	2560	Carthusian Monastery of Herne	Brussels, KBR, 2879-80	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2879_80.H-464ec.Part-1.parquet	2560	Carthusian Monastery of Herne	Brussels, KBR, 2879-80	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2879_80.H-464ec.Part-2.parquet	1545	Carthusian Monastery of Herne	Brussels, KBR, 2879-80	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2905.H-8c5a2.Part-0.parquet	433	Carthusian Monastery of Herne	Brussels, KBR, 2905	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__2979.H-b009f.Part-0.parquet	25	Carthusian Monastery of Herne	Brussels, KBR, 2979	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__3091.H-f597c.Part-0.parquet	297	Carthusian Monastery of Herne	Brussels, KBR, 3091	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__3093_95.H-44d33.Part-0.parquet	2560	Carthusian Monastery of Herne	Brussels, KBR, 3093-95	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__3093_95.H-44d33.Part-1.parquet	2560	Carthusian Monastery of Herne	Brussels, KBR, 3093-95	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__3093_95.H-44d33.Part-2.parquet	1064	Carthusian Monastery of Herne	Brussels, KBR, 3093-95	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Brussels__KBR__394_98.H-5f66c.Part-0.parquet	791	Carthusian Monastery of Herne	Brussels, KBR, 394-98	Middle Dutch	14	Treatises
+train/L-Mid_Dut.C-14.S-Tex.Ghent__UL__1374.H-af7fd.Part-0.parquet	2560	Carthusian Monastery of Herne	Ghent, UL, 1374	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Ghent__UL__1374.H-af7fd.Part-1.parquet	2560	Carthusian Monastery of Herne	Ghent, UL, 1374	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Ghent__UL__1374.H-af7fd.Part-2.parquet	2560	Carthusian Monastery of Herne	Ghent, UL, 1374	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Ghent__UL__1374.H-af7fd.Part-3.parquet	534	Carthusian Monastery of Herne	Ghent, UL, 1374	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Ghent__UL__941.H-4c7ad.Part-0.parquet	2510	Carthusian Monastery of Herne	Ghent, UL, 941	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Paris__Mazarine__920.H-94b4f.Part-0.parquet	1349	Carthusian Monastery of Herne	Paris, Mazarine, 920	Middle Dutch	14	Treatises
+train/L-Mid_Dut.C-14.S-Tex.Saint_Petersburg__BAN__O_256.H-46e7d.Part-0.parquet	664	Carthusian Monastery of Herne	Saint Petersburg, BAN, O 256	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Vienna__ONB__12_857.H-25e3e.Part-0.parquet	24	Carthusian Monastery of Herne	Vienna, ÖNB, 12.857	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Vienna__ONB__13_708.H-01f6b.Part-0.parquet	2560	Carthusian Monastery of Herne	Vienna, ÖNB, 13.708	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Vienna__ONB__13_708.H-01f6b.Part-1.parquet	1566	Carthusian Monastery of Herne	Vienna, ÖNB, 13.708	Middle Dutch	14	Narratives
+train/L-Mid_Dut.C-14.S-Tex.Vienna__ONB__65.H-8e374.Part-0.parquet	310	Carthusian Monastery of Herne	Vienna, ÖNB, 65	Middle Dutch	14	Treatises
+train/L-Occ.C-14.S-Tex.Paris__BnF__fr__13509.H-a99f7.Part-0.parquet	349	HTRogène	Paris, BnF, fr. 13509	Occitan	14	Narratives
+train/L-Ven.C-14.S-Hum.Paris__BnF__ita__912.H-520d6.Part-0.parquet	104	HTRomance	Paris, BnF, ita. 912	Venitian	14	Documents of practice
+dev/L-Cas.C-14.S-Hyb.Paris__BnF__esp__33.H-ebbcb.Part-0.parquet	489	HTRogène	Paris, BnF, esp. 33	Castilian	14	Treatises
+dev/L-Cas.C-14.S-Hyb.Paris__BnF__esp__440.H-38997.Part-0.parquet	355	HTRomance	Paris, BnF, esp. 440	Castilian	14	Treatises
+dev/L-Cas.C-14.S-Sem.Valladolid__Biblioteca_de_Santa_Cruz__ms__251.H-5cede.Part-0.parquet	2560	Towards General Castilian HTR	Valladolid, Biblioteca de Santa Cruz, ms. 251	Castilian	14	Treatises
+dev/L-Cas.C-14.S-Sem.Valladolid__Biblioteca_de_Santa_Cruz__ms__251.H-5cede.Part-1.parquet	1455	Towards General Castilian HTR	Valladolid, Biblioteca de Santa Cruz, ms. 251	Castilian	14	Treatises
+dev/L-Cas.C-14.S-Sem.Valladolid__Biblioteca_de_Santa_Cruz__ms__251.H-9a594.Part-0.parquet	378	Towards General Castilian HTR	Valladolid, Biblioteca de Santa Cruz, ms. 251	Castilian	14	Treatises
+dev/L-Cas.C-14.S-Sem.Valladolid__Biblioteca_de_Santa_Cruz__ms__251.H-aa883.Part-0.parquet	2560	Towards General Castilian HTR	Valladolid, Biblioteca de Santa Cruz, ms. 251	Castilian	14	Treatises
+dev/L-Cas.C-14.S-Sem.Valladolid__Biblioteca_de_Santa_Cruz__ms__251.H-aa883.Part-1.parquet	1343	Towards General Castilian HTR	Valladolid, Biblioteca de Santa Cruz, ms. 251	Castilian	14	Treatises
+dev/L-Cas.C-14.S-Sem.Valladolid__Biblioteca_de_Santa_Cruz__ms__251.H-abb1d.Part-0.parquet	652	Towards General Castilian HTR	Valladolid, Biblioteca de Santa Cruz, ms. 251	Castilian	14	Treatises
+dev/L-Cas.C-14.S-Tex.San_Lorenzo_de_El_Escorial__RBME__Z_I_12.H-67211.Part-0.parquet	117	Towards General Castilian HTR	San Lorenzo de El Escorial, RBME, Z-I-12	Castilian	14	Treatises
+dev/L-Cas.C-15.S-Hyb.Madrid__Biblioteca_Real__ms__II_215.H-a403c.Part-0.parquet	408	Towards General Castilian HTR	Madrid, Biblioteca Real, ms. II/215	Castilian	15	Treatises
+dev/L-Cat.C-14.S-Sem.Paris__BnF__esp__44.H-6f671.Part-0.parquet	433	HTRomance	Paris, BnF, esp. 44	Catalan	14	Narratives
+dev/L-Fre.C-13.S-Tex.Paris__BnF__NAF_10039.H-e5fdf.Part-0.parquet	116	HTRomance	Paris, BnF, NAF 10039	French	13	Narratives
+dev/L-Fre.C-13.S-Tex.Paris__BnF__fr__1669.H-770e7.Part-0.parquet	483	HTRomance	Paris, BnF, fr. 1669	French	13	Narratives
+dev/L-Fre.C-13.S-Tex.Paris__BnF__fr__2168.H-c4792.Part-0.parquet	370	HTRomance	Paris, BnF, fr. 2168	French	13	Poetry
+dev/L-Fre.C-15.S-Cur.Paris__BnF__Arsenal__3350.H-55b3b.Part-0.parquet	271	HTRomance	Paris, BnF, Arsenal, 3350	French	15	Narratives
+dev/L-Fre.C-15.S-Cur.Paris__BnF__fr__12575.H-34eca.Part-0.parquet	263	HTRogène	Paris, BnF, fr. 12575	French	15	Narratives
+dev/L-Fre.C-15.S-Cur.Paris__BnF__fr__1357.H-8d4ed.Part-0.parquet	318	HTRomance	Paris, BnF, fr. 1357	French	15	Treatises
+dev/L-Fre.C-15.S-Cur.Paris__BnF__fr__1419.H-95a6b.Part-0.parquet	286	Gallicorpora	Paris, BnF, fr. 1419	French	15	Narratives
+dev/L-Fre.C-15.S-Pri.Paris__BnF__Velins_360.H-13011.Part-0.parquet	321	Gallicorpora	Paris, BnF, Velins 360	French	15	Narratives
+dev/L-Fre.C-15.S-Sem.Paris__BnF__Arsenal__3346.H-a13ef.Part-0.parquet	284	HTRomance	Paris, BnF, Arsenal, 3346	French	15	Narratives
+dev/L-Ita.C-14.S-Cur.Florence__Biblioteca_Medicea_Laurenziana__Laur__Plut__40_25.H-419ce.Part-0.parquet	438	eDante	Florence, Biblioteca Medicea Laurenziana, Laur. Plut. 40.25	Italian	14	Narratives
+dev/L-Ita.C-14.S-Tex.Paris__BnF__ita__590.H-734d8.Part-0.parquet	444	HTRomance	Paris, BnF, ita. 590	Italian	14	Narratives
+dev/L-Ita.C-15.S-Hum.Rouen__Bibliotheque_Municipale__Ms__Leber_1158.H-6274e.Part-0.parquet	250	HTRogène	Rouen, Bibliothèque Municipale, Ms. Leber 1158	Italian	15	Treatises
+dev/L-Ita.C-15.S-Hyb.Florence__BNCF__Palatino_343.H-d8469.Part-0.parquet	393	HTRogène	Florence, BNCF, Palatino 343	Italian	15	Narratives
+dev/L-Ita.C-16.S-Per.Paris__BnF__ita__1729.H-bc14e.Part-0.parquet	595	HTRogène	Paris, BnF, ita. 1729	Italian	16	Espistolary
+dev/L-Lat.C-12.S-Car.Paris__BnF__lat__12270.H-befca.Part-0.parquet	517	HTRomance	Paris, BnF, lat. 12270	Latin	12	Treatises
+dev/L-Lat.C-12.S-Car.Paris__BnF__lat__12449.H-ec8fe.Part-0.parquet	511	HTRomance	Paris, BnF, lat. 12449	Latin	12	Treatises
+dev/L-Lat.C-12.S-Got_Doc_Scr.London__British_Library__Egerton_ms__3031.H-c4580.Part-0.parquet	195	DEEDS	London, British Library, Egerton ms. 3031	Latin	12	Documents of practice
+dev/L-Lat.C-12.S-Pra.Archives_departementales_des_Yvelines__45H8_17.H-e6801.Part-0.parquet	35	HTRogène	Archives départementales des Yvelines, 45H8 17	Latin	12	Documents of practice
+dev/L-Lat.C-12.S-Pra.London__British_Library__Egerton_821.H-719f8.Part-0.parquet	114	CREMMA	London, British Library, Egerton 821	Latin	12	Treatises
+dev/L-Lat.C-13.S-Got_Doc_Scr.Nice__AM__AA_1_04.H-e8dd1.Part-0.parquet	9	HTRogène	Nice, AM, AA 1/04	Latin	13	Documents of practice
+dev/L-Lat.C-13.S-Sem.Paris__BnF__lat__16085.H-fee1a.Part-0.parquet	391	HTRomance	Paris, BnF, lat. 16085	Latin	13	Treatises
+dev/L-Lat.C-14.S-Cur.Cambridge__University_Library__MS_Ff_1_28.H-31684.Part-0.parquet	84	DEEDS	Cambridge, University Library, MS Ff.1.28	Latin	14	Narratives
+dev/L-Lat.C-14.S-Cur.Paris__Archives_nationales__LL_108A.H-e0dc4.Part-0.parquet	557	HTRogène	Paris, Archives nationales, LL 108A	Latin	14	Documents of practice
+dev/L-Lat.C-15.S-Cur.Paris__Archives_nationales__LL_125.H-d8e12.Part-0.parquet	435	HTRogène	Paris, Archives nationales, LL 125	Latin	15	Documents of practice
+dev/L-Lat.C-15.S-Hum.Paris__BnF__Smith_Lesouef_12.H-02ac6.Part-0.parquet	117	HTRomance	Paris, BnF, Smith-Lesouëf 12	Latin	15	Poetry
+dev/L-Lat.C-15.S-Hum.Toronto__Thomas_Fisher_Rare_Book_Library__MSS_03043.H-eb669.Part-0.parquet	50	DEEDS	Toronto, Thomas Fisher Rare Book Library, MSS 03043	Latin	15	Treatises
+dev/L-Lat.C-15.S-Sem.Toronto__Thomas_Fisher_Rare_Book_Library__MSS_01114.H-ba403.Part-0.parquet	173	DEEDS	Toronto, Thomas Fisher Rare Book Library, MSS 01114	Latin	15	Poetry
+dev/L-Lat.C-15.S-Sem.Toronto__Thomas_Fisher_Rare_Book_Library__MSS_05288.H-06fe4.Part-0.parquet	100	DEEDS	Toronto, Thomas Fisher Rare Book Library, MSS 05288	Latin	15	Narratives
+dev/L-Lat.C-16.S-Hum.Paris__BnF__NAL_1909.H-19098.Part-0.parquet	220	HTRomance	Paris, BnF, NAL 1909	Latin	16	Poetry
+dev/L-Lat.C-16.S-Hum.Paris__BnF__lat__6337.H-415be.Part-0.parquet	259	HTRomance	Paris, BnF, lat. 6337	Latin	16	Narratives
+dev/L-Lat.C-9.S-Car.Munich__Bayerische_Staatsbibliothek__Clm_29302.H-664f5.Part-0.parquet	21	Rescribe x CATMuS	Munich, Bayerische Staatsbibliothek, Clm 29302	Latin	9	Narratives
+dev/L-Occ.C-14.S-Tex.London__British_Library__Harley_MS_3041.H-5be93.Part-0.parquet	32	HTRogène	London, British Library, Harley MS 3041	Occitan	14	Narratives
+test/L-Cas.C-14.S-Hyb.Paris__BnF__esp__36.H-16033.Part-0.parquet	74	Towards General Castilian HTR	Paris, BnF, esp. 36	Castilian	14	Narratives
+test/L-Cas.C-14.S-Hyb.Paris__BnF__esp__36.H-71c8c.Part-0.parquet	467	HTRomance	Paris, BnF, esp. 36	Castilian	14	Narratives
+test/L-Cas.C-15.S-Hyb.Paris__BnF__esp__458.H-b9626.Part-0.parquet	331	HTRogène	Paris, BnF, esp. 458	Castilian	15	Treatises
+test/L-Cas.C-15.S-Sem.Madrid__BNE__MSS__3995.H-2efa2.Part-0.parquet	154	CATMuS	Madrid, BNE, MSS. 3995	Castilian	15	Treatises
+test/L-Cas.C-16.S-Hum.Paris__BnF__esp__368.H-ef7a5.Part-0.parquet	156	HTRomance	Paris, BnF, esp. 368	Castilian	16	Treatises
+test/L-Cat.C-15.S-Hum.Paris__BnF__esp__305.H-365ee.Part-0.parquet	298	HTRogène	Paris, BnF, esp. 305	Catalan	15	Poetry
+test/L-Fre.C-12.S-Pra.Paris__BnF__NAF_4503.H-da997.Part-0.parquet	291	HTRogène	Paris, BnF, NAF 4503	French	12	Narratives
+test/L-Fre.C-13.S-Tex.Paris__BnF__fr__13496.H-21978.Part-0.parquet	159	CREMMA	Paris, BnF, fr. 13496	French	13	Narratives
+test/L-Fre.C-13.S-Tex.Paris__BnF__fr__23117.H-c275f.Part-0.parquet	736	HTRomance	Paris, BnF, fr. 23117	French	13	Narratives
+test/L-Fre.C-13.S-Tex.Paris__BnF__fr__6447.H-8addb.Part-0.parquet	383	HTRomance	Paris, BnF, fr. 6447	French	13	Narratives
+test/L-Fre.C-13.S-Tex.Paris__BnF__fr__747.H-32240.Part-0.parquet	91	HTRomance	Paris, BnF, fr. 747	French	13	Narratives
+test/L-Fre.C-14.S-Tex.Paris__BnF__fr__574.H-9ad67.Part-0.parquet	116	HTRomance	Paris, BnF, fr. 574	French	14	Treatises
+test/L-Fre.C-15.S-Cur.Paris__BnF__fr__12563.H-5da36.Part-0.parquet	271	HTRogène	Paris, BnF, fr. 12563	French	15	Narratives
+test/L-Fre.C-15.S-Cur.Paris__BnF__fr__413.H-d8268.Part-0.parquet	860	Gallicorpora	Paris, BnF, fr. 413	French	15	Narratives
+test/L-Fre.C-15.S-Cur.Paris__BnF__fr__604.H-b6ecb.Part-0.parquet	343	Gallicorpora	Paris, BnF, fr. 604	French	15	Narratives
+test/L-Fre.C-15.S-Sem.Paris__BnF__fr__2701.H-d0214.Part-0.parquet	275	HTRomance	Paris, BnF, fr. 2701	French	15	Treatises
+test/L-Fre.C-16.S-Cur.Paris__BnF__fr__1881.H-3bca8.Part-0.parquet	194	HTRomance	Paris, BnF, fr. 1881	French	16	Narratives
+test/L-Fre.C-16.S-Pri.Paris__BnF__Res__YE_1325.H-b82af.Part-0.parquet	416	Gallicorpora	Paris, BnF, Rés. YE-1325	French	16	Narratives
+test/L-Ita.C-14.S-Cur.Florence__BNCF__Conventi_Soppressi_C_III_1262.H-a81b3.Part-0.parquet	644	eDante	Florence, BNCF, Conventi Soppressi C.III.1262	Italian	14	Narratives
+test/L-Ita.C-14.S-Hum.Paris__BnF__ita__481.H-674bc.Part-0.parquet	502	HTRomance	Paris, BnF, ita. 481	Italian	14	Narratives
+test/L-Ita.C-15.S-Hum.Oxford__Bodleian_Library__MS__Digby_94.H-69027.Part-0.parquet	275	HTRogène	Oxford, Bodleian Library, MS. Digby 94	Italian	15	Narratives
+test/L-Ita.C-15.S-Hum.Strasbourg__Bibliotheque_nationale_et_universitaire__Ms_1_808.H-249f1.Part-0.parquet	129	HTRogène	Strasbourg, Bibliothèque nationale et universitaire, Ms.1.808	Italian	15	Narratives
+test/L-Lat.C-10.S-Car.Paris__BnF__lat__7499.H-77d2b.Part-0.parquet	2560	Eutyches	Paris, BnF, lat. 7499	Latin	10	Treatises
+test/L-Lat.C-10.S-Car.Paris__BnF__lat__7499.H-77d2b.Part-1.parquet	2560	Eutyches	Paris, BnF, lat. 7499	Latin	10	Treatises
+test/L-Lat.C-10.S-Car.Paris__BnF__lat__7499.H-77d2b.Part-2.parquet	966	Eutyches	Paris, BnF, lat. 7499	Latin	10	Treatises
+test/L-Lat.C-11.S-Car.Semur_en_Auxois__Bibliotheque_municipale__Ms__1.H-cb7d0.Part-0.parquet	227	HTRogène	Semur-en-Auxois, Bibliothèque municipale, Ms. 1	Latin	11	Narratives
+test/L-Lat.C-11.S-Sem.Angers__Archives_departementales_de_Maine_et_Loire___H_039__2_n__176_177.H-b9257.Part-0.parquet	37	HTRogène	Angers, Archives départementales de Maine-et-Loire - H(039) 2 n° 176-177	Latin	11	Documents of practice
+test/L-Lat.C-12.S-Car.Paris__BnF__lat__130.H-9ac57.Part-0.parquet	198	HTRomance	Paris, BnF, lat. 130	Latin	12	Treatises
+test/L-Lat.C-12.S-Got_Doc_Scr.Liege__Archives_de_l_Etat__T51_13.H-f60ec.Part-0.parquet	25	HTRogène	Liege, Archives de l'État, T51.13	Latin	12	Documents of practice
+test/L-Lat.C-12.S-Pra.Montpellier__Bibliotheque_universitaire_Historique_de_Medecine__H318.H-8f0f7.Part-0.parquet	427	CREMMA	Montpellier, Bibliothèque universitaire Historique de Médecine, H318	Latin	12	Treatises
+test/L-Lat.C-13.S-Car.Paris__BnF__lat__8001.H-4017e.Part-0.parquet	504	HTRomance	Paris, BnF, lat. 8001	Latin	13	Poetry
+test/L-Lat.C-13.S-Got_Doc_Scr.Auxerre__Archives_departementales_de_l_Yonne___H_2404.H-73de4.Part-0.parquet	13	HTRogène	Auxerre, Archives départementales de l'Yonne - H 2404	Latin	13	Documents of practice
+test/L-Lat.C-13.S-Got_Doc_Scr.Paris__BnF__lat__10996.H-e4e63.Part-0.parquet	106	HTRomance	Paris, BnF, lat. 10996	Latin	13	Documents of practice
+test/L-Lat.C-13.S-Pra.Cambridge__Corpus_Christi_College__MS_29.H-c94e3.Part-0.parquet	1401	HTRogène	Cambridge, Corpus Christi College, MS 29	Latin	13	Narratives
+test/L-Lat.C-13.S-Pra.Paris__BnF__lat__17903.H-05922.Part-0.parquet	440	HTRomance	Paris, BnF, lat. 17903	Latin	13	Poetry
+test/L-Lat.C-14.S-Cur.Paris__Archives_nationales__LL_108B.H-ac4de.Part-0.parquet	372	HTRogène	Paris, Archives nationales, LL 108B	Latin	14	Documents of practice
+test/L-Lat.C-14.S-Cur.Paris__Bibliotheque_inter_universitaire_de_la_Sorbonne__193.H-e83ad.Part-0.parquet	669	CREMMA	Paris, Bibliothèque inter-universitaire de la Sorbonne, 193	Latin	14	Treatises
+test/L-Lat.C-14.S-Sem.Paris__BnF__lat__14137.H-2ef79.Part-0.parquet	193	HTRomance	Paris, BnF, lat. 14137	Latin	14	Poetry
+test/L-Lat.C-14.S-Tex.Paris__BnF__NAL_730.H-ac465.Part-0.parquet	284	HTRomance	Paris, BnF, NAL 730	Latin	14	Treatises
+test/L-Lat.C-15.S-Cur.Paris__BnF__lat__14650.H-79d19.Part-0.parquet	172	HTRomance	Paris, BnF, lat. 14650	Latin	15	Narratives
+test/L-Lat.C-15.S-Hum.Florence__Biblioteca_Medicea_Laurenziana__Laur__Plut__39_34.H-6cb00.Part-0.parquet	135	CREMMA	Florence, Biblioteca Medicea Laurenziana, Laur. Plut. 39.34	Latin	15	Poetry
+test/L-Lat.C-15.S-Sem.Paris__BIU_Sante__Medecine__5119.H-39d42.Part-0.parquet	323	HTRogène	Paris, BIU Santé, Médecine, 5119	Latin	15	Treatises
+test/L-Lat.C-16.S-Cur.Oxford__Bodleian_Library__MS__Rawl__B__499.H-52242.Part-0.parquet	71	DEEDS	Oxford, Bodleian Library, MS. Rawl. B. 499	Latin	16	Documents of practice
+test/L-Lat.C-16.S-Cur.Paris__BnF__Smith_Lesouef_35.H-5afc1.Part-0.parquet	127	HTRogène	Paris, BnF, Smith-Lesouëf 35	Latin	16	Treatises
+test/L-Lat.C-16.S-Hum.Paris__BnF__Smith_Lesouef_16.H-37e5e.Part-0.parquet	138	HTRomance	Paris, BnF, Smith-Lesouëf 16	Latin	16	Documents of practice
+test/L-Lat.C-16.S-Hyb.Ghent__UL__HS_0011.H-bdbf8.Part-0.parquet	1127	HTRogène	Ghent, UL, HS.0011	Latin	16	Treatises
+test/L-Lat.C-9.S-Unc.Saint_Omer__BM_764.H-f211f.Part-0.parquet	249	HTRogène	Saint-Omer, BM 764	Latin	9	Narratives
+test/L-Mid_Dut.C-14.S-Tex.Vienna__ONB__12_905.H-d1b98.Part-0.parquet	1047	Carthusian Monastery of Herne	Vienna, ÖNB, 12.905	Middle Dutch	14	Treatises
+test/L-Nav.C-14.S-Tex.Paris__BnF__esp__65.H-eaa18.Part-0.parquet	737	HTRomance	Paris, BnF, esp. 65	Navarrese	14	Treatises
+test/L-Occ.C-14.S-Tex.London__British_Library__Harley_MS_7403_.H-b428f.Part-0.parquet	170	HTRogène	London, British Library, Harley MS 7403 	Occitan	14	Poetry
+test/L-Ven.C-14.S-Tex.Paris__BnF__ita__783.H-8b044.Part-0.parquet	147	HTRomance	Paris, BnF, ita. 783	Venitian	14	Narratives
