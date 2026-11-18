@@ -57,17 +57,39 @@ def test_a_pinned_revision_is_a_full_commit_sha(spec: Path):
         assert SHA.fullmatch(d["revision"]), f"{spec.name}: {d['hf_repo']} -> {d['revision']!r}"
 
 
-def test_the_arms_of_one_series_pin_the_same_revisions():
-    """The five medieval page arms differ in model_id and base_model and in
-    nothing else — including which bytes they train on. If two of them pinned
-    different revisions they would share a name and not a corpus."""
+def _medieval_page_pins() -> dict[str, dict[str, str]]:
     page = {}
     for spec in SERIES:
         d = json.loads(spec.read_text(encoding="utf-8"))
         if d.get("params", {}).get("granularity") != "page" or "medieval" not in spec.name:
             continue
         page[spec.name] = {x["hf_repo"]: x["revision"] for x in d["datasets"]}
-    assert len(page) >= 2, f"expected several medieval page arms, found {sorted(page)}"
-    first, *rest = page.items()
-    for name, pins in rest:
-        assert pins == first[1], f"{name} pins different revisions than {first[0]}"
+    return page
+
+
+def test_the_arms_of_one_series_pin_the_same_revisions():
+    """The medieval page arms differ in model_id and base_model and in nothing
+    else — including which bytes they train on. Arms over the same datasets are
+    one series: if two of them pinned different revisions they would share a name
+    and not a corpus. A spec that adds a dataset (the Leuven excerpt) starts a
+    series of its own."""
+    series: dict[frozenset, list[tuple[str, dict]]] = {}
+    for name, pins in _medieval_page_pins().items():
+        series.setdefault(frozenset(pins), []).append((name, pins))
+    arms = [group for group in series.values() if len(group) >= 2]
+    assert arms, f"expected several medieval page arms over one corpus, found {sorted(series)}"
+    for group in arms:
+        (first, first_pins), *rest = group
+        for name, pins in rest:
+            assert pins == first_pins, f"{name} pins different revisions than {first}"
+
+
+def test_a_dataset_shared_by_medieval_page_specs_pins_one_revision():
+    """Across series too: a spec that extends the corpus must train on the same
+    bytes of the datasets it shares, or a comparison with the arms it extends
+    compares two corpora."""
+    seen: dict[str, tuple[str, str]] = {}
+    for name, pins in _medieval_page_pins().items():
+        for repo, rev in pins.items():
+            other = seen.setdefault(repo, (rev, name))
+            assert other[0] == rev, f"{name} pins {repo} at {rev}, {other[1]} at {other[0]}"
