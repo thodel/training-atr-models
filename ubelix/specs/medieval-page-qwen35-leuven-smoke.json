@@ -4,7 +4,7 @@
  "base_model": "Qwen/Qwen3.5-4B",
  "params": {
   "granularity": "page",
-  "epochs": 1,
+  "epochs": 3,
   "max_epochs": 3,
   "patience": 1,
   "batch_size": 2,
@@ -14,8 +14,7 @@
   "workers": 8,
   "optim": "paged_adamw_8bit",
   "save_steps": 50,
-  "min_train_chars": 0,
-  "max_steps": 50
+  "min_train_chars": 0
  },
  "datasets": [
   {
@@ -305,5 +304,6 @@
    "max_pages": 9,
    "seed": 42
   }
- ]
+ ],
+ "force": true
 }
