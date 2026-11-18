@@ -1,0 +1,309 @@
+{
+ "model_id": "qwen3.5-4b-medieval-page-leuven-smoke",
+ "engine": "vllm",
+ "base_model": "Qwen/Qwen3.5-4B",
+ "params": {
+  "granularity": "page",
+  "epochs": 1,
+  "max_epochs": 3,
+  "patience": 1,
+  "batch_size": 2,
+  "accumulate_grad_batches": 8,
+  "eval_samples": 25,
+  "load_in_4bit": false,
+  "workers": 8,
+  "optim": "paged_adamw_8bit",
+  "save_steps": 50,
+  "min_train_chars": 0,
+  "max_steps": 50
+ },
+ "datasets": [
+  {
+   "hf_repo": "dh-unibe/image-text_rats-und-richtebuecher_xv-xvi",
+   "granularity": "page",
+   "train_projects": [
+    "Rats-undRichtebücher_MF_1_3543",
+    "Rats-undRichtebücher_MF_1_3544",
+    "Rats-undRichtebücher_MF_1_3545",
+    "Rats-undRichtebücher_MF_1_3546",
+    "Rats-undRichtebücher_MF_1_3547",
+    "Rats-undRichtebücher_MF_1_3548",
+    "Rats-undRichtebücher_MF_1_3549",
+    "Rats-undRichtebücher_MF_1_3550",
+    "Rats-undRichtebücher_MF_1_3551",
+    "Rats-undRichtebücher_MF_1_3552",
+    "Rats-undRichtebücher_MF_1_3553",
+    "Rats-undRichtebücher_MF_1_3554",
+    "Rats-undRichtebücher_MF_1_3555",
+    "Rats-undRichtebücher_MF_1_3556",
+    "Rats-undRichtebücher_MF_1_3557",
+    "Rats-undRichtebücher_MF_1_3558",
+    "Rats-undRichtebücher_MF_1_3559",
+    "Rats-undRichtebücher_MF_1_3560",
+    "Rats-undRichtebücher_MF_1_3561",
+    "Rats-undRichtebücher_MF_1_3562",
+    "Rats-undRichtebücher_MF_1_3563",
+    "Rats-undRichtebücher_MF_1_3564",
+    "Rats-undRichtebücher_MF_1_3565",
+    "Rats-undRichtebücher_MF_1_3566",
+    "Rats-undRichtebücher_MF_1_3567",
+    "Rats-undRichtebücher_MF_1_3568",
+    "Rats-undRichtebücher_MF_1_3569",
+    "Rats-undRichtebücher_MF_1_3570",
+    "Rats-undRichtebücher_MF_1_3571",
+    "Rats-undRichtebücher_MF_1_3572",
+    "Rats-undRichtebücher_MF_1_3573",
+    "Rats-undRichtebücher_MF_1_3574",
+    "Rats-undRichtebücher_MF_1_3575",
+    "TRAINING_VALIDATION_SET_Richtebuecher_M1",
+    "Test_MF_1_3556_p_204"
+   ],
+   "eval_projects": [
+    "escript_test",
+    "escript_test_2"
+   ],
+   "revision": "011e82080411a51bcb9e032e9329c919682e5f6c",
+   "max_pages": 100
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL7301_full"
+   ],
+   "pages": [
+    "171954_0026_6476495.jpg",
+    "171954_0205_6477343.jpg",
+    "171954_0333_6478048.jpg",
+    "171954_0375_6478286.jpg",
+    "171954_0386_6478351.jpg",
+    "171954_0397_6478412.jpg",
+    "171954_0421_6478547.jpg",
+    "171954_0532_6479188.jpg",
+    "171954_0811_6480792.jpg",
+    "171954_0814_6480807.jpg",
+    "171954_1001_6481417.jpg",
+    "171954_1035_6481516.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL7336_full"
+   ],
+   "pages": [
+    "175805_0234_6746836.jpg",
+    "175805_0327_6747397.jpg",
+    "175805_0407_6747860.jpg",
+    "175805_0426_6747971.jpg",
+    "175805_0429_6747988.jpg",
+    "175805_0441_6748061.jpg",
+    "175805_0444_6748078.jpg",
+    "175805_0446_6748088.jpg",
+    "175805_0531_6748597.jpg",
+    "175805_0561_6748772.jpg",
+    "175805_0579_6748884.jpg",
+    "175805_0607_6749055.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL7370_full"
+   ],
+   "pages": [
+    "176010_0014_6774498.jpg",
+    "176010_0141_6775090.jpg",
+    "176010_0205_6775399.jpg",
+    "176010_0239_6775561.jpg",
+    "176010_0309_6775910.jpg",
+    "176010_0314_6775933.jpg",
+    "176010_0437_6776540.jpg",
+    "176010_0476_6776770.jpg",
+    "176010_0539_6777147.jpg",
+    "176010_0544_6777178.jpg",
+    "176010_0614_6777575.jpg",
+    "176010_0643_6777726.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL7404_full"
+   ],
+   "pages": [
+    "176314_0158_6797724.jpg",
+    "176314_0177_6797789.jpg",
+    "176314_0185_6797819.jpg",
+    "176314_0226_6797987.jpg",
+    "176314_0383_6798706.jpg",
+    "176314_0673_6799957.jpg",
+    "176314_0708_6800122.jpg",
+    "176314_0807_6800577.jpg",
+    "176314_0830_6800683.jpg",
+    "176314_0884_6800927.jpg",
+    "176314_0939_6801179.jpg",
+    "176314_0969_6801323.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL7717_full"
+   ],
+   "pages": [
+    "174322_0024_6641118.jpg",
+    "174322_0115_6641617.jpg",
+    "174322_0147_6641782.jpg",
+    "174322_0168_6641891.jpg",
+    "174322_0180_6641958.jpg",
+    "174322_0208_6642096.jpg",
+    "174322_0259_6642391.jpg",
+    "174322_0319_6642771.jpg",
+    "174322_0320_6642776.jpg",
+    "174322_0321_6642784.jpg",
+    "174322_0427_6643435.jpg",
+    "174322_0464_6643599.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL7749_full"
+   ],
+   "pages": [
+    "171958_0075_6481820.jpg",
+    "171958_0113_6481900.jpg",
+    "171958_0125_6481927.jpg",
+    "171958_0174_6482037.jpg",
+    "171958_0256_6482215.jpg",
+    "171958_0257_6482217.jpg",
+    "171958_0269_6482245.jpg",
+    "171958_0308_6482328.jpg",
+    "171958_0399_6482523.jpg",
+    "171958_0562_6482890.jpg",
+    "171958_0567_6482900.jpg",
+    "171958_0608_6483008.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL7789_full"
+   ],
+   "pages": [
+    "177154_0025_6860308.jpg",
+    "177154_0054_6860535.jpg",
+    "177154_0062_6860604.jpg",
+    "177154_0150_6861283.jpg",
+    "177154_0305_6862410.jpg",
+    "177154_0526_6863842.jpg",
+    "177154_0654_6864682.jpg",
+    "177154_0738_6865236.jpg",
+    "177154_0772_6865455.jpg",
+    "177154_0853_6865937.jpg",
+    "177154_0907_6866166.jpg",
+    "177154_0929_6866213.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL8109_full"
+   ],
+   "pages": [
+    "174719_0011_6680762.jpg",
+    "174719_0018_6680796.jpg",
+    "174719_0109_6681318.jpg",
+    "174719_0150_6681535.jpg",
+    "174719_0183_6681699.jpg",
+    "174719_0297_6682168.jpg",
+    "174719_0363_6682469.jpg",
+    "174719_0383_6682566.jpg",
+    "174719_0465_6683043.jpg",
+    "174719_0467_6683054.jpg",
+    "174719_0487_6683146.jpg",
+    "174719_0506_6683236.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL8142_full"
+   ],
+   "pages": [
+    "173547_0018_6581239.jpg",
+    "173547_0203_6582058.jpg",
+    "173547_0370_6582768.jpg",
+    "173547_0391_6582872.jpg",
+    "173547_0422_6583023.jpg",
+    "173547_0605_6584021.jpg",
+    "173547_0606_6584027.jpg",
+    "173547_0706_6584592.jpg",
+    "173547_0720_6584671.jpg",
+    "173547_0804_6585073.jpg",
+    "173547_0821_6585138.jpg",
+    "173547_0831_6585174.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  },
+  {
+   "hf_repo": "dh-unibe/image-text_medieval-scripts_xiv-xv-xvi",
+   "revision": "729e9b2721ba2a31901f776368d8aacf0a5e9406",
+   "granularity": "page",
+   "train_projects": [
+    "SAL8176_full"
+   ],
+   "pages": [
+    "177971_0141_6905800.jpg",
+    "177971_0145_6905810.jpg",
+    "177971_0430_6907183.jpg",
+    "177971_0447_6907278.jpg",
+    "177971_0544_6907829.jpg",
+    "177971_0615_6908197.jpg",
+    "177971_0653_6908380.jpg",
+    "177971_0676_6908489.jpg",
+    "177971_0709_6908632.jpg",
+    "177971_0720_6908676.jpg",
+    "177971_0878_6909301.jpg",
+    "177971_0970_6909704.jpg"
+   ],
+   "max_pages": 9,
+   "seed": 42
+  }
+ ]
+}

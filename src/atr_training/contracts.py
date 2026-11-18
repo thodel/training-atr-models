@@ -243,6 +243,33 @@ class DatasetSpec(BaseModel):
     #: submit (``verify_dataset_spec``, ``app.request_problems``), because the
     #: alternative was a job that took the value and ignored it.
     chunk_size: int | None = Field(default=None, ge=1)
+    #: Keep only the pages whose ``filename`` column is in this list — a pinned,
+    #: reviewable excerpt of the selected projects. ``max_pages`` alone takes the
+    #: *first* N pages in shard order, which for a register is its opening
+    #: quires, not a sample of it. Drawn outside the trainer (seeded) and written
+    #: into the request, so the excerpt is the same on every rebuild. Page
+    #: granularity and ``train_projects`` only: the dedicated eval side and
+    #: chunking are not filtered, so a request combining them is refused.
+    pages: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_pages_guard(self):
+        if not self.pages:
+            return self
+        if self.granularity != "page":
+            raise ValueError("pages selects page rows; it needs granularity='page'.")
+        if not self.train_projects:
+            raise ValueError(
+                "pages needs train_projects: the excerpt is drawn from named projects, "
+                "and without them the selection would read every shard to find it.")
+        if self.eval_projects or self.chunk_size or self.whole_split or self.all_projects:
+            raise ValueError(
+                "pages cannot be combined with eval_projects, chunk_size, whole_split "
+                "or all_projects: those paths do not filter by page, so the excerpt "
+                "would silently not apply.")
+        if len(set(self.pages)) != len(self.pages):
+            raise ValueError("pages lists a filename more than once.")
+        return self
 
     @model_validator(mode="after")
     def _check_whole_split_guard(self):
