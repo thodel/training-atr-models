@@ -11,18 +11,32 @@ transformers 4: `score_federal_minutes` 22861171 and 22861173 (20.11.2026) died
 after 40 s on "model type `qwen3_5` but Transformers does not recognize this
 architecture", while the Qwen3.5 page arm in `vlm-train-tf5.sif` ran. The rule
 is `atr_training.backends.needs_transformers_5` — the one the trainer uses to
-pick its venv — so the two cannot drift apart. Stdlib only: it runs on the host
-python3 of a compute node, before the container starts.
+pick its venv — so the two cannot drift apart. Stdlib only, without site-packages:
+it runs on the host python3 of a compute node, before the container starts.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from atr_training.backends import needs_apertus_fork, needs_transformers_5  # noqa: E402
+def _backends():
+    """``atr_training/backends.py`` loaded as a file, not through the package:
+    ``atr_training/__init__`` imports ``contracts`` and with it pydantic, which a
+    compute node's python3 does not have. ``backends`` itself is stdlib only.
+    (CI caught it on 20.11.2026; the dev box's python3 happened to have pydantic.)"""
+    path = Path(__file__).resolve().parents[1] / "src" / "atr_training" / "backends.py"
+    spec = importlib.util.spec_from_file_location("_atr_backends", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module      # dataclasses resolves annotations through it
+    spec.loader.exec_module(module)
+    return module
+
+
+_b = _backends()
+needs_apertus_fork, needs_transformers_5 = _b.needs_apertus_fork, _b.needs_transformers_5
 
 TF4 = "ubelix/vlm-train.sif"
 TF5 = "ubelix/vlm-train-tf5.sif"

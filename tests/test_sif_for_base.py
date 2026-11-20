@@ -42,12 +42,16 @@ def test_apertus_has_no_ubelix_image_and_says_so():
 
 
 def test_it_runs_on_a_bare_host_python():
-    """It runs before the container, on a compute node's python3: stdlib only,
-    no PYTHONPATH, isolated mode."""
-    ok = subprocess.run([sys.executable, "-I", str(HELPER), "Qwen/Qwen3.5-4B", "/h"],
+    """It runs before the container, on a compute node's python3: no pydantic,
+    no site-packages at all (`-S`), no PYTHONPATH (`-I`). The first version
+    imported the package and with it pydantic; it passed on a dev box whose
+    python3 has pydantic and failed in CI, as it would have on UBELIX."""
+    bare = [sys.executable, "-I", "-S", str(HELPER)]
+    ok = subprocess.run(bare + ["Qwen/Qwen3.5-4B", "/h"],
                         capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
-    assert ok.returncode == 0 and ok.stdout.strip() == "/h/ubelix/vlm-train-tf5.sif"
-    no = subprocess.run([sys.executable, "-I", str(HELPER), "swiss-ai/Apertus-v1.5-8B", "/h"],
+    assert ok.returncode == 0, ok.stderr
+    assert ok.stdout.strip() == "/h/ubelix/vlm-train-tf5.sif"
+    no = subprocess.run(bare + ["swiss-ai/Apertus-v1.5-8B", "/h"],
                         capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
     assert no.returncode == 3 and "Apertus" in no.stderr and no.stdout == ""
     bad = subprocess.run([sys.executable, "-I", str(HELPER)], capture_output=True, text=True)
@@ -74,7 +78,13 @@ def test_the_choice_line_picks_tf5_for_a_qwen35_adapter(tmp_path):
     for name in ("vlm-train.sif", "vlm-train-tf5.sif"):
         (tmp_path / "ubelix" / name).write_text("")
     script = "set -euo pipefail\n" + "\n".join(choose) + '\necho "$SIF"\n'
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "REPO": str(ROOT)}
+    # `python3` on the node: this interpreter without site-packages, so a
+    # helper that needs pydantic fails here as it would on UBELIX
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    (shim / "python3").write_text(f'#!/bin/sh\nexec "{sys.executable}" -I -S "$@"\n')
+    (shim / "python3").chmod(0o755)
+    env = {"PATH": f"{shim}:/usr/bin:/bin", "HOME": str(tmp_path), "REPO": str(ROOT)}
     for base, image in (("Qwen/Qwen3.5-4B", "vlm-train-tf5.sif"),
                         ("Qwen/Qwen3-VL-8B-Instruct", "vlm-train.sif")):
         r = subprocess.run(["bash", "-c", f'BASE="{base}"; REPO="$REPO"\n' + script],
