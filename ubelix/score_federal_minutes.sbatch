@@ -2,6 +2,13 @@
 # Score ONE finished adapter on the Federal Council held-out test set
 # (Hodel & Schoch 2021, doi:10.5281/zenodo.4746342), all 2,751 lines.
 #   ubelix/submit.sh ubelix/score_federal_minutes.sbatch -- --export=ALL,JOB_ID=<id>,TAG=<tag>[,SIF=...][,QUANT=4bit]
+#
+# The image follows the base model, as it does for the trainer
+# (ubelix/sif_for_base.py): a Qwen3.5 or Gemma 4 base runs in vlm-train-tf5.sif,
+# everything else in vlm-train.sif. SIF= still overrides. With a fixed
+# vlm-train.sif default, the Qwen3.5 line arms of #427 died after 40 s on
+# "model type `qwen3_5` ... does not recognize this architecture" (22861171,
+# 22861173, 20.11.2026).
 #   ubelix/submit.sh ubelix/score_federal_minutes.sbatch -- \
 #       --export=ALL,ADAPTER=dh-unibe/<published adapter>,BASE_MODEL=<base>,TAG=<tag>
 #                     # a run whose scratch checkpoint and job.json are purged (#875)
@@ -38,7 +45,6 @@ REPO=${ATR_TRAIN_REPO:-$HOME/training-atr-models}
 # Run the commit this job was submitted with (#147): REPO becomes a worktree of it.
 # shellcheck source=pin_code.sh
 source "$REPO/ubelix/pin_code.sh"; pin_code || exit 1
-SIF=${SIF:-$HOME/ubelix/vlm-train.sif}
 : "${TAG:?}"
 if [ -n "${ADAPTER:-}" ]; then
   : "${BASE_MODEL:?with ADAPTER, set BASE_MODEL: there is no job.json to read it from}"
@@ -71,14 +77,17 @@ fi
 R=${REPORT_DIR:-$OLD_E}
 mkdir -p "$R"
 BASE=${BASE_MODEL:-$(python3 -c "import json;print(json.load(open('$S/runs/jobs/$JOB_ID/job.json'))['request']['base_model'])")}
+SIF=${SIF:-$(python3 "$REPO/ubelix/sif_for_base.py" "$BASE" "$HOME")} || exit 3
+[ -f "$SIF" ] || { echo "no image at $SIF" >&2; exit 3; }
 if [ -s "$HOME/.hf_token" ]; then HF_TOKEN=$(tr -d '[:space:]' < "$HOME/.hf_token"); export HF_TOKEN; fi
 echo "== $TAG: ${JOB_ID:-$ADAPTER} ($BASE) ${QUANT:-bf16} prompt=${PROMPT:-training_render} on $(hostname) $(date -Is)"
+echo "== image: $SIF"
 echo "== lines: $E/data/val.jsonl  report: $R/report_$TAG.json"
 apptainer exec --nv \
   --bind /storage/research:/storage/research --bind /scratch:/scratch --bind /rs_scratch:/rs_scratch \
   --env HF_HOME=/storage/research/wbkolleg_dh_1/Textrecognition_Training/hf_hub \
   --env HF_TOKEN="${HF_TOKEN:-}" --env PYTHONPATH="$REPO/src:$REPO/engines" \
-  "$SIF" python -m vlm_train_svc.evaluate_qlora \
+  "$SIF" /opt/vlm-train/bin/python -m vlm_train_svc.evaluate_qlora \
     --adapter "$ADAPTER" \
     --val-jsonl "$E/data/val.jsonl" --report "$R/report_$TAG.json" \
     --base-model "$BASE" --data-root "$E" \
