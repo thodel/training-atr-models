@@ -631,6 +631,14 @@ the card counted the `text` column and this counts what the PageXML reader
 returns. Record the md5 of `val.jsonl` here after the
 first build: every later reading must be on that file.
 
+**Built 20.11.2026** (Slurm 22861097, 1 min 7 s, #427), from
+`dh-unibe/image-text_federal-minutes-testset` at revision `36b190b14a3e…`:
+`lines: 2751`, `documents: 111`, `chars: 114960` — the card's numbers, all
+three. `data/val.jsonl` md5 **`6d3417ef10f2f152a3de6db23f7b8c4e`**; every
+reading in `readings/` is on that file. The first attempt (Slurm 22860979)
+died in 34 s because the batch file bound `/scratch` without `/rs_scratch`
+(#431).
+
 ### The scorer measured on it (L2 on an external reference, #875 part 1)
 
 L2 (agentic_historian#491) measured the scorer on the project's own validation
