@@ -164,3 +164,37 @@ def test_the_cache_reaches_the_container(name):
         f"{name} exports HF_DATASETS_CACHE but never hands it to apptainer, so the "
         "container falls back to $HF_HOME/datasets"
     )
+
+
+#: A bind of /scratch that does not also bind /rs_scratch. On UBELIX
+#: /scratch/network/users/$USER resolves to /rs_scratch/users/$USER, so inside the
+#: container every path under it is missing: materialize_benchmark.sbatch died 34 s
+#: in on 20.11.2026 (Slurm 22860979, "No such file or directory:
+#: '/scratch/network/users'") making its HF_DATASETS_CACHE (#427).
+_BINDS_SCRATCH = re.compile(r"--bind\s+/scratch(?::/scratch)?(?=\s)")
+_BINDS_RS_SCRATCH = re.compile(r"--bind\s+/rs_scratch(?::/rs_scratch)?(?=\s)")
+
+
+def _apptainer_calls(text: str) -> list[str]:
+    """Each ``apptainer exec`` with its continuation lines joined."""
+    joined = re.sub(r"\\\n", " ", text)
+    return [line for line in joined.splitlines() if "apptainer exec" in line]
+
+
+@pytest.mark.parametrize("path", SCRIPTS, ids=_ids(SCRIPTS))
+def test_a_container_that_sees_scratch_also_sees_where_it_points(path):
+    for call in _apptainer_calls(path.read_text()):
+        if _BINDS_SCRATCH.search(call):
+            assert _BINDS_RS_SCRATCH.search(call), (
+                f"{path.name}: binds /scratch but not /rs_scratch, so "
+                f"/scratch/network/users/$USER is missing in the container: {call.strip()[:160]}")
+
+
+def test_the_bind_rule_catches_the_materialize_failure():
+    broken = ("apptainer exec --bind /storage --bind /scratch \\\n"
+              "  --env X=1 img.sif python x.py\n")
+    fixed = broken.replace("--bind /scratch ", "--bind /scratch --bind /rs_scratch ")
+    [call] = _apptainer_calls(broken)
+    assert _BINDS_SCRATCH.search(call) and not _BINDS_RS_SCRATCH.search(call)
+    [call] = _apptainer_calls(fixed)
+    assert _BINDS_RS_SCRATCH.search(call)
