@@ -43,7 +43,7 @@ export HF_DATASETS_CACHE=/scratch/network/users/$USER/hf_datasets
 mkdir -p "$HF_DATASETS_CACHE"
 if [ -s "$HOME/.hf_token" ]; then HF_TOKEN=$(tr -d '[:space:]' < "$HOME/.hf_token"); export HF_TOKEN; fi
 echo "== $HF_REPO / $PROJECT -> $OUT on $(hostname) $(date -Is)"
-apptainer exec --bind /storage --bind /scratch \
+apptainer exec --bind /storage --bind /scratch --bind /rs_scratch \
   --env PYTHONPATH="$REPO/src:$REPO/engines" --env HF_HOME="$HF_HOME" \
   --env HF_DATASETS_CACHE="$HF_DATASETS_CACHE" --env HF_TOKEN="${HF_TOKEN:-}" \
   "$HOME/ubelix/vlm-train-tf5.sif" /opt/vlm-train/bin/python \

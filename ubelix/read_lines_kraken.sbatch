@@ -34,7 +34,7 @@ READINGS=${READINGS:-$E/readings}
 [ -s "$E/data/val.jsonl" ] || { echo "no $E/data/val.jsonl — run ubelix/materialize_benchmark.sbatch first" >&2; exit 2; }
 SIF=${SIF:-$HOME/ubelix/kraken-train.sif}
 echo "== $LABEL: $MODEL on $E on $(hostname) $(date -Is)"
-apptainer exec --bind /storage --bind /scratch \
+apptainer exec --bind /storage --bind /scratch --bind /rs_scratch \
   --env PYTHONPATH="$REPO/src" \
   "$SIF" /opt/kraken-train/bin/python "$REPO/scripts/read_lines_kraken.py" \
   --model "$MODEL" --val-jsonl "$E/data/val.jsonl" --data-root "$E" \
