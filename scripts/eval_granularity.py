@@ -190,8 +190,27 @@ def fit(img, max_pixels: int):
     return img.resize((max(1, int(w * s)), max(1, int(h * s))), Image.LANCZOS)
 
 
+def clamp_box(left: int, top: int, right: int, bottom: int,
+              width: int, height: int) -> tuple[int, int, int, int] | None:
+    """The part of a box that lies on the image, or None when nothing does.
+
+    Every coordinate is clamped to the page on both sides. Clamping ``left``
+    only from below and ``right`` only from above turned a region whose lines
+    the PageXML puts beyond the image edge into ``right < left``, and PIL's
+    ``crop`` ended a 17-hour measurement on asteraix (20./21.11.2026).
+    """
+    left, right = min(max(left, 0), width), min(max(right, 0), width)
+    top, bottom = min(max(top, 0), height), min(max(bottom, 0), height)
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
 def region_boxes(xml_text: str, page_size: tuple[int, int], pad: int = REGION_PAD):
-    """``(region_id, n_lines, (l, t, r, b), text)`` per TextRegion with transcribed lines.
+    """``(region_id, n_lines, (l, t, r, b) or None, text)`` per TextRegion with transcribed lines.
+
+    The box is None when the region lies entirely off the image; the caller
+    skips it and says so (see :func:`clamp_box`).
 
     The box is the union of the region's line boxes, padded and clamped to the
     page — not the region's own Coords, which in Transkribus exports often cover
@@ -206,12 +225,9 @@ def region_boxes(xml_text: str, page_size: tuple[int, int], pad: int = REGION_PA
         boxes = line_boxes(ET.tostring(region, encoding="unicode"))
         if not boxes:
             continue
-        box = (
-            max(min(b.left for b in boxes) - pad, 0),
-            max(min(b.top for b in boxes) - pad, 0),
-            min(max(b.right for b in boxes) + pad, width),
-            min(max(b.bottom for b in boxes) + pad, height),
-        )
+        box = clamp_box(min(b.left for b in boxes) - pad, min(b.top for b in boxes) - pad,
+                        max(b.right for b in boxes) + pad, max(b.bottom for b in boxes) + pad,
+                        width, height)
         yield region.get("id"), len(boxes), box, "\n".join(b.text for b in boxes)
 
 
@@ -269,10 +285,9 @@ def block_boxes(xml_text: str, page_size: tuple[int, int], block_lines: int = DE
     for run in runs:
         for start in range(0, len(run), block_lines):
             block = run[start:start + block_lines]
-            box = (max(min(b.left for b in block) - pad, 0),
-                   max(min(b.top for b in block) - pad, 0),
-                   min(max(b.right for b in block) + pad, width),
-                   min(max(b.bottom for b in block) + pad, height))
+            box = clamp_box(min(b.left for b in block) - pad, min(b.top for b in block) - pad,
+                            max(b.right for b in block) + pad, max(b.bottom for b in block) + pad,
+                            width, height)
             yield n, len(block), box, "\n".join(b.text for b in block)
             n += 1
 
@@ -284,8 +299,9 @@ def summarise(level: str, items: list[dict]) -> dict:
         "level": level,
         "n": len(items),
         "ref_chars": score.chars,
-        "cer": round(score.cer, 4),
-        "length_ratio": round(score.length_ratio, 3),
+        # None, not 0: a level with nothing measured (yet) has no rate.
+        "cer": None if score.cer is None else round(score.cer, 4),
+        "length_ratio": None if score.length_ratio is None else round(score.length_ratio, 3),
         "collapsed<1/3": sum(1 for i in items if len(flat(i["hyp"])) < len(flat(i["ref"])) / 3),
         "runaway>1.5x": sum(1 for i in items if len(flat(i["hyp"])) > 1.5 * len(flat(i["ref"]))),
         "finish": dict(Counter(i.get("finish") for i in items)),
@@ -426,6 +442,52 @@ def main() -> int:
     results: dict[str, list[dict]] = {k: [] for k in LEVELS}
     if args.recognize:
         results["page@recognize"] = []
+    skipped: list[dict] = []
+    done_pages: list[str] = []
+
+    def report(complete: bool, error: str | None = None) -> dict:
+        return {"model": args.model, "jsonl": None if page_set else args.jsonl,
+                "page_set": page_set and {"path": str(args.page_set), **page_set},
+                **budgets.record(), "pages": pages, "summary": [summarise(k, v) for k, v in results.items()],
+                "block_lines": args.block_lines,
+                "regions_by_line_count": {k: by_line_count(results[k])
+                                          for k in ("block@block_budget", "region@page_budget",
+                                                    "region@line_budget")},
+                # A partial report says how far it got: a 17-hour run that died in
+                # its last third used to leave nothing at all (asteraix, 21.11.2026).
+                "complete": complete, "error": error, "pages_done": len(done_pages),
+                "skipped": skipped, "items": results}
+
+    def write(rec: dict) -> None:
+        tmp = args.out.with_name(args.out.name + ".part")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(args.out)
+
+    try:
+        _measure(args, client, levels, root, rows, pages, results, skipped, done_pages,
+                 lambda: write(report(False)))
+    except BaseException as exc:
+        write(report(False, f"{type(exc).__name__}: {exc}"))
+        print(f"partial report ({len(done_pages)} of {len(pages)} pages, "
+              f"{sum(len(v) for v in results.values())} readings) in {args.out}", flush=True)
+        raise
+    final = report(True)
+    write(final)
+    for s in final["summary"]:
+        print(json.dumps(s, ensure_ascii=False))
+    print(json.dumps(final["regions_by_line_count"], ensure_ascii=False))
+    if skipped:
+        print(f"skipped {len(skipped)} crop(s) off the image — listed under 'skipped'", flush=True)
+    return 0
+
+
+#: Pages between two partial writes of the report. A write is the whole report,
+#: so not after every page; 25 of 733 is a loss of minutes, not hours.
+CHECKPOINT_PAGES = 25
+
+
+def _measure(args, client, levels, root, rows, pages, results, skipped, done_pages, checkpoint) -> None:
+    from PIL import Image
 
     px, tok = levels["line"]
     opened = (None, None)
@@ -436,6 +498,7 @@ def main() -> int:
         hyp, fin, sec = client.chat(fit(img, px), tok)
         results["line"].append({"page": r["page"], "ref": r["text"], "hyp": hyp, "finish": fin, "sec": sec})
     print(f"lines: {len(rows)}", flush=True)
+    checkpoint()
 
     for p in pages:
         xml = root / p
@@ -444,11 +507,19 @@ def main() -> int:
         xml_text = xml.read_text(encoding="utf-8")
         px, tok = levels["block@block_budget"]
         for bid, nlines, box, ref in block_boxes(xml_text, img.size, args.block_lines):
+            if box is None:
+                skipped.append({"page": p, "level": "block", "id": bid, "lines": nlines,
+                                "reason": "off the image"})
+                continue
             hyp, fin, sec = client.chat(fit(img.crop(box), px), tok)
             results["block@block_budget"].append({"page": p, "block": bid, "lines": nlines,
                                                   "size": (box[2] - box[0], box[3] - box[1]),
                                                   "ref": ref, "hyp": hyp, "finish": fin, "sec": sec})
         for rid, nlines, box, ref in region_boxes(xml_text, img.size):
+            if box is None:
+                skipped.append({"page": p, "level": "region", "id": rid, "lines": nlines,
+                                "reason": "off the image"})
+                continue
             crop = img.crop(box)
             for level in ("region@page_budget", "region@line_budget"):
                 px, tok = levels[level]
@@ -464,21 +535,9 @@ def main() -> int:
             hyp, fin, sec = client.recognize(xml.with_suffix(".jpg"))
             results["page@recognize"].append({"page": p, "ref": ref, "hyp": hyp, "finish": fin, "sec": sec})
         print(f"page {p}", flush=True)
-
-    summary = [summarise(k, v) for k, v in results.items()]
-    report = {"model": args.model, "jsonl": None if page_set else args.jsonl,
-              "page_set": page_set and {"path": str(args.page_set), **page_set},
-              **budgets.record(), "pages": pages, "summary": summary,
-              "block_lines": args.block_lines,
-              "regions_by_line_count": {k: by_line_count(results[k])
-                                        for k in ("block@block_budget", "region@page_budget",
-                                                  "region@line_budget")},
-              "items": results}
-    args.out.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    for s in summary:
-        print(json.dumps(s, ensure_ascii=False))
-    print(json.dumps(report["regions_by_line_count"], ensure_ascii=False))
-    return 0
+        done_pages.append(p)
+        if len(done_pages) % CHECKPOINT_PAGES == 0:
+            checkpoint()
 
 
 if __name__ == "__main__":

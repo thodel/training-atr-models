@@ -235,3 +235,111 @@ def test_line_and_page_references_come_from_the_same_page(tmp_path):
     root = _page_set(tmp_path, xml)
     rows = page_lines(root, "data/pages/aaa_1.xml", (1000, 800))
     assert "\n".join(r["text"] for r in rows) == page_sample(root / "data/pages/aaa_1.xml").text
+
+
+# ── off the image, and a report that survives a crash (asteraix, 21.11.2026) ──
+
+def test_a_region_or_block_off_the_image_has_no_box():
+    """The PageXML put a region's lines beyond the image edge; clamping each side
+    from one direction only gave right < left, and PIL ended a 17-hour run."""
+    xml = _page(_region("r1", _line("l1", 100, 100, 500, 140, "eins")),
+                _region("off", _line("l2", 1200, 100, 1400, 140, "draussen")))
+    regions = {rid: box for rid, _, box, _ in region_boxes(xml, (1000, 800), pad=12)}
+    assert regions == {"r1": (88, 88, 512, 152), "off": None}
+    blocks = [box for _, _, box, _ in block_boxes(xml, (1000, 800), 6, pad=12)]
+    assert blocks == [(88, 88, 512, 152), None]
+
+
+def test_clamp_box_keeps_what_is_on_the_image():
+    from scripts.eval_granularity import clamp_box
+    assert clamp_box(-5, -5, 50, 60, 100, 100) == (0, 0, 50, 60)
+    assert clamp_box(90, 90, 150, 150, 100, 100) == (90, 90, 100, 100)
+    assert clamp_box(120, 10, 150, 20, 100, 100) is None
+    assert clamp_box(10, 10, 10, 20, 100, 100) is None
+
+
+def test_an_empty_level_summarises_to_nothing_measured():
+    s = summarise("page@page_budget", [])
+    assert s["n"] == 0 and s["cer"] is None and s["length_ratio"] is None
+
+
+class _FakeClient:
+    """Answers every crop with the same word; `fail_at` raises on that call."""
+
+    calls = 0
+    fail_at: int | None = None
+    on_call = None
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def chat(self, img, max_tokens):
+        type(self).calls += 1
+        if self.on_call:
+            self.on_call(type(self).calls)
+        if self.fail_at and type(self).calls >= self.fail_at:
+            raise RuntimeError("the server went away")
+        return "eins", "stop", 0.0
+
+
+def _run_main(monkeypatch, root, out, client, *extra):
+    import sys
+
+    import scripts.eval_granularity as eg
+    client.calls = 0
+    monkeypatch.setattr(eg, "Client", client)
+    monkeypatch.setattr(sys, "argv", ["eval_granularity.py", "--page-set", str(root), "--model", "m",
+                                      "--out", str(out), "--base-url", "http://x", "--no-auth", *extra])
+    return eg.main()
+
+
+def test_a_crop_off_the_image_is_skipped_and_said(tmp_path, monkeypatch):
+    xml = _page(_region("r1", _line("l1", 100, 100, 500, 140, "eins")),
+                _region("off", _line("l2", 1200, 100, 1400, 140, "draussen")))
+    root = _page_set(tmp_path / "set", xml)
+    out = tmp_path / "report.json"
+
+    class Client(_FakeClient):
+        fail_at = None
+    assert _run_main(monkeypatch, root, out, Client) == 0
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["complete"] is True and report["error"] is None
+    assert {(s["level"], s["id"]) for s in report["skipped"]} == {("region", "off"), ("block", 1)}
+    assert len(report["items"]["region@page_budget"]) == 1
+    assert not (tmp_path / "report.json.part").exists()
+
+
+def test_a_crash_leaves_a_partial_report_with_its_error(tmp_path, monkeypatch):
+    xml = _page(_region("r1", _line("l1", 100, 100, 500, 140, "eins"),
+                        _line("l2", 90, 150, 520, 190, "zwei")))
+    root = _page_set(tmp_path / "set", xml)
+    out = tmp_path / "report.json"
+
+    class Client(_FakeClient):
+        fail_at = 3                     # two lines read, the first block fails
+    with pytest.raises(RuntimeError, match="went away"):
+        _run_main(monkeypatch, root, out, Client)
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["complete"] is False
+    assert report["error"] == "RuntimeError: the server went away"
+    assert len(report["items"]["line"]) == 2 and report["pages_done"] == 0
+    line = next(s for s in report["summary"] if s["level"] == "line")
+    assert line["n"] == 2 and line["cer"] == 0.5          # "zwei" read as "eins"
+
+
+def test_the_lines_are_on_disk_before_the_first_block_is_asked(tmp_path, monkeypatch):
+    """A SIGKILL runs no except clause: the checkpoint after the line level is
+    what a killed run leaves."""
+    xml = _page(_region("r1", _line("l1", 100, 100, 500, 140, "eins")))
+    root = _page_set(tmp_path / "set", xml)
+    out = tmp_path / "report.json"
+    seen = {}
+
+    class Client(_FakeClient):
+        fail_at = None
+
+        def on_call(self, n):
+            if n == 2:                  # the first block: the lines must be written
+                seen.update(json.loads(out.read_text(encoding="utf-8")))
+    assert _run_main(monkeypatch, root, out, Client) == 0
+    assert seen["complete"] is False and len(seen["items"]["line"]) == 1
