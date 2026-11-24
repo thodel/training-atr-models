@@ -770,3 +770,53 @@ The engine verdict judges the plausible band (both readings under CER 0.3) and
 prints the share over all pairs beside it: garbage is the veto's job, and a
 scorer that only separates garbage from text would pass on all pairs and
 still give L4 nothing to route by.
+
+### Measured (24.11.2026, #430)
+
+Eight readings, all 2,751 lines, all on `val.jsonl` md5 `6d3417ef…`:
+
+| engine | reading | CER |
+|---|---|---:|
+| VLM line | `qwen35-4b-xix-v2` (Slurm 22908085) | 0.068 |
+| VLM line | `qwen35-4b-kurrent-xvi-xix-v1` (22908283) | 0.099 |
+| VLM line | `qwen3vl-xix-v2` (22861172) | 0.076 |
+| VLM page | `qwen35-4b-kurrent-xvi-xix-page-v2` (22861174) | 0.385 |
+| VLM page | `olmocr2-7b-kurrent-xvi-xix-px4m-native-v2` (22861175) | 0.258 |
+| kraken | `kraken-german-xix-v1-baselines` | 0.125 |
+| TrOCR | `trocr-german-kurrent-xvi-xix-full-v1` | 0.058 |
+| TrOCR | `trocr-german-kurrent-xvi-xix-from-kurrent-v2` | 0.070 |
+
+The CERs are those of the reports (`cer`, over all characters). The mean per
+line that `measure_scorer_tau` prints is a different number.
+
+- **kraken:** the box reader read 38.6 %, far from the 11.18 % of `ketos test`.
+  Read with `LINE_TYPE=baselines`, it gave 12.5 %, and that reading is the one
+  measured.
+- **VLM line arms:** the two Qwen3.5 arms came back with exactly the CER of
+  earlier reports of the same adapters under other tags (`qwen35-4b-v2` 0.06802,
+  `qwen35-4b-kurrent-xvi-xix` 0.09854). The rebuilt set measures as the lost one did.
+- **Not measured:** the Gemma arms, because `score_federal_minutes` asks with a
+  fixed line budget, not the trained `max_soft_tokens`.
+
+Files: `readings/tau.{json,txt}`, `readings/margin-{generic,xix}.{json,txt}`,
+`readings/contamination.json`.
+
+| reading | generic `de` | xix `de\|Swiss\|protocol\|19-20` | decides |
+|---|---:|---:|---|
+| contamination: shared documents | 0 | 0 | clean; τ is a lower bound |
+| contamination: mean z of the references | +1.57 | +5.89 | nothing memorised (that would sit far below 0); the material is foreign to both cells, to the XIX cell most |
+| median τ, plausible band | **0.25** | **0.24** | < 0.3 → **veto only; L4 and the matrix (#110) fall.** L2 said the same on the own draw, so the scorer, not the draw, was the limit |
+| τ per model, plausible | 0.15–0.45 | 0.14–0.43 | highest for kraken (0.45): its errors are non-fluent and cost bits. Lowest for the page arms: fluent text past the line costs none |
+| pairs `vlm\|vlm`, plausible | 0.60 | 0.59 | L2's 0.57: unseen material does not help |
+| pairs across engines, plausible | 0.63 | 0.63 | < 0.7 → **L4 stays unbuilt** |
+| pairs `kraken\|trocr` | 0.77 | 0.77 | ≥ 0.7, the one pair that passes |
+| pairs `kraken\|vlm` / `trocr\|vlm` | 0.66 / 0.59 | 0.65 / 0.58 | < 0.7: against a VLM's fluent errors the scorer cannot tell |
+| margin 2.5: plausible lost / fatal lines | 1.9 % / **1.5 %** | 2.1 % / **1.6 %** | fatal > 1 % → the margin moves |
+| `recommended_margin` | **3.0** (1.0 % / 0.9 %, 30 % of the garbage) | 3.0 (1.1 % / 1.0 %) | the fusion's margin goes to 3.0 (agentic_historian#902) |
+
+The specialised XIX cell is no better than the generic one, on any line of the
+table. That is a second argument against the matrix, beside τ.
+
+The one pair over 0.7, kraken|TrOCR, is no reason to build L4 for it alone.
+What separates kraken there is the kind of error (non-fluent), which is the
+veto's job. It is not a fit between model and holding that routing could use.
