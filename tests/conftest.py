@@ -61,6 +61,136 @@ TEST_HOST_ID = "test-trainer"
 os.environ["ATR_TRAIN_HOST_ID"] = TEST_HOST_ID
 os.environ["ATR_TRAIN_LEGACY_JOB_HOST"] = "idhefix"
 
+# ── the Hub ──────────────────────────────────────────────────────────────────
+# On 17.11.2026 a run of this suite on asteraix created 17 private repos under
+# dh-unibe, with "weights" of 1 to 7 bytes: qwen3vl-thun-v1,
+# kept-asteraix-completed, qwen3vl-expired-while-queued, … No test called the
+# hub on purpose. Every pipeline test that reaches `completed` runs the runner's
+# auto-publish (#88), and three things on that box made it fire:
+#
+# * asteraix's `.env` says ATR_TRAIN_AUTO_PUBLISH_MIN_ACCURACY=79, and a
+#   TrainerSettings built without `_env_file=None` reads it — nothing here
+#   pinned it, as the roots below are pinned;
+# * the fake runners score 94.5–95 %, above 79;
+# * `autopublish.decide()` accepts the token `hf auth login` stored, and
+#   `HubUploader()` is a real `HfApi`. Not HF_TOKEN: the stored token (#33).
+#
+# The upload fails inside `_maybe_publish`, which swallows every exception so
+# that a finished model is not a failed job — so the suite stays green while it
+# writes to the hub. Hence three layers, each enough on its own — auto-publish
+# off, no token reachable, every write on the hub raising — and a check at
+# teardown that turns a swallowed attempt into a red test.
+
+#: Every variable huggingface_hub, or the trainer, reads a token from.
+HF_TOKEN_ENV = ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN")
+#: Where the suite tells huggingface_hub that `hf auth login` stored its token:
+#: a file that does not exist. huggingface_hub reads it at import, so it is set
+#: here, before any test module imports it; the fixture below pins it per test.
+NO_HF_TOKEN_FILE = "/nonexistent/atr-training-test-hf/token"
+for _name in HF_TOKEN_ENV:
+    os.environ.pop(_name, None)
+os.environ["HF_TOKEN_PATH"] = NO_HF_TOKEN_FILE
+os.environ["ATR_TRAIN_AUTO_PUBLISH_MIN_ACCURACY"] = "0"
+
+#: `HfApi` methods that change something on the hub, by verb. Reads are left
+#: alone: they leave nothing behind, and without a token they see only public
+#: repos. A method huggingface_hub adds later is caught if its verb is here.
+HUB_WRITE_PREFIXES = (
+    "accept_", "add_", "batch_", "cancel_", "change_", "comment_", "copy_",
+    "create_", "delete_", "disable_", "duplicate_", "edit_", "enable_", "grant_",
+    "hide_", "like", "merge_", "move_", "pause_", "permanently_delete_",
+    "preupload_", "reject_", "rename_", "request_", "rerun_", "restart_",
+    "resume_", "run_", "scale_", "set_", "super_squash_", "suspend_", "sync_",
+    "trigger_", "unlike", "update_", "upload_",
+)
+
+#: What the current test tried to do on the hub; filled by the refusals below,
+#: emptied per test.
+_HUB_ATTEMPTS: list[str] = []
+
+
+class HubCallInTest(RuntimeError):
+    """A test reached for the real Hugging Face Hub."""
+
+
+def hub_write_names(hf_api_cls) -> list[str]:
+    """The methods of ``HfApi`` the suite refuses."""
+    return sorted(name for name, value in vars(hf_api_cls).items()
+                  if callable(value) and not name.startswith("_")
+                  and name.startswith(HUB_WRITE_PREFIXES))
+
+
+def _refuse(what: str):
+    def refuse(*args, **kwargs):
+        _HUB_ATTEMPTS.append(what)
+        raise HubCallInTest(
+            f"{what} was called from a test. The suite never writes to the hub "
+            "(17.11.2026: 17 dummy repos under dh-unibe) — use a fake Uploader "
+            "such as tests/test_training_publish.py::FakeUploader.")
+    return refuse
+
+
+@pytest.fixture
+def hub_attempts() -> list[str]:
+    """What the current test tried to do on the hub, in order.
+
+    A test that provokes an attempt on purpose, to show it is refused, reads
+    this and clears it; anything left at teardown fails the test.
+    """
+    return _HUB_ATTEMPTS
+
+
+@pytest.fixture(autouse=True)
+def _no_test_reaches_the_hub(monkeypatch, request):
+    """Auto-publish off, no token, every hub write raising — per test.
+
+    Per test as well as at import: a test that sets HF_TOKEN or the threshold
+    gets the suite's values back afterwards instead of handing them on.
+
+    The attempts are checked at teardown because the one path that did reach
+    the hub, ``_maybe_publish``, catches ``BaseException`` and writes "not
+    published: …" on the record. A refusal alone would leave the suite green,
+    exactly as the 17 uploads did.
+    """
+    _HUB_ATTEMPTS.clear()
+    for name in HF_TOKEN_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HF_TOKEN_PATH", NO_HF_TOKEN_FILE)
+    monkeypatch.setenv("ATR_TRAIN_AUTO_PUBLISH_MIN_ACCURACY", "0")
+
+    # The trainer's own door to the hub — refused whether or not huggingface_hub
+    # is installed (the suite's venv lacks it; asteraix's has it).
+    from atr_training import publish
+
+    monkeypatch.setattr(publish.HubUploader, "__init__",
+                        _refuse("atr_training.publish.HubUploader()"))
+
+    try:
+        import huggingface_hub as hf  # noqa: PLC0415 — only where installed
+        from huggingface_hub import constants, hf_api  # noqa: PLC0415
+    except ImportError:
+        hf = None
+    if hf is not None:
+        monkeypatch.setattr(constants, "HF_TOKEN_PATH", NO_HF_TOKEN_FILE)
+        monkeypatch.setattr(constants, "HF_STORED_TOKENS_PATH",
+                            os.path.join(os.path.dirname(NO_HF_TOKEN_FILE), "stored_tokens"))
+        for name in hub_write_names(hf_api.HfApi):
+            refuse = _refuse(f"HfApi.{name}")
+            monkeypatch.setattr(hf_api.HfApi, name, refuse)
+            # `huggingface_hub.create_repo` and friends are methods bound, at
+            # import, to a module-level HfApi(): patching the class misses them.
+            for module in (hf_api, hf):
+                if name in vars(module):
+                    monkeypatch.setattr(module, name, refuse)
+
+    yield
+    attempts = list(_HUB_ATTEMPTS)
+    _HUB_ATTEMPTS.clear()
+    if attempts:
+        pytest.fail(f"{request.node.nodeid} reached for the Hugging Face Hub: "
+                    f"{', '.join(attempts)} — refused, but a test must not try "
+                    "(tests/conftest.py, 'the Hub')", pytrace=False)
+
 
 @pytest.fixture(autouse=True)
 def _artefact_cache_never_touches_home(tmp_path_factory, monkeypatch):
