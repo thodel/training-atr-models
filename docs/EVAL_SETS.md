@@ -578,6 +578,38 @@ read from it): `cd ~/training-atr-models && git pull`.
    `reserved_pages` in the record should have grown past the October corpus's
    1318, by the pages of the 130 new documents.
 
+5. **A line arm needs the lines of these pages** (agentic_historian#903, #59).
+   `vlm-pages-test` holds whole pages, and the evaluator reads every row's
+   `image` as it is: `rescore_on_shared_draw` would hand a line arm (such as
+   `qwen3.5-4b-german-kurrent-xvi-xix-line-v2`) whole pages at its line pixel
+   budget, and that CER measures nothing it was trained to do. Its own corpus
+   has no line of these documents — they are reserved — so
+   `scripts/lines_of_pages.py` has nothing to join. `scripts/build_line_benchmark.py`
+   cuts them from the frozen pages by the training rule (`line_samples`, the
+   same lines `eval_granularity.py --page-set` reads at its line level) and
+   writes crops, `lines.jsonl` with each row's `page` — the documents
+   `--heldout` compares — and `benchmark.json`, beside the page set, which it
+   leaves untouched. Once per side, in the image, CPU only:
+
+   ```bash
+   OUT=/storage/research/wbkolleg_dh_1/Textrecognition_Training/eval_sets/german-kurrent-xvi-xix-v1
+   apptainer exec --bind /storage/research --env PYTHONPATH=$PWD/src ~/ubelix/vlm-train.sif \
+     python scripts/build_line_benchmark.py --page-set $OUT/vlm-pages-test --out $OUT/vlm-lines-test
+   ```
+
+   Then the line arm, held out:
+
+   ```bash
+   JOB=<line arm id> DRAW_FILE=$OUT/vlm-lines-test/lines.jsonl DATA_ROOT=$OUT/vlm-lines-test \
+     LABEL=german-kurrent-xvi-xix-v1-test-lines HELDOUT=1 \
+     ubelix/submit.sh ubelix/rescore_on_shared_draw.sbatch -- --time=<…>
+   ```
+
+   A `--draw-file` lifts the run's `eval_samples` to every line of it, so the
+   time is the line count's, not 200 samples'. The number is a line CER on the
+   pages page-v2 reads whole: the two sit side by side per level, they do not
+   stand in for each other.
+
 ---
 
 ## The Federal Council lines (`federal-minutes`, agentic_historian#875)
