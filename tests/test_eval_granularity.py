@@ -343,3 +343,66 @@ def test_the_lines_are_on_disk_before_the_first_block_is_asked(tmp_path, monkeyp
                 seen.update(json.loads(out.read_text(encoding="utf-8")))
     assert _run_main(monkeypatch, root, out, Client) == 0
     assert seen["complete"] is False and len(seen["items"]["line"]) == 1
+
+
+# ── the usable line: a reading above 15 % CER is useless (26.11.2026) ───────
+
+from scripts.eval_granularity import USABLE_CER, page_interval, verdict  # noqa: E402
+
+
+def _items(per_page: dict[str, list[tuple[str, str]]]) -> list[dict]:
+    return [{"page": p, "ref": r, "hyp": h, "finish": "stop", "sec": 0}
+            for p, pairs in per_page.items() for r, h in pairs]
+
+
+@pytest.mark.parametrize("cer, ci, want", [
+    (0.388, [0.36, 0.42], "useless"),        # page-v1, regions at the page budget
+    (0.10, [0.08, 0.13], "usable"),
+    (0.15, [0.15, 0.15], "usable"),
+    (0.14, [0.10, 0.19], "undecided"),
+    (0.16, None, "useless"),
+    (0.15, None, "usable"),                  # one page: the point decides
+    (None, None, "nothing measured"),
+])
+def test_the_verdict_asks_the_whole_interval(cer, ci, want):
+    assert USABLE_CER == 0.15
+    assert verdict(cer, ci) == want
+
+
+def test_a_level_says_its_verdict_and_how_many_items_are_usable():
+    items = _items({"p1": [("abcdefghij", "abcdefghij"), ("abcdefghij", "abcdefghiX")],
+                    "p2": [("abcdefghij", "abcdefgXXX"), ("abcdefghijklmnopqrst", "abcdefghijklmnopqXXX")]})
+    s = summarise("line", items)
+    assert s["usable_items"] == 3 and s["usable_share"] == 0.75   # 0.0, 0.1, 0.15 — not 0.3
+    assert s["cer_ci_pages"] is not None and s["verdict"] in ("usable", "undecided", "useless")
+
+
+def test_the_interval_resamples_pages_and_is_reproducible():
+    good = {f"g{i}": [("abcdefghij", "abcdefghij")] for i in range(5)}
+    bad = {f"b{i}": [("abcdefghij", "XXXXXXXXXX")] for i in range(5)}
+    items = _items(good | bad)
+    lo, hi = page_interval(items)
+    assert lo < 0.5 < hi and page_interval(items) == [lo, hi]
+    assert page_interval(_items({"only": [("ab", "ab")]})) is None
+
+
+def test_a_useless_level_is_called_useless():
+    items = _items({f"p{i}": [("abcdefghij", "abcdeXXXXX")] for i in range(4)})   # 0.5 everywhere
+    s = summarise("page@page_budget", items)
+    assert s["cer"] == 0.5 and s["cer_ci_pages"] == [0.5, 0.5] and s["verdict"] == "useless"
+    assert s["usable_items"] == 0 and s["usable_share"] == 0.0
+
+
+def test_an_empty_level_has_no_verdict():
+    s = summarise("block@block_budget", [])
+    assert s["verdict"] == "nothing measured" and s["usable_share"] is None and s["cer_ci_pages"] is None
+
+
+def test_the_summary_uses_the_page_interval_not_the_point():
+    """Three clean pages and one bad one: the corpus CER is under the line,
+    the pages allow far more — undecided, not usable."""
+    items = _items({"a": [("abcdefghij", "abcdefghij")], "b": [("abcdefghij", "abcdefghij")],
+                    "c": [("abcdefghij", "abcdefghij")], "d": [("abcdefghij", "abcdeXXXXX")]})
+    s = summarise("page@page_budget", items)
+    assert s["cer"] == 0.125 and s["cer_ci_pages"][1] > 0.15
+    assert s["verdict"] == "undecided"

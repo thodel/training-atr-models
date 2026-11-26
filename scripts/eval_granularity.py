@@ -25,6 +25,15 @@ Ground truth and geometry come from the training code (`line_boxes`,
 stored CER. Texts are compared with whitespace collapsed, so a paragraph read as
 one long line is not penalised for its missing line breaks.
 
+Every level is held against the project's usable line (26.11.2026): **a reading
+with a CER above 15 % is useless.** The summary gives each level a ``verdict``
+against a 95 % interval from resampling pages:
+``useless`` if the whole interval is above 15 %, ``usable`` if all of it is at or
+under, ``undecided`` if it crosses the line. It also counts the crops at or under
+15 % (``usable_items``, ``usable_share``). Pages within a document share a hand,
+so the page interval is narrower than a document interval would be: an
+optimistic bound.
+
     # against a vLLM you started yourself — the normal case
     .venvs/gateway/bin/python scripts/eval_granularity.py \\
         --root <job dir with data/<jsonl> and data/pages/> --jsonl val_heldout.jsonl \\
@@ -76,6 +85,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -89,7 +99,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from atr_training.contracts import VLM_PIXEL_BUDGET, VLM_PROMPT  # noqa: E402
 from atr_training.pagexml import _localname, line_boxes  # noqa: E402
-from atr_training.textmetrics import score_pairs  # noqa: E402
+from atr_training.textmetrics import levenshtein, score_pairs  # noqa: E402
 from atr_training.vlm_dataset import line_samples, page_sample  # noqa: E402
 
 LINE_PX, BLOCK_PX, PAGE_PX = (VLM_PIXEL_BUDGET[k] for k in ("line", "block", "page"))
@@ -292,15 +302,89 @@ def block_boxes(xml_text: str, page_size: tuple[int, int], block_lines: int = DE
             n += 1
 
 
+#: The project's line for a usable reading (agentic_historian, 26.11.2026): a
+#: reading with a CER above 15 % is useless, whatever it beats. Every level is
+#: held against it, so a table of levels says which can be used, not only
+#: which is least bad.
+USABLE_CER = 0.15
+#: Resamples of pages for the interval behind the verdict, and their seed.
+INTERVAL_RESAMPLES = 1000
+INTERVAL_SEED = 903
+
+#: Per-item edits, kept by item so a checkpoint does not recompute every page:
+#: the distance is plain Python, and a 1,300-character page costs ~2M steps.
+_EDITS: dict[int, tuple[str, str, int]] = {}
+
+
+def item_edits(item: dict) -> tuple[int, int]:
+    """``(edits, reference chars)`` of one item, whitespace collapsed."""
+    hyp, ref = flat(item["hyp"]), flat(item["ref"])
+    hit = _EDITS.get(id(item))
+    if hit is None or hit[0] != hyp or hit[1] != ref:
+        hit = (hyp, ref, levenshtein(hyp, ref))
+        _EDITS[id(item)] = hit
+    return hit[2], len(ref)
+
+
+def page_interval(items: list[dict], n: int = INTERVAL_RESAMPLES,
+                  seed: int = INTERVAL_SEED) -> list[float] | None:
+    """95 % interval of the corpus CER from resampling **pages** with
+    replacement. Pages, not documents: the page set does not say which pages
+    share a hand, so the interval is narrower than a document interval would
+    be — an optimistic bound, said where it is used. None with fewer than two
+    pages."""
+    pages: dict[str, list[int]] = {}
+    for it in items:
+        e, c = item_edits(it)
+        acc = pages.setdefault(str(it.get("page")), [0, 0])
+        acc[0] += e
+        acc[1] += c
+    names = sorted(pages)
+    if len(names) < 2:
+        return None
+    rng = random.Random(seed)
+    draws = []
+    for _ in range(n):
+        pick = [pages[names[rng.randrange(len(names))]] for _ in names]
+        chars = sum(c for _, c in pick)
+        draws.append(sum(e for e, _ in pick) / chars if chars else 0.0)
+    draws.sort()
+    return [round(draws[int(0.025 * (n - 1))], 4), round(draws[int(0.975 * (n - 1))], 4)]
+
+
+def verdict(cer: float | None, ci: list[float] | None) -> str:
+    """``usable`` / ``useless`` / ``undecided`` against :data:`USABLE_CER`: only
+    a side the whole interval is on counts; without one the point decides."""
+    if cer is None:
+        return "nothing measured"
+    if ci:
+        if ci[0] > USABLE_CER:
+            return "useless"
+        if ci[1] <= USABLE_CER:
+            return "usable"
+        return "undecided"
+    return "usable" if cer <= USABLE_CER else "useless"
+
+
 def summarise(level: str, items: list[dict]) -> dict:
-    """Corpus CER plus the two failure shapes a mean hides: stopping and looping."""
+    """Corpus CER plus the two failure shapes a mean hides: stopping and looping,
+    and where the level stands against the usable line."""
     score = score_pairs((flat(i["hyp"]), flat(i["ref"])) for i in items)
+    cer = None if score.cer is None else round(score.cer, 4)
+    per = [e / c for e, c in map(item_edits, items) if c]
+    ci = page_interval(items) if cer is not None else None
     return {
         "level": level,
         "n": len(items),
         "ref_chars": score.chars,
         # None, not 0: a level with nothing measured (yet) has no rate.
-        "cer": None if score.cer is None else round(score.cer, 4),
+        "cer": cer,
+        "cer_ci_pages": ci,
+        "verdict": verdict(cer, ci),
+        # Items at or under the line: a useless level can still hold crops
+        # someone could use, and this says how many.
+        "usable_items": sum(1 for v in per if v <= USABLE_CER),
+        "usable_share": round(sum(1 for v in per if v <= USABLE_CER) / len(per), 4) if per else None,
         "length_ratio": None if score.length_ratio is None else round(score.length_ratio, 3),
         "collapsed<1/3": sum(1 for i in items if len(flat(i["hyp"])) < len(flat(i["ref"])) / 3),
         "runaway>1.5x": sum(1 for i in items if len(flat(i["hyp"])) > 1.5 * len(flat(i["ref"]))),
@@ -448,7 +532,8 @@ def main() -> int:
     def report(complete: bool, error: str | None = None) -> dict:
         return {"model": args.model, "jsonl": None if page_set else args.jsonl,
                 "page_set": page_set and {"path": str(args.page_set), **page_set},
-                **budgets.record(), "pages": pages, "summary": [summarise(k, v) for k, v in results.items()],
+                **budgets.record(), "pages": pages, "usable_cer": USABLE_CER,
+                "summary": [summarise(k, v) for k, v in results.items()],
                 "block_lines": args.block_lines,
                 "regions_by_line_count": {k: by_line_count(results[k])
                                           for k in ("block@block_budget", "region@page_budget",
