@@ -1,4 +1,4 @@
-# Copy of serving-atr-inference config/models.yaml at e07a304 (main, 2026-11-06),
+# Copy of serving-atr-inference config/models.yaml at ed417d2 (main, 2026-11-27),
 # written by scripts/refresh_gateway_fixtures.py — do not edit by hand; re-run it.
 # tests/test_gateway_drift.py compares the ids and engines with the gateway's main.
 # ATR model registry — single source of truth for /models.
@@ -253,16 +253,14 @@ models:
   # of. The adapter excludes the vision and audio towers, so the merge changes
   # the language model only.
   #
-  # Registered disabled until it has been merged on idhefix and has read one line
-  # through the gateway. vram_mb is the base's bf16 checkpoint (15,992,595,884
-  # bytes); merge_loras.py prints the measured size of the merge.
+  # Merged on idhefix with .venvs/vllm-next (06.11.2026): 15147 MiB of weights,
+  # so vram_mb 15300 stays. Enabled because the gateway never serves a disabled
+  # vLLM entry, so the first read through /recognize can only come after this
+  # (INFRASTRUCTURE.md, "When the gate did not promote a model"). If that read
+  # fails, the entry goes back to `enabled: false` (training-atr-models#83).
   - id: gemma4-e4b-german-xix-v1
     engine: vllm
-    enabled: false
-    disabled_reason: >-
-      Not merged on this box yet (scripts/merge_loras.py --only
-      gemma4-e4b-german-xix-v1 in .venvs/vllm-next); enabled once the merge has
-      read one line through the gateway (training-atr-models#83).
+    enabled: true
     vllm_venv: vllm-next  # Gemma 4 needs transformers 5; vLLM 0.29.0 is what G6 measured
     vllm_args:
       - --mm-processor-kwargs
@@ -279,6 +277,39 @@ models:
     scripts: [Kurrent]
     centuries: [19]
     vram_mb: 15300
+    residency: lazy
+    gpu_affinity: 1
+    training_datasets:
+      - https://huggingface.co/datasets/dh-unibe/image-text_zh-regierungsratsprotokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_parlamentsdienste-protokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix
+      - https://huggingface.co/datasets/dh-unibe/image-text_kurrent-xix
+
+  # The 12B sibling of the E4B above: same four corpora, same prompt, line
+  # crops, LoRA on a 4-bit base. Measured on the same 15 XIX pages (G6,
+  # training-atr-models#86, 05.11.2026) it reads lines at CER 0.166 against the
+  # E4B's 0.143 and pages not at all (0.99), so it is registered for comparison,
+  # not as the better reader. `vram_mb` is an estimate from the bf16 size of a
+  # 12B checkpoint, never measured on idhefix (#130).
+  - id: gemma4-12b-german-xix-v1
+    engine: vllm
+    enabled: true
+    vllm_venv: vllm-next  # Gemma 4 needs transformers 5
+    vllm_args:
+      - --mm-processor-kwargs
+      - '{"max_soft_tokens": 140}'
+      - --limit-mm-per-prompt
+      - '{"image": 1, "audio": 0}'
+    hf_repo: dh-unibe/gemma4-12b-german-xix-v1   # private, the LoRA adapter
+    base_model: google/gemma-4-12B-it
+    task: htr
+    level: line          # lines 0.166, pages 0.99 (G6); never `page`
+    max_pixels: 322560   # soft-token step 140, as measured
+    prompt: Transcribe the handwritten text in this image exactly as written.
+    languages: [de]
+    scripts: [Kurrent]
+    centuries: [19]
+    vram_mb: 26000       # estimate (#130)
     residency: lazy
     gpu_affinity: 1
     training_datasets:
@@ -440,7 +471,7 @@ models:
       - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-charters-post-1500
       - https://huggingface.co/datasets/dh-unibe/image-text_aaeb-xiv-xvii
 
-  # ── Party HTR — its own always-on service (runs for every image) ──────────
+  # ── Party HTR — its own always-on service (second opinion only when asked, #265) ──
   - id: party
     engine: party
     zenodo_id: "10.5281/zenodo.20642057"
@@ -495,6 +526,116 @@ models:
     vram_mb: 1500
     residency: pinned
     gpu_affinity: 1
+
+  # Kurrent and chancery hands, 16th to 19th century, on the 20 corpora of the
+  # kurrent-xvi-xix page model. Three runs of the training service (Oct. 2026),
+  # each scored on its own seeded validation split — unseen pages in seen hands,
+  # not a shared benchmark, so the three CERs rank the runs and nothing more:
+  #   from-kurrent-v2  from trocr-kurrent-xvi-xvii, 3 epochs, 100 pages/corpus  8.89 %
+  #   full-v1          from trocr-kurrent-xvi-xvii, 1 epoch, 2000 pages/corpus 10.38 %
+  #   v2               from microsoft/trocr-base-handwritten, 3 epochs          11.00 %
+  # from-kurrent-v2 is the one adopted in the discovery triage (13.11.2026).
+  - id: trocr-german-kurrent-xvi-xix-from-kurrent-v2
+    engine: trocr
+    hf_repo: dh-unibe/trocr-german-kurrent-xvi-xix-from-kurrent-v2
+    base_model: dh-unibe/trocr-kurrent-XVI-XVII
+    task: htr
+    level: line
+    languages: [de]
+    scripts: [Kurrent]
+    centuries: [16, 17, 18, 19]
+    vram_mb: 1500
+    residency: lazy
+    gpu_affinity: 1
+    training_datasets:
+      - https://huggingface.co/datasets/dh-unibe/image-text_zh-regierungsratsprotokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_kurrent-xix
+      - https://huggingface.co/datasets/dh-unibe/image-text_rats-und-richtebuecher_xv-xvi
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-charters-post-1500
+      - https://huggingface.co/datasets/dh-unibe/image-text_bullinger-autoren
+      - https://huggingface.co/datasets/dh-unibe/image-text_aaeb-xiv-xvii
+      - https://huggingface.co/datasets/dh-unibe/image-text_historisches-grundbuch-basel_xix-xx_train
+      - https://huggingface.co/datasets/dh-unibe/image-text_german-20th-century
+      - https://huggingface.co/datasets/dh-unibe/image-text_parlamentsdienste-protokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-charters-part-2
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-adhr-colmar
+      - https://huggingface.co/datasets/dh-unibe/image-text_aaeb-xiv-xvii-part-2
+      - https://huggingface.co/datasets/dh-unibe/image-text_sg-missiven
+      - https://huggingface.co/datasets/dh-unibe/image-text_reichsanzeiger-gt
+      - https://huggingface.co/datasets/dh-unibe/image-text_gt-fraktur
+      - https://huggingface.co/datasets/dh-unibe/image-text_fibeln
+      - https://huggingface.co/datasets/dh-unibe/image-text_dtgt
+      - https://huggingface.co/datasets/dh-unibe/image-text_dach-gt
+      - https://huggingface.co/datasets/dh-unibe/image-text_weisthuemer
+
+  - id: trocr-german-kurrent-xvi-xix-full-v1
+    engine: trocr
+    hf_repo: dh-unibe/trocr-german-kurrent-xvi-xix-full-v1   # private
+    base_model: dh-unibe/trocr-kurrent-XVI-XVII
+    task: htr
+    level: line
+    languages: [de]
+    scripts: [Kurrent]
+    centuries: [16, 17, 18, 19]
+    vram_mb: 1500
+    residency: lazy
+    gpu_affinity: 1
+    training_datasets:
+      - https://huggingface.co/datasets/dh-unibe/image-text_zh-regierungsratsprotokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_kurrent-xix
+      - https://huggingface.co/datasets/dh-unibe/image-text_rats-und-richtebuecher_xv-xvi
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-charters-post-1500
+      - https://huggingface.co/datasets/dh-unibe/image-text_bullinger-autoren
+      - https://huggingface.co/datasets/dh-unibe/image-text_aaeb-xiv-xvii
+      - https://huggingface.co/datasets/dh-unibe/image-text_historisches-grundbuch-basel_xix-xx_train
+      - https://huggingface.co/datasets/dh-unibe/image-text_german-20th-century
+      - https://huggingface.co/datasets/dh-unibe/image-text_parlamentsdienste-protokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-charters-part-2
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-adhr-colmar
+      - https://huggingface.co/datasets/dh-unibe/image-text_aaeb-xiv-xvii-part-2
+      - https://huggingface.co/datasets/dh-unibe/image-text_sg-missiven
+      - https://huggingface.co/datasets/dh-unibe/image-text_reichsanzeiger-gt
+      - https://huggingface.co/datasets/dh-unibe/image-text_gt-fraktur
+      - https://huggingface.co/datasets/dh-unibe/image-text_fibeln
+      - https://huggingface.co/datasets/dh-unibe/image-text_dtgt
+      - https://huggingface.co/datasets/dh-unibe/image-text_dach-gt
+      - https://huggingface.co/datasets/dh-unibe/image-text_weisthuemer
+
+  - id: trocr-german-kurrent-xvi-xix-v2
+    engine: trocr
+    hf_repo: dh-unibe/trocr-german-kurrent-xvi-xix-v2   # private
+    base_model: microsoft/trocr-base-handwritten
+    task: htr
+    level: line
+    languages: [de]
+    scripts: [Kurrent]
+    centuries: [16, 17, 18, 19]
+    vram_mb: 1500
+    residency: lazy
+    gpu_affinity: 1
+    training_datasets:
+      - https://huggingface.co/datasets/dh-unibe/image-text_zh-regierungsratsprotokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_kurrent-xix
+      - https://huggingface.co/datasets/dh-unibe/image-text_rats-und-richtebuecher_xv-xvi
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-charters-post-1500
+      - https://huggingface.co/datasets/dh-unibe/image-text_bullinger-autoren
+      - https://huggingface.co/datasets/dh-unibe/image-text_aaeb-xiv-xvii
+      - https://huggingface.co/datasets/dh-unibe/image-text_historisches-grundbuch-basel_xix-xx_train
+      - https://huggingface.co/datasets/dh-unibe/image-text_german-20th-century
+      - https://huggingface.co/datasets/dh-unibe/image-text_parlamentsdienste-protokolle
+      - https://huggingface.co/datasets/dh-unibe/image-text_nr-sr-vereinigte-bundesversammlung-xix
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-charters-part-2
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-adhr-colmar
+      - https://huggingface.co/datasets/dh-unibe/image-text_aaeb-xiv-xvii-part-2
+      - https://huggingface.co/datasets/dh-unibe/image-text_sg-missiven
+      - https://huggingface.co/datasets/dh-unibe/image-text_reichsanzeiger-gt
+      - https://huggingface.co/datasets/dh-unibe/image-text_gt-fraktur
+      - https://huggingface.co/datasets/dh-unibe/image-text_fibeln
+      - https://huggingface.co/datasets/dh-unibe/image-text_dtgt
+      - https://huggingface.co/datasets/dh-unibe/image-text_dach-gt
+      - https://huggingface.co/datasets/dh-unibe/image-text_weisthuemer
 
   - id: trocr-essoins-middle-latin
     engine: trocr
@@ -722,6 +863,30 @@ models:
     vram_mb: 500
     residency: pinned
     gpu_affinity: 1
+
+  # dh-unibe's medieval German kraken model, fine-tuned from CATMuS Medieval
+  # above on four corpora of the 14th to 17th century (Zurich Rats- und
+  # Richtebücher, Bullinger, Königsfelden, AAEB). CER 21.31 % on its own
+  # validation split (30.08.2026). Published on the hub only — an HF DOI, not a
+  # Zenodo one — so the engine fetches it by its repo (#903).
+  - id: kraken-medieval-german-v2
+    engine: kraken
+    hf_repo: dh-unibe/kraken-medieval-german-v2
+    base_model: "10.5281/zenodo.15030337"
+    description: "Medieval German (dh-unibe), fine-tuned from CATMuS Medieval"
+    task: htr
+    level: page
+    languages: [de]
+    scripts: [Medieval]
+    centuries: [14, 15, 16, 17]
+    vram_mb: 500
+    residency: lazy
+    gpu_affinity: 1
+    training_datasets:
+      - https://huggingface.co/datasets/dh-unibe/image-text_rats-und-richtebuecher_xv-xvi
+      - https://huggingface.co/datasets/dh-unibe/image-text_bullinger-autoren
+      - https://huggingface.co/datasets/dh-unibe/image-text_koenigsfelden-charters-post-1500
+      - https://huggingface.co/datasets/dh-unibe/image-text_aaeb-xiv-xvii
 
   # HTR model for (Japanese) Kuzushiji — Stökl Ben Ezra, 2024. Kuronet dataset.
   - id: kraken-kuzushiji
@@ -1251,7 +1416,7 @@ models:
     hf_repo: swiss-ai/Apertus-v1.5-8B
     description: "Apertus 1.5 8B, four lines per crop (resolution probe; not HTR-tuned)"
     task: htr
-    level: line
+    level: block
     lines_per_crop: 4
     max_new_tokens: 512
     prompt: &apertus_strip_prompt >-
@@ -1277,7 +1442,7 @@ models:
     hf_repo: swiss-ai/Apertus-v1.5-8B
     description: "Apertus 1.5 8B, four lines per crop enlarged 2x (resolution probe; not HTR-tuned)"
     task: htr
-    level: line
+    level: block
     lines_per_crop: 4
     crop_scale: 2.0
     max_new_tokens: 512
